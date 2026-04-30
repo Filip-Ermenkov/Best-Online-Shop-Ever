@@ -1,0 +1,42 @@
+# Local Postgres for development.
+#
+# Production runs on Neon (serverless, HTTP driver). Local development uses a real
+# Postgres in Docker so behaviour is identical to production for SQL semantics —
+# only the connection driver differs.
+#
+# Postgres 17 is intentional: as of April 2026 Neon supports PG 14/15/16/17 GA, with
+# PG 18 still flagged "preview" on Neon. Match production by staying on 17 until
+# Neon promotes 18 to GA.
+#
+# Bring it up:    npm run db:up
+# Tear down:      npm run db:down
+# Reset entirely: npm run db:reset
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: shop-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: shop
+      POSTGRES_PASSWORD: shop
+      POSTGRES_DB: shop
+      # Match Neon's default — UTF-8, en_US.utf8 collation. Eliminates collation
+      # drift between local dev and Neon.
+      LANG: en_US.utf8
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C.utf8"
+    ports:
+      # Host port → container port. If you have another Postgres bound to 5432
+      # on the host (a service, a different container, etc.), free it first or
+      # change the host side here to e.g. 5433 and update DATABASE_URL to match.
+      - "5432:5432"
+    volumes:
+      - shop-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U shop -d shop"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  shop-pgdata:

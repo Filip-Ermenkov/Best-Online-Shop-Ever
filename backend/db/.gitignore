@@ -1,0 +1,9 @@
+node_modules/
+.env
+.env.local
+*.log
+*.tsbuildinfo
+
+# Drizzle keeps both meta/ snapshots AND .sql files under drizzle/ — both must be
+# committed. The snapshot is how drizzle-kit understands the previous state to
+# diff against. Do NOT add drizzle/ here.
