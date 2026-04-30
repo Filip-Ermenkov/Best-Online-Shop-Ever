@@ -1,0 +1,34 @@
+# Top-level .gitignore — covers the repo as a whole.
+# Per-package ignores live inside each folder (e.g. frontend/.gitignore).
+
+# OS / editor metadata
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Environment files (never commit credentials)
+.env
+.env.*
+!.env.example
+
+# Terraform (when infra/ is added)
+**/.terraform/
+**/.terraform.lock.hcl
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
+crash.log
+crash.*.log
+
+# Lambda build artifacts (when backend/ is added)
+backend/**/dist/
+backend/**/build/
+backend/**/*.zip
+
+# Logs
+*.log
