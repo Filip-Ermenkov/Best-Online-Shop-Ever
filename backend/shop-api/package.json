@@ -1,0 +1,39 @@
+{
+  "name": "@shop/api",
+  "version": "0.1.0",
+  "private": true,
+  "description": "HTTP API for the shop. Same Hono app runs on AWS Lambda (production) and Node (local dev).",
+  "type": "module",
+  "main": "./src/handler.ts",
+  "exports": {
+    ".": "./src/types.ts",
+    "./handler": "./src/handler.ts",
+    "./app": "./src/app.ts"
+  },
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "start": "tsx src/server.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "echo 'add eslint when shared config lands'"
+  },
+  "dependencies": {
+    "@hono/zod-openapi": "^1.3.0",
+    "@hono/node-server": "^2.0.1",
+    "@shop/db": "*",
+    "drizzle-orm": "^0.36.4",
+    "hono": "^4.12.16",
+    "pino": "^10.3.1",
+    "pino-lambda": "^4.4.1",
+    "zod": "^4.4.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "dotenv": "^16.4.7",
+    "pg": "^8.13.1",
+    "tsx": "^4.21.0",
+    "typescript": "^5.7.2",
+    "vitest": "^4.1.5"
+  }
+}

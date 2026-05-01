@@ -6,8 +6,11 @@ Online shop project — Bulgarian-language e-commerce platform on AWS.
 
 ```
 .
+├── package.json      npm workspaces root
 ├── frontend/         Next.js 16 app (Amplify Hosting)
-├── backend/          Lambda functions (planned: shop-api, admin-api, scheduler)
+├── backend/
+│   ├── db/           Drizzle schema + migrations + seed (@shop/db)
+│   └── shop-api/     Hono read API: catalog list + detail (@shop/api)
 ├── infra/            Terraform IaC (planned)
 ├── .github/
 │   └── workflows/    CI/CD pipelines (planned)
@@ -17,19 +20,29 @@ Online shop project — Bulgarian-language e-commerce platform on AWS.
     └── AWS_PRICING_RESEARCH_2026.md  Verified rate sheet for cost calculations
 ```
 
-Each top-level folder is an independent deployable artifact with its own
-`package.json` / dependencies / lifecycle. CI uses `paths:` filters per folder
-so changes in one don't trigger redeploys of the others.
+This is an **npm workspaces** monorepo. One `npm install` at the root
+provisions every workspace; cross-package imports (`@shop/db`, `@shop/api`)
+are linked automatically.
 
-## Working on the frontend
+## Bring it up locally
 
 ```bash
-cd frontend
+# From the repo root, one time:
 npm install
-npm run dev
+
+# Database (Docker Postgres 17):
+npm run db:up
+npm run db:migrate
+npm run db:seed
+
+# API (Hono on Node, http://localhost:3001):
+npm run api:dev
+
+# Frontend (Next.js, http://localhost:3000):
+npm run frontend:dev
 ```
 
-Runs at http://localhost:3000.
+Visit http://localhost:3000/api-demo to see the typed API client in action.
 
 ## Documentation
 
@@ -41,7 +54,9 @@ Read the docs in this order:
 
 ## Status
 
-- Frontend: UI prototype with mock data, lint/typecheck clean
-- Backend: not started
-- Infrastructure: not started
-- Workflows: not started
+- Frontend: UI prototype with mock data, lint/typecheck clean. Type-safe Hono RPC client wired in (`/api-demo` page).
+- Backend:
+  - `@shop/db` — schema + migrations + seed, validated against PGlite.
+  - `@shop/api` — Hono read API for catalog (GET /products, GET /products/:slug). OpenAPI 3.1 spec, ETag + s-maxage caching, RFC 9457 problem responses, integration tests.
+- Infrastructure: not started.
+- Workflows: not started.

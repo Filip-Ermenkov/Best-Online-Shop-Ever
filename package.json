@@ -1,0 +1,27 @@
+{
+  "name": "best-online-shop",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Bulgarian online shop monorepo. Frontend (Next.js), backend (Hono on Lambda), shared DB layer (Drizzle).",
+  "workspaces": [
+    "frontend",
+    "backend/db",
+    "backend/shop-api"
+  ],
+  "scripts": {
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "lint": "npm run lint --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "db:up": "npm --workspace @shop/db run db:up",
+    "db:down": "npm --workspace @shop/db run db:down",
+    "db:migrate": "npm --workspace @shop/db run db:migrate",
+    "db:seed": "npm --workspace @shop/db run db:seed",
+    "db:reset": "npm --workspace @shop/db run db:reset",
+    "api:dev": "npm --workspace @shop/api run dev",
+    "api:test": "npm --workspace @shop/api run test",
+    "frontend:dev": "npm --workspace shop run dev"
+  },
+  "engines": {
+    "node": ">=20.18"
+  }
+}
