@@ -25,6 +25,13 @@ const TABLES_TO_TRUNCATE = [
   "products",
   "categories",
   "banner_slides",
+  // Auth & users — TRUNCATE … CASCADE will pick up profile / session /
+  // login_attempts rows via foreign keys.
+  "users",
+  "sessions",
+  "login_attempts",
+  "email_verification_tokens",
+  "password_reset_tokens",
   // Settings / content
   "settings",
   "tos_versions",

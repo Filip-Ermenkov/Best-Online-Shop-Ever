@@ -6,6 +6,7 @@
   "workspaces": [
     "frontend",
     "backend/db",
+    "backend/auth",
     "backend/shop-api"
   ],
   "scripts": {
@@ -17,6 +18,7 @@
     "db:migrate": "npm --workspace @shop/db run db:migrate",
     "db:seed": "npm --workspace @shop/db run db:seed",
     "db:reset": "npm --workspace @shop/db run db:reset",
+    "auth:test": "npm --workspace @shop/auth run test",
     "api:dev": "npm --workspace @shop/api run dev",
     "api:test": "npm --workspace @shop/api run test",
     "frontend:dev": "npm --workspace shop run dev"

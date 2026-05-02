@@ -9,6 +9,8 @@ import { parseEnv } from "./lib/env.js";
 import { ApiError, badRequest, internal, type Problem } from "./lib/errors.js";
 import { logger as baseLogger, requestLogger } from "./lib/logger.js";
 import { validationHook } from "./lib/validation-hook.js";
+import { currentUser, type AuthVariables } from "./middleware/auth.js";
+import { authRoutes } from "./routes/auth.js";
 import { categoriesRoutes } from "./routes/categories.js";
 import { productsRoutes } from "./routes/products.js";
 
@@ -20,7 +22,7 @@ import { productsRoutes } from "./routes/products.js";
 type AppVariables = {
   requestId: string;
   logger: Logger;
-};
+} & AuthVariables;
 
 /**
  * Compose the Hono app.
@@ -90,6 +92,16 @@ export function buildApp() {
   app.use("/categories/*", etag());
   app.use("/categories", etag());
 
+  // Best-effort identity resolution. Sits BEFORE every route so anything that
+  // wants `c.get("user")` can read it; auth-required routes layer requireAuth
+  // on top. Deliberately NOT applied to /health — health is for the load
+  // balancer and shouldn't pay for a DB read.
+  app.use("/products/*", currentUser);
+  app.use("/products", currentUser);
+  app.use("/categories/*", currentUser);
+  app.use("/categories", currentUser);
+  app.use("/auth/*", currentUser);
+
   // Health probe — used by the Lambda Function URL warmup, ALB target group,
   // and "is the local dev server actually up" curls. Deliberately trivial and
   // un-cached.
@@ -98,6 +110,7 @@ export function buildApp() {
   // Mount feature routes.
   app.route("/products", productsRoutes);
   app.route("/categories", categoriesRoutes);
+  app.route("/auth", authRoutes);
 
   // OpenAPI 3.1 document at /openapi.json. Generated from the typed routes
   // above — single source of truth for the API contract.
