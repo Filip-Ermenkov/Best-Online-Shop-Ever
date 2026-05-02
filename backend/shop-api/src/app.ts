@@ -9,6 +9,7 @@ import { parseEnv } from "./lib/env.js";
 import { ApiError, badRequest, internal, type Problem } from "./lib/errors.js";
 import { logger as baseLogger, requestLogger } from "./lib/logger.js";
 import { validationHook } from "./lib/validation-hook.js";
+import { categoriesRoutes } from "./routes/categories.js";
 import { productsRoutes } from "./routes/products.js";
 
 /**
@@ -86,6 +87,8 @@ export function buildApp() {
   // and turns matching requests into 304s automatically.
   app.use("/products/*", etag());
   app.use("/products", etag());
+  app.use("/categories/*", etag());
+  app.use("/categories", etag());
 
   // Health probe — used by the Lambda Function URL warmup, ALB target group,
   // and "is the local dev server actually up" curls. Deliberately trivial and
@@ -94,6 +97,7 @@ export function buildApp() {
 
   // Mount feature routes.
   app.route("/products", productsRoutes);
+  app.route("/categories", categoriesRoutes);
 
   // OpenAPI 3.1 document at /openapi.json. Generated from the typed routes
   // above — single source of truth for the API contract.

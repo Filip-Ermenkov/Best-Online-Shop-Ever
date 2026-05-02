@@ -1,19 +1,38 @@
 import Link from "next/link";
 import { ArrowRight } from "lucide-react";
 import { banners } from "@/lib/mock-data/banners";
-import { categories, NEW_PRODUCTS_CATEGORY } from "@/lib/mock-data/categories";
-import { getFeaturedProducts } from "@/lib/mock-data/products";
+import { fetchCategoryTree, fetchProducts } from "@/lib/api";
+import type { Product } from "@/lib/types";
 import ProductCard from "@/components/shop/ProductCard";
 import BannerSlider from "@/components/shop/BannerSlider";
 import { ButtonLink } from "@/components/ui/button-link";
 
-export default function HomePage() {
-  const featuredProducts = getFeaturedProducts(8);
-  const allCategories = [NEW_PRODUCTS_CATEGORY, ...categories];
+/**
+ * Home page is a Server Component — both categories and featured products
+ * fetch on the server, are cached by Next.js for 5 minutes (matching the API's
+ * Cache-Control), and the rendered HTML ships fully populated.
+ *
+ * Banners are still mock data — no banner_slides API endpoint yet (next slice).
+ *
+ * Error / empty handling: if the API is reachable but returns nothing, the
+ * grid renders empty (no error UI shown). If the API is unreachable, the
+ * fetch helper throws ApiClientError; Next.js renders the nearest error.tsx.
+ */
+export default async function HomePage() {
+  // Fetch in parallel — neither depends on the other.
+  const [categoryTree, productsPage] = await Promise.all([
+    fetchCategoryTree(),
+    fetchProducts({ sort: "featured", limit: 8 }),
+  ]);
+
+  // Only show ROOT categories on the home grid. Subcategory navigation lives
+  // in the header dropdown (later slice).
+  const rootCategories = categoryTree.items;
+  const featuredProducts = productsPage.items.map(adaptApiProductToFrontend);
 
   return (
     <div>
-      {/* Banner Slider */}
+      {/* Banner Slider — mock data until we ship a banners API */}
       <BannerSlider banners={banners} />
 
       {/* Categories grid — image cards, same size as product cards */}
@@ -22,7 +41,7 @@ export default function HomePage() {
           <h2 className="text-xl font-bold">Категории</h2>
         </div>
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
-          {allCategories.map((cat) => (
+          {rootCategories.map((cat) => (
             <Link
               key={cat.id}
               href={`/products/${cat.slug}`}
@@ -71,4 +90,46 @@ export default function HomePage() {
       </section>
     </div>
   );
+}
+
+// ─── Adapter ───────────────────────────────────────────────────────────────
+
+/**
+ * The API returns prices as integer cents and images as a flat list with
+ * displayOrder. ProductCard (a pre-existing Client Component) expects the
+ * frontend's local `Product` shape with `price` in EUR and a different image
+ * type. Convert at the page boundary so neither side has to know about the
+ * other.
+ *
+ * This adapter will disappear when the frontend's local types are replaced
+ * with `InferResponseType<typeof api.products.$get>` and the existing
+ * components refactored — that's a separate slice.
+ */
+type ApiProductSummary = Awaited<
+  ReturnType<typeof fetchProducts>
+>["items"][number];
+
+function adaptApiProductToFrontend(p: ApiProductSummary): Product {
+  return {
+    id: p.id,
+    slug: p.slug,
+    name: p.name,
+    code: p.code,
+    description: "", // summary doesn't carry description; not needed on cards
+    price: p.priceCents / 100,
+    currency: "EUR",
+    images: p.primaryImage
+      ? [{ id: p.primaryImage.id, url: p.primaryImage.url, alt: p.primaryImage.alt }]
+      : [],
+    categoryId: "", // root grid doesn't render category-aware product URLs;
+    // ProductCard only uses categoryId to build a breadcrumb path, which
+    // the home page doesn't need (the link still resolves via /products/{slug}).
+    stockStatus: p.stockStatus,
+    stockQuantity: p.stockStatus === "in_stock" ? 99 : 0,
+    isNew: p.isNew,
+    displayOrder: 0,
+    createdAt: "",
+    updatedAt: "",
+    isArchived: false,
+  };
 }

@@ -31,29 +31,92 @@ async function main() {
   console.log("Seeding...");
 
   // ─── Categories ──────────────────────────────────────────────────────────
-  const [electronics, tools, home] = await db
-    .insert(s.categories)
-    .values([
-      { slug: "electronics", name: "Електроника", displayOrder: 0 },
-      { slug: "tools", name: "Инструменти", displayOrder: 1 },
-      { slug: "home", name: "Дом", displayOrder: 2 },
-    ])
-    .onConflictDoNothing({ target: [s.categories.parentId, s.categories.slug] })
-    .returning();
+  // Tree shape:
+  //   Електроника (root)
+  //     ├── Телефони
+  //     │     └── Смартфони
+  //     └── Лаптопи
+  //   Инструменти (root, no children)
+  //   Дом (root)
+  //     └── Декорация
+  //
+  // Idempotency: Postgres UNIQUE treats NULLs as distinct, so the
+  // (parent_id, slug) index does NOT prevent duplicate roots. Application-
+  // side guard: do a SELECT-then-INSERT for each row keyed by (parent_id, slug).
+  // For child rows the unique index plus ON CONFLICT works as expected, but
+  // we keep the same select-or-insert pattern for consistency.
 
-  // After ON CONFLICT we may have empty returning() — re-fetch to get IDs
-  const allCategories = await db.select().from(s.categories);
-  const electronicsId =
-    electronics?.id ??
-    allCategories.find((c) => c.slug === "electronics")?.id;
-  const toolsId = tools?.id ?? allCategories.find((c) => c.slug === "tools")?.id;
-  const homeId = home?.id ?? allCategories.find((c) => c.slug === "home")?.id;
+  type CatSeed = {
+    slug: string;
+    name: string;
+    displayOrder: number;
+    parentSlug: string | null; // null = root
+  };
 
-  if (!electronicsId || !toolsId || !homeId) {
-    throw new Error("Failed to seed categories");
+  const categorySeeds: CatSeed[] = [
+    { slug: "electronics", name: "Електроника", displayOrder: 0, parentSlug: null },
+    { slug: "tools", name: "Инструменти", displayOrder: 1, parentSlug: null },
+    { slug: "home", name: "Дом", displayOrder: 2, parentSlug: null },
+    // Children of electronics
+    { slug: "phones", name: "Телефони", displayOrder: 0, parentSlug: "electronics" },
+    { slug: "laptops", name: "Лаптопи", displayOrder: 1, parentSlug: "electronics" },
+    // Grandchild of electronics
+    { slug: "smartphones", name: "Смартфони", displayOrder: 0, parentSlug: "phones" },
+    // Children of home
+    { slug: "decor", name: "Декорация", displayOrder: 0, parentSlug: "home" },
+  ];
+
+  // Insert in topological order (parents first). The seeds array above is
+  // already in the right order; assert it matches the parentSlug constraint.
+  const slugToId = new Map<string, string>();
+  for (const cat of categorySeeds) {
+    const parentId = cat.parentSlug ? slugToId.get(cat.parentSlug) ?? null : null;
+    if (cat.parentSlug && !parentId) {
+      throw new Error(
+        `Seed inconsistency: ${cat.slug} references unknown parent ${cat.parentSlug}`,
+      );
+    }
+    // Look up by (parent_id, slug). For root rows parent_id IS NULL — Drizzle
+    // turns `eq(col, null)` into `col = NULL` which is always false, so we
+    // branch with isNull/eq.
+    const existing = await db
+      .select({ id: s.categories.id })
+      .from(s.categories)
+      .where(
+        parentId === null
+          ? sql`${s.categories.parentId} IS NULL AND ${s.categories.slug} = ${cat.slug}`
+          : sql`${s.categories.parentId} = ${parentId} AND ${s.categories.slug} = ${cat.slug}`,
+      )
+      .limit(1);
+
+    if (existing[0]) {
+      slugToId.set(cat.slug, existing[0].id);
+      continue;
+    }
+
+    const [inserted] = await db
+      .insert(s.categories)
+      .values({
+        slug: cat.slug,
+        name: cat.name,
+        displayOrder: cat.displayOrder,
+        parentId,
+      })
+      .returning({ id: s.categories.id });
+    if (!inserted) {
+      throw new Error(`Failed to insert category ${cat.slug}`);
+    }
+    slugToId.set(cat.slug, inserted.id);
   }
 
+  const electronicsId = slugToId.get("electronics")!;
+  const toolsId = slugToId.get("tools")!;
+  const smartphonesId = slugToId.get("smartphones")!;
+  const decorId = slugToId.get("decor")!;
+
   // ─── Products ────────────────────────────────────────────────────────────
+  // smart-watch lives under Smartphones (deepest node) so the breadcrumb
+  // feature has something with three levels to render.
   await db
     .insert(s.products)
     .values([
@@ -73,7 +136,7 @@ async function main() {
         name: "Смарт часовник",
         description: "AMOLED дисплей, GPS, водоустойчив до 50 метра.",
         priceCents: "24999", // €249.99
-        categoryId: electronicsId,
+        categoryId: smartphonesId, // Електроника → Телефони → Смартфони
         stockStatus: "in_stock",
         displayOrder: 1,
       },
@@ -84,6 +147,16 @@ async function main() {
         description: "18V Li-ion, 50 Nm въртящ момент, 2 батерии в комплекта.",
         priceCents: "15999", // €159.99
         categoryId: toolsId,
+        stockStatus: "in_stock",
+        displayOrder: 0,
+      },
+      {
+        slug: "decor-vase",
+        code: "DV-004",
+        name: "Декоративна ваза",
+        description: "Ръчно изработена керамична ваза, 30 см височина.",
+        priceCents: "4999", // €49.99
+        categoryId: decorId,
         stockStatus: "in_stock",
         displayOrder: 0,
       },

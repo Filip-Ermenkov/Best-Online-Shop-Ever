@@ -64,6 +64,30 @@ export async function fetchProducts(query: {
   return res.json();
 }
 
+/**
+ * Convenience: fetch the full category tree. Used by every storefront surface
+ * that needs the navigation menu, the homepage categories grid, etc.
+ *
+ * Tag-based revalidation: when an admin edits the tree (later slice), the
+ * server action that performs the edit will call
+ * `revalidateTag('categories')` to purge this fetch's Next.js cache entry
+ * regardless of how stale the in-memory copy is.
+ */
+export async function fetchCategoryTree() {
+  const res = await api.categories.$get(
+    {},
+    { init: { next: { revalidate: 300, tags: ["categories"] } } },
+  );
+  if (!res.ok) {
+    throw new ApiClientError(
+      `GET /categories failed (${res.status})`,
+      res.status,
+      await safeProblem(res),
+    );
+  }
+  return res.json();
+}
+
 /** Convenience: fetch a single product by slug. Returns null on 404. */
 export async function fetchProductBySlug(slug: string) {
   const res = await api.products[":slug"].$get(
