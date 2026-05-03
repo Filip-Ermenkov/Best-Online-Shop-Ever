@@ -2,8 +2,8 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
-import { useAuth, MOCK_CUSTOMER, MOCK_ADMIN } from "@/contexts/AuthContext";
+import { useRouter, useSearchParams } from "next/navigation";
+import { useAuth } from "@/contexts/AuthContext";
 import { Button } from "@/components/ui/button";
 import { ButtonLink } from "@/components/ui/button-link";
 import { Input } from "@/components/ui/input";
@@ -12,23 +12,62 @@ import { Separator } from "@/components/ui/separator";
 
 export default function LoginPage() {
   const router = useRouter();
+  const params = useSearchParams();
   const { login } = useAuth();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [error, setError] = useState("");
+  const [rememberMe, setRememberMe] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [pending, setPending] = useState(false);
 
-  function handleSubmit(e: React.FormEvent) {
+  // After login we either honour an explicit ?next=/somewhere from the
+  // proxy/middleware redirect, or fall back to a sensible default. We don't
+  // honour absolute URLs in `next` to prevent open-redirect attacks.
+  const nextParam = params.get("next");
+  const safeNext =
+    nextParam && nextParam.startsWith("/") && !nextParam.startsWith("//")
+      ? nextParam
+      : null;
+
+  async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    setError("");
-    // Mock auth: admin@shop.bg → admin, anything else → customer
-    if (email === "admin@shop.bg") {
-      login(MOCK_ADMIN);
-      router.push("/admin");
-    } else if (email.includes("@")) {
-      login(MOCK_CUSTOMER);
-      router.push("/account/profile");
-    } else {
-      setError("Невалиден имейл или парола.");
+    setError(null);
+    setPending(true);
+    try {
+      const res = await login({ email, password, rememberMe });
+      if (!res.ok) {
+        switch (res.error.kind) {
+          case "invalid_credentials":
+            setError("Невалиден имейл или парола.");
+            break;
+          case "account_locked":
+            setError(
+              res.error.unlockAt
+                ? `Акаунтът е временно заключен поради твърде много опити. Опитайте отново след ${formatUnlockAt(res.error.unlockAt)}.`
+                : "Акаунтът е временно заключен поради твърде много опити. Опитайте отново по-късно.",
+            );
+            break;
+          case "validation":
+            setError(
+              res.error.fields[0]?.message ??
+                "Моля, проверете въведените данни.",
+            );
+            break;
+          case "network":
+            setError("Не може да се свърже със сървъра. Проверете интернет връзката.");
+            break;
+          default:
+            setError("Възникна неочаквана грешка. Опитайте отново.");
+        }
+        return;
+      }
+
+      // Success. Route based on role first, then optional ?next override.
+      const target = safeNext ?? (res.value.role === "admin" ? "/admin" : "/account/profile");
+      router.push(target);
+      router.refresh(); // re-fetch server components so SSR auth state updates
+    } finally {
+      setPending(false);
     }
   }
 
@@ -39,14 +78,20 @@ export default function LoginPage() {
         <p className="text-muted-foreground text-sm mt-1">Влезте в своя акаунт</p>
       </div>
 
-      <form onSubmit={handleSubmit} className="space-y-4">
+      <form onSubmit={handleSubmit} className="space-y-4" noValidate>
         <div>
           <Label htmlFor="email">Email</Label>
           <Input
-            id="email" type="email" value={email}
+            id="email"
+            type="email"
+            value={email}
             onChange={(e) => setEmail(e.target.value)}
-            required autoFocus className="mt-1"
+            autoComplete="email"
+            required
+            autoFocus
+            className="mt-1"
             placeholder="you@example.com"
+            disabled={pending}
           />
         </div>
         <div>
@@ -57,22 +102,42 @@ export default function LoginPage() {
             </Link>
           </div>
           <Input
-            id="password" type="password" value={password}
+            id="password"
+            type="password"
+            value={password}
             onChange={(e) => setPassword(e.target.value)}
-            required className="mt-1"
+            autoComplete="current-password"
+            required
+            className="mt-1"
+            disabled={pending}
           />
         </div>
 
-        {error && <p className="text-sm text-destructive">{error}</p>}
+        <label className="flex items-center gap-2 text-sm cursor-pointer select-none">
+          <input
+            type="checkbox"
+            checked={rememberMe}
+            onChange={(e) => setRememberMe(e.target.checked)}
+            disabled={pending}
+            className="h-4 w-4 rounded border-input"
+          />
+          <span>Запомни ме</span>
+        </label>
 
-        <Button type="submit" className="w-full" size="lg">Вход</Button>
+        {error && (
+          <p
+            role="alert"
+            aria-live="polite"
+            className="text-sm text-destructive bg-destructive/5 border border-destructive/20 rounded-md p-2"
+          >
+            {error}
+          </p>
+        )}
+
+        <Button type="submit" className="w-full" size="lg" disabled={pending}>
+          {pending ? "Изчакайте..." : "Вход"}
+        </Button>
       </form>
-
-      <div className="mt-4 text-xs text-muted-foreground bg-muted rounded-md p-3">
-        <p className="font-medium mb-1">Demo акаунти:</p>
-        <p>Клиент: всеки валиден email + произволна парола</p>
-        <p>Администратор: admin@shop.bg</p>
-      </div>
 
       <Separator className="my-6" />
 
@@ -88,4 +153,16 @@ export default function LoginPage() {
       </div>
     </div>
   );
+}
+
+/**
+ * Format a server-supplied unlock timestamp (ISO 8601) into a human-readable
+ * "in N minutes" hint. Used for the 429 account-locked error so the user
+ * knows when to retry.
+ */
+function formatUnlockAt(iso: string): string {
+  const at = new Date(iso);
+  if (Number.isNaN(at.getTime())) return "няколко минути";
+  const minutes = Math.max(1, Math.ceil((at.getTime() - Date.now()) / 60000));
+  return `${minutes} ${minutes === 1 ? "минута" : "минути"}`;
 }

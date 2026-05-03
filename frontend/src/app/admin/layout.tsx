@@ -1,35 +1,21 @@
-"use client";
+import { redirect } from "next/navigation";
+import { getServerUser } from "@/lib/auth/server";
+import AdminLayoutShell from "./_layout-shell";
 
-import AdminSidebar from "@/components/admin/AdminSidebar";
-import { AdminSidebarProvider, useAdminSidebar } from "@/contexts/AdminSidebarContext";
-import { Menu } from "lucide-react";
+/**
+ * Admin layout — server component. Performs the role check that the proxy
+ * cannot (the session cookie is opaque, role isn't encoded in it). The
+ * proxy already redirected anonymous traffic to /account/login, so by the
+ * time we reach here we have *some* user. We then enforce role === "admin".
+ *
+ * Customer who lands on /admin (e.g. via a bookmarked URL) is bounced back
+ * to / rather than seeing a hard 403 — fewer support tickets, same
+ * security posture (they don't see admin content).
+ */
+export default async function AdminLayout({ children }: { children: React.ReactNode }) {
+  const user = await getServerUser();
+  if (!user) redirect("/account/login?next=/admin");
+  if (user.role !== "admin") redirect("/");
 
-function AdminMobileHeader() {
-  const { setOpen } = useAdminSidebar();
-  return (
-    <header className="lg:hidden flex items-center gap-3 px-4 py-3 bg-sidebar border-b border-sidebar-border sticky top-0 z-30">
-      <button
-        onClick={() => setOpen(true)}
-        className="p-1.5 rounded-md text-sidebar-foreground/70 hover:text-sidebar-foreground hover:bg-sidebar-accent transition-colors"
-        aria-label="Отвори меню"
-      >
-        <Menu className="w-5 h-5" />
-      </button>
-      <span className="font-bold text-sm text-sidebar-foreground">Администрация</span>
-    </header>
-  );
-}
-
-export default function AdminLayout({ children }: { children: React.ReactNode }) {
-  return (
-    <AdminSidebarProvider>
-      <div className="min-h-screen flex bg-muted/30">
-        <AdminSidebar />
-        <div className="flex-1 min-w-0 flex flex-col">
-          <AdminMobileHeader />
-          <main className="flex-1 p-4 lg:p-6 overflow-y-auto">{children}</main>
-        </div>
-      </div>
-    </AdminSidebarProvider>
-  );
+  return <AdminLayoutShell>{children}</AdminLayoutShell>;
 }

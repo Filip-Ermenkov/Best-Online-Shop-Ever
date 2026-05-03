@@ -5,7 +5,7 @@ import {
   verifyPassword,
 } from "@shop/auth";
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
-import { schema } from "@shop/db";
+import { type DbClient, schema } from "@shop/db";
 import { and, eq, isNull } from "drizzle-orm";
 import type { Context } from "hono";
 import { getCookie } from "hono/cookie";
@@ -73,6 +73,14 @@ const PublicUserSchema = z
     role: z.enum(["admin", "customer"]),
     accountType: z.enum(["personal", "corporate"]).nullable(),
     emailVerifiedAt: z.string().nullable(),
+    /**
+     * Display name. For customer accounts this is `customer_profiles.full_name`
+     * (single field — splitting into first/last is a UI concern). For corporate
+     * it's `corporate_profiles.contact_name` (the buyer-on-record). For admin
+     * accounts there is no profile row, so this is `null` and the UI should
+     * fall back to the email.
+     */
+    fullName: z.string().nullable(),
   })
   .openapi("PublicUser");
 
@@ -347,6 +355,8 @@ authRoutes.openapi(loginRoute, async (c) => {
   });
   setSessionCookie(c, token, { rememberMe: body.rememberMe });
 
+  const fullName = await resolveFullName(db, user.id, user.role);
+
   return c.json(
     {
       user: {
@@ -357,6 +367,7 @@ authRoutes.openapi(loginRoute, async (c) => {
         emailVerifiedAt: user.emailVerifiedAt
           ? user.emailVerifiedAt.toISOString()
           : null,
+        fullName,
       },
     },
     200,
@@ -376,7 +387,7 @@ authRoutes.openapi(logoutRoute, async (c) => {
 // /me uses the requireAuth gate. currentUser at the app level has already
 // populated c.var.user when a valid cookie is present.
 authRoutes.use(meRoute.path, requireAuth);
-authRoutes.openapi(meRoute, (c) => {
+authRoutes.openapi(meRoute, async (c) => {
   // requireAuth guaranteed user is set, but the type system can't see that.
   const user = c.get("user");
   if (!user) {
@@ -388,6 +399,7 @@ authRoutes.openapi(meRoute, (c) => {
       detail: "Authentication is required.",
     });
   }
+  const fullName = await resolveFullName(getDb(), user.id, user.role);
   return c.json(
     {
       user: {
@@ -398,6 +410,7 @@ authRoutes.openapi(meRoute, (c) => {
         emailVerifiedAt: user.emailVerifiedAt
           ? user.emailVerifiedAt.toISOString()
           : null,
+        fullName,
       },
     },
     200,
@@ -407,12 +420,53 @@ authRoutes.openapi(meRoute, (c) => {
 // ─── Helpers ───────────────────────────────────────────────────────────────
 
 /**
+ * Resolve a display name for a user. Customers store it in
+ * customer_profiles.full_name (single field by design — splitting into
+ * first/last is a UI concern). Corporate accounts use the contact-on-record
+ * from corporate_profiles. Admins have no profile row, so this returns null
+ * and the UI should fall back to the email.
+ *
+ * Single targeted query per branch — cheaper than a left-join we'd then have
+ * to type-narrow. /me is gated by a valid session anyway, so the cost is
+ * bounded to authenticated reads (frontend calls it on mount + after login,
+ * not on every navigation).
+ */
+async function resolveFullName(
+  db: DbClient,
+  userId: string,
+  role: "admin" | "customer",
+): Promise<string | null> {
+  if (role === "admin") return null;
+
+  // Try customer profile first — that's the personal-account path, which is
+  // the only one we currently register through /auth/register. Corporate
+  // accounts will land here once the corporate registration slice ships.
+  const [customer] = await db
+    .select({ fullName: schema.customerProfiles.fullName })
+    .from(schema.customerProfiles)
+    .where(eq(schema.customerProfiles.userId, userId))
+    .limit(1);
+  if (customer) return customer.fullName;
+
+  const [corporate] = await db
+    .select({ contactName: schema.corporateProfiles.contactName })
+    .from(schema.corporateProfiles)
+    .where(eq(schema.corporateProfiles.userId, userId))
+    .limit(1);
+  if (corporate) return corporate.contactName;
+
+  // Customer with no profile row should not happen — register transaction
+  // creates both atomically. Defensive null keeps the response shape stable.
+  return null;
+}
+
+/**
  * Best-effort client IP. CloudFront in production sets x-forwarded-for; we
  * trust only the FIRST hop (the public client) and ignore everything after,
  * because intermediate hops can be forged by clients sending fake headers.
  *
  * In local dev the header is absent — we get the connecting socket's address
- * from Hono's `connInfo` if available, or null. Null is fine: ipAddress is
+ * from Hono's connInfo if available, or null. Null is fine: ipAddress is
  * a nullable column.
  */
 function clientIp(c: Context): string | null {
@@ -421,6 +475,5 @@ function clientIp(c: Context): string | null {
     const first = xff.split(",")[0]?.trim();
     if (first) return first;
   }
-  // Hono doesn't expose the raw socket on every adapter; we fall back gracefully.
   return null;
 }

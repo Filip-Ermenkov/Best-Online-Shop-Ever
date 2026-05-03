@@ -155,7 +155,7 @@ export default function Header() {
                   aria-label="Акаунт"
                 >
                   <User className="w-5 h-5" />
-                  <span className="hidden md:block font-medium">{user?.firstName}</span>
+                  <span className="hidden md:block font-medium">{user?.fullName?.split(/\s+/)[0] ?? user?.email ?? ""}</span>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end" className="w-48">
                   <DropdownMenuItem render={<Link href="/account/profile" />}>

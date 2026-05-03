@@ -26,26 +26,11 @@ type AppVariables = {
 
 /**
  * Compose the Hono app.
- *
- * Order of middleware matters:
- *   1. requestId    — assigns/propagates X-Request-Id; everything downstream uses it.
- *   2. logger       — start/finish access log with the request id.
- *   3. cors         — runs early so preflights short-circuit.
- *   4. etag         — sits around the route handlers so it can compute the
- *                     hash from the rendered body and short-circuit with 304.
- *
- * Returns OpenAPIHono so the caller can also register `app.doc(...)` if
- * desired (we expose /openapi.json from buildApp directly).
- *
- * `app` is exported as the AppType for Hono RPC clients (see types.ts).
  */
 export function buildApp() {
   const env = parseEnv();
 
   const app = new OpenAPIHono<{ Variables: AppVariables }>({
-    // Hand zod validation errors back as RFC 9457 problems instead of Hono's
-    // default. Note that this option is per-OpenAPIHono-instance — the same
-    // hook is also passed to every sub-router (see routes/products.ts).
     defaultHook: validationHook,
   });
 
@@ -74,6 +59,9 @@ export function buildApp() {
   app.use(
     "*",
     cors({
+      // Origin echo from the allowlist. Returning `null` from the function
+      // makes Hono drop the Access-Control-Allow-Origin header entirely,
+      // which is exactly what we want for cross-origin rejections.
       origin: (origin) => {
         if (!origin) return undefined;
         return env.CORS_ORIGINS.includes(origin) ? origin : null;
@@ -81,39 +69,32 @@ export function buildApp() {
       allowMethods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
       allowHeaders: ["Content-Type", "Authorization", "If-None-Match", "X-Request-Id"],
       exposeHeaders: ["ETag", "X-Request-Id"],
+      // Required for the browser to send & receive the session cookie on
+      // cross-origin requests. Combined with the explicit-origin function
+      // above (no wildcard) per the CORS-with-credentials rules. The
+      // frontend MUST also pass `credentials: "include"` on its fetches.
+      credentials: true,
       maxAge: 600,
     }),
   );
 
-  // Built-in ETag middleware: computes a strong hash from the response body
-  // and turns matching requests into 304s automatically.
   app.use("/products/*", etag());
   app.use("/products", etag());
   app.use("/categories/*", etag());
   app.use("/categories", etag());
 
-  // Best-effort identity resolution. Sits BEFORE every route so anything that
-  // wants `c.get("user")` can read it; auth-required routes layer requireAuth
-  // on top. Deliberately NOT applied to /health — health is for the load
-  // balancer and shouldn't pay for a DB read.
   app.use("/products/*", currentUser);
   app.use("/products", currentUser);
   app.use("/categories/*", currentUser);
   app.use("/categories", currentUser);
   app.use("/auth/*", currentUser);
 
-  // Health probe — used by the Lambda Function URL warmup, ALB target group,
-  // and "is the local dev server actually up" curls. Deliberately trivial and
-  // un-cached.
   app.get("/health", (c) => c.json({ ok: true }));
 
-  // Mount feature routes.
   app.route("/products", productsRoutes);
   app.route("/categories", categoriesRoutes);
   app.route("/auth", authRoutes);
 
-  // OpenAPI 3.1 document at /openapi.json. Generated from the typed routes
-  // above — single source of truth for the API contract.
   app.doc("/openapi.json", {
     openapi: "3.1.0",
     info: {
@@ -124,12 +105,10 @@ export function buildApp() {
     servers: [{ url: "http://localhost:3001", description: "Local dev" }],
   });
 
-  // Global error handler: turn any uncaught exception into an RFC 9457 Problem.
   app.onError((err, c) => {
     const log = c.get("logger") ?? baseLogger;
 
     if (err instanceof ApiError) {
-      // Known, intentional error path.
       const problem: Problem = {
         ...err.problem,
         instance: c.get("requestId"),
@@ -145,7 +124,6 @@ export function buildApp() {
     }
 
     if (err instanceof ZodError) {
-      // Zod parse error escaped a route — treat as a validation 400.
       const issues = err.issues.map((i) => ({
         path: i.path.map(String).join(".") || "(root)",
         message: i.message,
@@ -159,8 +137,6 @@ export function buildApp() {
       );
     }
 
-    // Unexpected. Never leak `err.message` — clients see a generic detail,
-    // operators see the full stack in CloudWatch.
     log.error({ err }, "unhandled_error");
     const problem: Problem = {
       ...internal().problem,

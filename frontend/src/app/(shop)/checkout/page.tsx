@@ -58,7 +58,11 @@ export default function CheckoutPage() {
   const [officeSearch, setOfficeSearch] = useState("");
   const [selectedOffice, setSelectedOffice] = useState<CourierOffice | null>(null);
 
-  const discountPercent = user?.discountPercent ?? 0;
+  // TODO(auth slice 2): the public /auth/me endpoint does not yet expose
+  // the customer discount. Backend stores it on users.customer_discount_percent
+  // and applies it at order creation. Setting to 0 here keeps the UI numbers
+  // consistent with what the backend will price the order at.
+  const discountPercent = 0;
   const discountAmount = subtotal * (discountPercent / 100);
   const total = subtotal - discountAmount;
 
