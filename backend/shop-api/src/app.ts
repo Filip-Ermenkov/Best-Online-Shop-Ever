@@ -13,6 +13,7 @@ import { currentUser, type AuthVariables } from "./middleware/auth.js";
 import { authRoutes } from "./routes/auth.js";
 import { cartRoutes } from "./routes/cart.js";
 import { categoriesRoutes } from "./routes/categories.js";
+import { ordersRoutes } from "./routes/orders.js";
 import { productsRoutes } from "./routes/products.js";
 
 /**
@@ -84,6 +85,8 @@ export function buildApp() {
   app.use("/auth/*", currentUser);
   app.use("/cart/*", currentUser);
   app.use("/cart", currentUser);
+  app.use("/orders/*", currentUser);
+  app.use("/orders", currentUser);
 
   app.get("/health", (c) => c.json({ ok: true }));
 
@@ -91,6 +94,7 @@ export function buildApp() {
   app.route("/categories", categoriesRoutes);
   app.route("/auth", authRoutes);
   app.route("/cart", cartRoutes);
+  app.route("/orders", ordersRoutes);
 
   app.doc("/openapi.json", {
     openapi: "3.1.0",

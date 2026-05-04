@@ -45,7 +45,7 @@ npm run frontend:dev
 
 # Tests:
 npm --workspace @shop/auth run test    # 16 unit tests   (pure crypto)
-npm --workspace @shop/api  run test    # 64 integration tests against shop_test DB
+npm --workspace @shop/api  run test    # 93 integration tests against shop_test DB
 ```
 
 Visit http://localhost:3000 — register a personal account, log in, click
@@ -56,6 +56,38 @@ To smoke-test the cart-on-login merge: open an incognito window, add a couple
 of products to the cart while anonymous, then log in. The previously local
 `sessionStorage` cart is silently merged into your server cart and persists
 across devices.
+
+To smoke-test order placement, the API call shape is:
+
+```http
+POST /orders
+Cookie: shop_session=…
+Idempotency-Key: <client-generated v4 UUID>
+
+{ "paymentMethod": "pay_at_store" }
+```
+
+or with delivery:
+
+```http
+POST /orders
+Cookie: shop_session=…
+Idempotency-Key: <client-generated v4 UUID>
+
+{
+  "paymentMethod": "cash_on_delivery",
+  "deliveryAddress": { "city": "София", "postalCode": "1000",
+                       "street": "бул. Витоша 25",
+                       "apartmentOrOffice": "ап. 4" },
+  "notes": "Позвънете преди доставка"
+}
+```
+
+Replaying the same `Idempotency-Key` returns the original order verbatim
+(no second order, cart left untouched). Until the email-verification slice
+lands, customers registered via the live API have a NULL `email_verified_at`
+and the order endpoint returns 403 — bump it manually with
+`UPDATE users SET email_verified_at = now() WHERE email = '…';` to test.
 
 ## Documentation
 
@@ -121,6 +153,29 @@ have to be re-derived when extending the codebase.
   `LEAST(…, 99)` for the per-line cap; bulk lookups use Drizzle's `inArray`
   rather than `ANY($1::uuid[])` because the latter can't bind a JS array
   portably across `node-pg` / `neon-http`.
+- **Transactional checkout** (`POST /orders`): one `db.transaction(async tx
+  => …)` wraps cart-read with `SELECT … FOR UPDATE OF products`, stock +
+  cart-empty validation, account-discount lookup, order header insert, line-
+  item snapshots (productCode / productName / productImageS3Key /
+  unitPriceCents — historical orders survive any later catalog edit),
+  status-history seed entry, optional `order_delivery_address` and
+  `order_corporate_data` snapshots, and cart clearing — all atomic.
+- **Idempotency-Key header** on `POST /orders` (Stripe / MDN pattern). The
+  client generates a UUID, sends it via the HTTP header; the server stores
+  it on the order row (UNIQUE) and on retry returns the original order
+  verbatim. Cross-customer collisions on the global UNIQUE map to a 409.
+  z.object schema key MUST be lowercase to match Hono's normalised header
+  payload, and `param.name` is NOT overridden in `.openapi()` — overriding
+  with a different case throws `ConflictError("Conflicting names for
+  parameter")` inside the OpenAPI generator.
+- **Public order numbers** are formatted as `YYYY-MM-NNNNN` from a single
+  Postgres sequence (`orders_order_number_seq`) plus `to_char(now() AT TIME
+  ZONE 'Europe/Sofia', 'YYYY-MM')` so the prefix matches the customer's
+  local calendar month. Sequence is monotonically increasing for life;
+  `lpad(_, 5, '0')` widens past 99,999 lifetime orders without code change.
+- **Email-verified gate on order placement**: customers with a NULL
+  `email_verified_at` get a 403 `/problems/email-not-verified`. Browsing
+  and cart building stay unrestricted.
 
 ## Status
 
@@ -137,8 +192,16 @@ have to be re-derived when extending the codebase.
     (gated by `requireAuth`; live-price hydration; silent-sum merge on
     duplicate; per-line cap of 99; out-of-stock add → 409; soft-deleted
     products excluded from reads)
+  - `/orders`, `/orders/:orderNumber` (gated by `requireAuth`; place-order
+    flow with `Idempotency-Key` header; transactional consume-cart-into-
+    order with `SELECT … FOR UPDATE OF products`; price + image snapshots
+    on `order_items`; per-customer scoping on list/detail returns generic
+    404 for someone else's order — no enumeration; `cash_on_delivery`
+    requires `deliveryAddress`, `pay_at_store` does not; corporate accounts
+    snapshot `order_corporate_data`; email-verified gate)
   - `/health`, `/openapi.json`
-  - 64 integration tests (22 catalog + 16 auth + 26 cart) against `shop_test` DB.
+  - 93 integration tests (15 catalog + 7 categories + 16 auth + 30 cart +
+    25 orders) against `shop_test` DB.
   - `PublicUser` response includes `fullName` resolved from
     `customer_profiles` / `corporate_profiles` (null for admins).
 
@@ -168,7 +231,9 @@ have to be re-derived when extending the codebase.
     `/checkout/review` migrated from the old decimal-`price` shape to the
     server's `priceCents` shape. New `formatCents` helper in `lib/utils.ts`.
 - **Still on mock data**: product detail pages, search, account orders,
-  admin product/category/order/customer screens. These are next slices.
+  checkout submit (UI exists for cart/review but does NOT yet call the new
+  `POST /orders` endpoint), admin product/category/order/customer screens.
+  These are next slices.
 
 ### Deferred (auth-adjacent, not in this slice)
 
@@ -188,12 +253,25 @@ have to be re-derived when extending the codebase.
 
 ### Recommended next slices
 
-- **Order placement** (`POST /orders`). Cart slice now unblocks this; consume
-  the live-hydrated cart, validate stock at submit-time, snapshot prices into
-  `order_items`, and clear the cart inside the same transaction.
-- **CI on GitHub Actions** as above — protects the 64 backend tests as the
-  surface keeps growing.
+- **Frontend checkout submit** — the only piece remaining to make the user-
+  facing flow end-to-end real. `/checkout/review` already collects the
+  payment method, address, notes; wire its submit handler to `POST /orders`
+  with a freshly-minted `crypto.randomUUID()` `Idempotency-Key`, surface
+  RFC 9457 errors (cart-empty 422, out-of-stock 409, email-not-verified
+  403) into the existing Bulgarian error banner, then route to a new
+  `/account/orders/:orderNumber` confirmation page.
+- **CI on GitHub Actions** — `pull_request` + `push to main` running
+  `typecheck` + `auth:test` + `api:test` against a service-container
+  Postgres. Protects the 93 backend tests as the surface keeps growing.
 - **Email + verification** (SES wiring + 24h tokens + rate-limited resend).
   Closes the registration enumeration loop and unblocks password reset.
-- **Real product detail / search / orders pages** — biggest visible-progress
-  slice; replaces the remaining mock data.
+  Also lifts the manual `UPDATE users SET email_verified_at = now()`
+  workaround currently required to test order placement.
+- **Real product detail / search / account orders pages** — biggest
+  visible-progress slice; replaces the remaining mock data. The orders
+  detail page can already hit `GET /orders/:orderNumber`.
+- **Production driver swap for orders** — `db.transaction()` on Drizzle's
+  `neon-http` simulates batching rather than holding a connection, so
+  `SELECT FOR UPDATE` locks won't survive between sub-statements in
+  production. Either swap the orders Lambda to `neon-serverless`
+  (WebSocket) or rely on an additional optimistic check.
