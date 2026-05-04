@@ -11,6 +11,7 @@ import { logger as baseLogger, requestLogger } from "./lib/logger.js";
 import { validationHook } from "./lib/validation-hook.js";
 import { currentUser, type AuthVariables } from "./middleware/auth.js";
 import { authRoutes } from "./routes/auth.js";
+import { cartRoutes } from "./routes/cart.js";
 import { categoriesRoutes } from "./routes/categories.js";
 import { productsRoutes } from "./routes/products.js";
 
@@ -59,9 +60,6 @@ export function buildApp() {
   app.use(
     "*",
     cors({
-      // Origin echo from the allowlist. Returning `null` from the function
-      // makes Hono drop the Access-Control-Allow-Origin header entirely,
-      // which is exactly what we want for cross-origin rejections.
       origin: (origin) => {
         if (!origin) return undefined;
         return env.CORS_ORIGINS.includes(origin) ? origin : null;
@@ -69,10 +67,6 @@ export function buildApp() {
       allowMethods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
       allowHeaders: ["Content-Type", "Authorization", "If-None-Match", "X-Request-Id"],
       exposeHeaders: ["ETag", "X-Request-Id"],
-      // Required for the browser to send & receive the session cookie on
-      // cross-origin requests. Combined with the explicit-origin function
-      // above (no wildcard) per the CORS-with-credentials rules. The
-      // frontend MUST also pass `credentials: "include"` on its fetches.
       credentials: true,
       maxAge: 600,
     }),
@@ -88,12 +82,15 @@ export function buildApp() {
   app.use("/categories/*", currentUser);
   app.use("/categories", currentUser);
   app.use("/auth/*", currentUser);
+  app.use("/cart/*", currentUser);
+  app.use("/cart", currentUser);
 
   app.get("/health", (c) => c.json({ ok: true }));
 
   app.route("/products", productsRoutes);
   app.route("/categories", categoriesRoutes);
   app.route("/auth", authRoutes);
+  app.route("/cart", cartRoutes);
 
   app.doc("/openapi.json", {
     openapi: "3.1.0",
@@ -138,6 +135,14 @@ export function buildApp() {
     }
 
     log.error({ err }, "unhandled_error");
+    // Pino's level is "silent" in the test runner, which would otherwise
+    // swallow the exception. Mirror to stderr in non-production so failing
+    // tests / `npm run dev` interactive sessions surface the root cause.
+    // Production logs the same payload via pino on Lambda — no double-write.
+    if (process.env.NODE_ENV !== "production") {
+      // eslint-disable-next-line no-console
+      console.error("[unhandled_error]", err);
+    }
     const problem: Problem = {
       ...internal().problem,
       instance: c.get("requestId"),

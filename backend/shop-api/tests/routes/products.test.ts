@@ -22,12 +22,30 @@ beforeAll(() => {
  * scale.
  */
 
+/**
+ * Typed-`any` JSON helper. The Hono `app.request()` typing returns
+ * `Response | Promise<Response>` and `res.json()` returns `Promise<unknown>`,
+ * neither of which composes nicely with the `expect(body.items[0]....)`
+ * assertion style this suite uses. Casting at the helper edge is the smallest
+ * intervention; assertion-side typing adds a lot of boilerplate for no real
+ * coverage benefit at this layer.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function reqJson(path: string, init?: RequestInit): Promise<any> {
+  const res = await app.request(path, init);
+  return res.json();
+}
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function readJson(res: Response): Promise<any> {
+  return res.json();
+}
+
 describe("GET /products", () => {
   it("returns an empty page when there are no products", async () => {
     const res = await app.request("/products");
     expect(res.status).toBe(200);
     expect(res.headers.get("cache-control")).toMatch(/s-maxage=300/);
-    const body = await res.json();
+    const body = await readJson(res);
     expect(body).toEqual({ items: [], nextCursor: null });
   });
 
@@ -35,7 +53,7 @@ describe("GET /products", () => {
     await seedSmallCatalog();
     const res = await app.request("/products");
     expect(res.status).toBe(200);
-    const body = await res.json();
+    const body = await readJson(res);
     expect(body.items.map((p: { slug: string }) => p.slug)).toEqual([
       "demo-headphones",
       "demo-watch",
@@ -63,16 +81,12 @@ describe("GET /products", () => {
 
   it("supports sort=price_asc and sort=price_desc", async () => {
     await seedSmallCatalog();
-    const asc = await app
-      .request("/products?sort=price_asc")
-      .then((r) => r.json());
+    const asc = await reqJson("/products?sort=price_asc");
     expect(asc.items.map((p: { priceCents: number }) => p.priceCents)).toEqual([
       5999, 9999, 24999,
     ]);
 
-    const desc = await app
-      .request("/products?sort=price_desc")
-      .then((r) => r.json());
+    const desc = await reqJson("/products?sort=price_desc");
     expect(desc.items.map((p: { priceCents: number }) => p.priceCents)).toEqual([
       24999, 9999, 5999,
     ]);
@@ -81,7 +95,7 @@ describe("GET /products", () => {
   it("filters by inStock=true", async () => {
     await seedSmallCatalog();
     const res = await app.request("/products?inStock=true");
-    const body = await res.json();
+    const body = await readJson(res);
     expect(body.items.map((p: { slug: string }) => p.slug)).toEqual([
       "demo-headphones",
       "demo-watch",
@@ -92,27 +106,19 @@ describe("GET /products", () => {
     const { cat } = await seedSmallCatalog();
     expect(cat.slug).toBe("demo-cat");
 
-    const inCat = await app
-      .request("/products?categorySlug=demo-cat")
-      .then((r) => r.json());
+    const inCat = await reqJson("/products?categorySlug=demo-cat");
     expect(inCat.items).toHaveLength(3);
 
-    const empty = await app
-      .request("/products?categorySlug=does-not-exist")
-      .then((r) => r.json());
+    const empty = await reqJson("/products?categorySlug=does-not-exist");
     expect(empty).toEqual({ items: [], nextCursor: null });
   });
 
   it("performs free-text search over name and code (ILIKE)", async () => {
     await seedSmallCatalog();
-    const a = await app
-      .request("/products?q=watch")
-      .then((r) => r.json());
+    const a = await reqJson("/products?q=watch");
     expect(a.items.map((p: { slug: string }) => p.slug)).toEqual(["demo-watch"]);
 
-    const b = await app
-      .request("/products?q=DEMO-003")
-      .then((r) => r.json());
+    const b = await reqJson("/products?q=DEMO-003");
     expect(b.items.map((p: { slug: string }) => p.slug)).toEqual(["demo-drill"]);
   });
 
@@ -139,7 +145,7 @@ describe("GET /products", () => {
           : `/products?limit=2&cursor=${encodeURIComponent(cursor)}`;
       const res = await app.request(url);
       expect(res.status).toBe(200);
-      const body = await res.json();
+      const body = await readJson(res);
       for (const p of body.items as { slug: string }[]) seen.push(p.slug);
       cursor = body.nextCursor;
     }
@@ -149,9 +155,7 @@ describe("GET /products", () => {
 
   it("rejects a cursor created for a different sort", async () => {
     await seedSmallCatalog();
-    const page1 = await app
-      .request("/products?sort=newest&limit=1")
-      .then((r) => r.json());
+    const page1 = await reqJson("/products?sort=newest&limit=1");
     expect(page1.nextCursor).toBeTruthy();
 
     const res = await app.request(
@@ -159,7 +163,7 @@ describe("GET /products", () => {
     );
     expect(res.status).toBe(400);
     expect(res.headers.get("content-type")).toMatch(/application\/problem\+json/);
-    const problem = await res.json();
+    const problem = await readJson(res);
     expect(problem).toMatchObject({ status: 400, title: "Bad Request" });
   });
 
@@ -167,7 +171,7 @@ describe("GET /products", () => {
     const res = await app.request("/products?limit=9999");
     expect(res.status).toBe(400);
     expect(res.headers.get("content-type")).toMatch(/application\/problem\+json/);
-    const problem = await res.json();
+    const problem = await readJson(res);
     expect(problem).toMatchObject({
       status: 400,
       title: "Bad Request",
@@ -217,7 +221,7 @@ describe("GET /products/:slug", () => {
 
     const res = await app.request("/products/single-product");
     expect(res.status).toBe(200);
-    const body = await res.json();
+    const body = await readJson(res);
     expect(body.slug).toBe("single-product");
     expect(body.priceCents).toBe(12345);
     expect(body.description).toBe("Detailed description.");
@@ -233,7 +237,7 @@ describe("GET /products/:slug", () => {
     const res = await app.request("/products/no-such-thing");
     expect(res.status).toBe(404);
     expect(res.headers.get("content-type")).toMatch(/application\/problem\+json/);
-    const problem = await res.json();
+    const problem = await readJson(res);
     expect(problem.title).toBe("Not Found");
     expect(problem.detail).toMatch(/no-such-thing/);
   });
@@ -265,14 +269,14 @@ describe("GET /health & /openapi.json", () => {
   it("/health returns 200 ok", async () => {
     const res = await app.request("/health");
     expect(res.status).toBe(200);
-    const body = await res.json();
+    const body = await readJson(res);
     expect(body).toEqual({ ok: true });
   });
 
   it("/openapi.json returns a 3.1 spec with the products routes", async () => {
     const res = await app.request("/openapi.json");
     expect(res.status).toBe(200);
-    const spec = await res.json();
+    const spec = await readJson(res);
     expect(spec.openapi).toMatch(/^3\.1/);
     expect(spec.paths).toHaveProperty("/products");
     expect(spec.paths).toHaveProperty("/products/{slug}");

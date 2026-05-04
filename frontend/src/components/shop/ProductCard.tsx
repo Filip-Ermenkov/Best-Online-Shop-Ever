@@ -7,6 +7,7 @@ import { Product } from "@/lib/types";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { useCart } from "@/contexts/CartContext";
+import { MAX_QUANTITY_PER_LINE } from "@/lib/cart/types";
 import { formatPrice, cn } from "@/lib/utils";
 import { getCategoryAncestors } from "@/lib/mock-data/categories";
 
@@ -16,7 +17,7 @@ interface ProductCardProps {
 }
 
 export default function ProductCard({ product, className }: ProductCardProps) {
-  const { addItem } = useCart();
+  const { addGuestItem, addItem, isAuthenticated } = useCart();
   const [quantity, setQuantity] = useState(1);
   const [added, setAdded] = useState(false);
   const isOutOfStock = product.stockStatus === "out_of_stock";
@@ -31,15 +32,28 @@ export default function ProductCard({ product, className }: ProductCardProps) {
     e.preventDefault();
     e.stopPropagation();
     if (isOutOfStock) return;
-    addItem({
-      productId: product.id,
-      name: product.name,
-      code: product.code,
-      price: product.price,
-      imageUrl: product.images[0]?.url ?? "",
-      quantity,
-      stockStatus: product.stockStatus,
-    });
+    // The card can serve both anonymous (use addGuestItem with snapshot) and
+    // authenticated (server hydrates everything from productId) users.
+    if (isAuthenticated) {
+      void addItem(product.id, quantity);
+    } else {
+      addGuestItem({
+        productId: product.id,
+        quantity,
+        snapshot: {
+          slug: product.slug,
+          code: product.code,
+          name: product.name,
+          // mock data is in EUR (decimal); convert to cents for the cart wire shape
+          priceCents: Math.round(product.price * 100),
+          currency: product.currency,
+          stockStatus: product.stockStatus,
+          image: product.images[0]
+            ? { url: product.images[0].url, alt: product.images[0].alt }
+            : null,
+        },
+      });
+    }
     setAdded(true);
     setTimeout(() => setAdded(false), 1800);
   };
@@ -47,7 +61,10 @@ export default function ProductCard({ product, className }: ProductCardProps) {
   const handleQuantityChange = (delta: number, e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    setQuantity((q) => Math.min(Math.max(1, q + delta), product.stockQuantity || 99));
+    // The DB does not track stock quantity (only stockStatus). Cap at the
+    // server's per-line ceiling so the stepper can't suggest a value the
+    // server will clamp anyway.
+    setQuantity((q) => Math.min(Math.max(1, q + delta), MAX_QUANTITY_PER_LINE));
   };
 
   return (

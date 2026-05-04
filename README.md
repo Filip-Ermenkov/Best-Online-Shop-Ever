@@ -45,12 +45,17 @@ npm run frontend:dev
 
 # Tests:
 npm --workspace @shop/auth run test    # 16 unit tests   (pure crypto)
-npm --workspace @shop/api  run test    # 38 integration tests against shop_test DB
+npm --workspace @shop/api  run test    # 64 integration tests against shop_test DB
 ```
 
 Visit http://localhost:3000 — register a personal account, log in, click
 through to `/account/profile`. The session cookie is set by the API and the
 header re-renders with your name once `/auth/me` resolves.
+
+To smoke-test the cart-on-login merge: open an incognito window, add a couple
+of products to the cart while anonymous, then log in. The previously local
+`sessionStorage` cart is silently merged into your server cart and persists
+across devices.
 
 ## Documentation
 
@@ -106,6 +111,16 @@ have to be re-derived when extending the codebase.
   forwards the session cookie via `next/headers` to `GET /auth/me`. Initial
   user is passed into the client `AuthProvider` so first paint already shows
   the logged-in header — no auth flicker.
+- **Two-mode cart**: `sessionStorage` for guests (per-tab, dies with the
+  tab — matches the spec), server-persisted for authenticated users. On
+  login, `POST /cart/merge` silently sums the guest cart into the server
+  cart (matching the Amazon/Target/Etsy/Walmart pattern). Cart reads always
+  hydrate from the live `products` table — price and stock are never
+  snapshotted on the cart row, so the cart always reflects today's catalog.
+  Item-level upserts use raw SQL (`INSERT … ON CONFLICT DO UPDATE`) with
+  `LEAST(…, 99)` for the per-line cap; bulk lookups use Drizzle's `inArray`
+  rather than `ANY($1::uuid[])` because the latter can't bind a JS array
+  portably across `node-pg` / `neon-http`.
 
 ## Status
 
@@ -118,8 +133,12 @@ have to be re-derived when extending the codebase.
 - **`@shop/api`** — exposes:
   - `/products`, `/categories` (read API, ETag, cursor pagination)
   - `/auth/register`, `/auth/login`, `/auth/logout`, `/auth/me`
+  - `/cart`, `/cart/items`, `/cart/items/:productId`, `/cart/merge`
+    (gated by `requireAuth`; live-price hydration; silent-sum merge on
+    duplicate; per-line cap of 99; out-of-stock add → 409; soft-deleted
+    products excluded from reads)
   - `/health`, `/openapi.json`
-  - 38 integration tests (22 catalog + 16 auth) against `shop_test` DB.
+  - 64 integration tests (22 catalog + 16 auth + 26 cart) against `shop_test` DB.
   - `PublicUser` response includes `fullName` resolved from
     `customer_profiles` / `corporate_profiles` (null for admins).
 
@@ -136,11 +155,20 @@ have to be re-derived when extending the codebase.
     `?next=` honour with open-redirect protection.
   - `app/admin/layout.tsx` — server component enforcing `role === "admin"`.
   - `proxy.ts` — Next.js 16 thin-proxy gating `/account/*` and `/admin/*`.
+- **Real cart wired end-to-end** to `@shop/api`:
+  - `lib/cart/client.ts` — typed REST client mirroring the auth-client
+    pattern; maps RFC 9457 problems into a `CartError` discriminated union
+    (`unauthenticated`, `not_found`, `out_of_stock`, `validation`, `network`,
+    `unknown`).
+  - `contexts/CartContext.tsx` — two-mode provider: anonymous renders from
+    `sessionStorage` snapshots, authenticated round-trips every mutation
+    against the server. Auth-status transitions trigger merge-on-login and
+    drop-on-logout. Optimistic UI for set-quantity / remove with rollback.
+  - `CartDrawer`, `ProductCard`, `ProductDetailView`, `/checkout`,
+    `/checkout/review` migrated from the old decimal-`price` shape to the
+    server's `priceCents` shape. New `formatCents` helper in `lib/utils.ts`.
 - **Still on mock data**: product detail pages, search, account orders,
   admin product/category/order/customer screens. These are next slices.
-- **Still localStorage-only**: cart. Cart-on-server slice is the planned
-  follow-up — schema is ready (`cart_items` keyed by anonymous session token,
-  merge on login).
 
 ### Deferred (auth-adjacent, not in this slice)
 
@@ -157,3 +185,15 @@ have to be re-derived when extending the codebase.
 - GitHub Actions workflows: not started. CI on `pull_request` + `push to main`
   running `typecheck` + `auth:test` + `api:test` against a service-container
   Postgres is the recommended next foundational slice.
+
+### Recommended next slices
+
+- **Order placement** (`POST /orders`). Cart slice now unblocks this; consume
+  the live-hydrated cart, validate stock at submit-time, snapshot prices into
+  `order_items`, and clear the cart inside the same transaction.
+- **CI on GitHub Actions** as above — protects the 64 backend tests as the
+  surface keeps growing.
+- **Email + verification** (SES wiring + 24h tokens + rate-limited resend).
+  Closes the registration enumeration loop and unblocks password reset.
+- **Real product detail / search / orders pages** — biggest visible-progress
+  slice; replaces the remaining mock data.

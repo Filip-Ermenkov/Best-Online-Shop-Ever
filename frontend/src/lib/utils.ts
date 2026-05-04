@@ -13,6 +13,16 @@ export function formatPrice(amount: number): string {
   }).format(amount);
 }
 
+/**
+ * Format an integer-cents value as a localised price string.
+ *
+ * The cart slice (and everything downstream of the API) deals in priceCents
+ * to avoid floating-point drift across reducers. UI rendering happens here.
+ */
+export function formatCents(amountCents: number): string {
+  return formatPrice(amountCents / 100);
+}
+
 export function formatDate(dateString: string): string {
   return new Intl.DateTimeFormat("bg-BG", {
     day: "2-digit",

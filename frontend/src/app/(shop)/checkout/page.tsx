@@ -10,7 +10,7 @@ import { ButtonLink } from "@/components/ui/button-link";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
-import { formatPrice, cn } from "@/lib/utils";
+import { formatCents, cn } from "@/lib/utils";
 import { ShoppingBag, Truck, Store, Banknote, MapPin, Search } from "lucide-react";
 import { getOfficesByCompany, CourierOffice } from "@/lib/mock-data/courier-offices";
 
@@ -40,12 +40,18 @@ function RadioOption({
 
 export default function CheckoutPage() {
   const router = useRouter();
-  const { items, subtotal, itemCount } = useCart();
+  const { items, subtotalCents, itemCount } = useCart();
   const { user } = useAuth();
 
+  // The new AuthUser shape has fullName (single field) — split on first space
+  // for the legacy first/last UX. This is a UI concern; the corporate-account
+  // form variant gets a proper update when that slice ships.
+  const [firstFromName, ...restFromName] = (user?.fullName ?? "").split(/\s+/);
+  const lastFromName = restFromName.join(" ");
+
   const [form, setForm] = useState<CheckoutFormData>({
-    firstName: user?.firstName ?? "",
-    lastName: user?.lastName ?? "",
+    firstName: firstFromName ?? "",
+    lastName: lastFromName ?? "",
     email: user?.email ?? "",
     phone: "",
     deliveryMethod: "courier",
@@ -63,8 +69,8 @@ export default function CheckoutPage() {
   // and applies it at order creation. Setting to 0 here keeps the UI numbers
   // consistent with what the backend will price the order at.
   const discountPercent = 0;
-  const discountAmount = subtotal * (discountPercent / 100);
-  const total = subtotal - discountAmount;
+  const discountAmountCents = Math.round(subtotalCents * (discountPercent / 100));
+  const totalCents = subtotalCents - discountAmountCents;
 
   const offices = form.courierCompany
     ? getOfficesByCompany(form.courierCompany).filter((o) =>
@@ -281,7 +287,7 @@ export default function CheckoutPage() {
               {items.map((item) => (
                 <div key={item.productId} className="flex justify-between gap-2 text-sm">
                   <span className="truncate text-muted-foreground">{item.name} × {item.quantity}</span>
-                  <span className="flex-shrink-0 font-medium">{formatPrice(item.price * item.quantity)}</span>
+                  <span className="flex-shrink-0 font-medium">{formatCents(item.priceCents * item.quantity)}</span>
                 </div>
               ))}
             </div>
@@ -289,19 +295,19 @@ export default function CheckoutPage() {
             <div className="space-y-1 text-sm">
               <div className="flex justify-between">
                 <span className="text-muted-foreground">Сума</span>
-                <span>{formatPrice(subtotal)}</span>
+                <span>{formatCents(subtotalCents)}</span>
               </div>
               {discountPercent > 0 && (
                 <div className="flex justify-between text-green-600">
                   <span>Отстъпка ({discountPercent}%)</span>
-                  <span>- {formatPrice(discountAmount)}</span>
+                  <span>- {formatCents(discountAmountCents)}</span>
                 </div>
               )}
             </div>
             <Separator />
             <div className="flex justify-between font-bold">
               <span>Общо</span>
-              <span className="text-primary">{formatPrice(total)}</span>
+              <span className="text-primary">{formatCents(totalCents)}</span>
             </div>
           </div>
           <Button

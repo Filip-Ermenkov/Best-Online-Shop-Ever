@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useState } from "react";
 import { ShoppingCart, Minus, Plus } from "lucide-react";
 import { useCart } from "@/contexts/CartContext";
+import { MAX_QUANTITY_PER_LINE } from "@/lib/cart/types";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -19,10 +20,13 @@ interface Props {
 }
 
 export default function ProductDetailView({ product, categoryChain }: Props) {
-  const { addItem } = useCart();
+  const { addGuestItem, addItem, isAuthenticated } = useCart();
   const [quantity, setQuantity] = useState(1);
   const [activeImage, setActiveImage] = useState(0);
   const [added, setAdded] = useState(false);
+  // Selected variants are local UI state for now. The current schema does not
+  // model variants per cart line — when variant-aware cart lines land they'll
+  // get their own (productId, variantId) compound key on cart_items.
   const [selectedVariants, setSelectedVariants] = useState<Record<string, string>>({});
 
   const isOutOfStock = product.stockStatus === "out_of_stock";
@@ -49,16 +53,27 @@ export default function ProductDetailView({ product, categoryChain }: Props) {
 
   function handleAddToCart() {
     if (isOutOfStock) return;
-    addItem({
-      productId: product.id,
-      name: product.name,
-      code: product.code,
-      price: product.price,
-      imageUrl: product.images[0]?.url ?? "",
-      quantity,
-      stockStatus: product.stockStatus,
-      selectedVariants: Object.keys(selectedVariants).length > 0 ? selectedVariants : undefined,
-    });
+    // Variants are NOT yet propagated to the cart line — see TODO above.
+    // Schema work for (productId, variantId) cart key is a separate slice.
+    if (isAuthenticated) {
+      void addItem(product.id, quantity);
+    } else {
+      addGuestItem({
+        productId: product.id,
+        quantity,
+        snapshot: {
+          slug: product.slug,
+          code: product.code,
+          name: product.name,
+          priceCents: Math.round(product.price * 100),
+          currency: product.currency,
+          stockStatus: product.stockStatus,
+          image: product.images[0]
+            ? { url: product.images[0].url, alt: product.images[0].alt }
+            : null,
+        },
+      });
+    }
     setAdded(true);
     setTimeout(() => setAdded(false), 2000);
   }
@@ -201,7 +216,7 @@ export default function ProductDetailView({ product, categoryChain }: Props) {
                 </button>
                 <span className="w-12 text-center font-medium">{quantity}</span>
                 <button
-                  onClick={() => setQuantity((q) => Math.min(product.stockQuantity, q + 1))}
+                  onClick={() => setQuantity((q) => Math.min(MAX_QUANTITY_PER_LINE, q + 1))}
                   className="w-10 h-10 flex items-center justify-center hover:bg-muted transition-colors rounded-r-md"
                   aria-label="Увеличи количество"
                 >

@@ -15,20 +15,33 @@ import { badRequest } from "./errors.js";
  *   shape and our RFC 9457 contract gets violated.
  *
  *   Wiring this from one place keeps the two in lock-step.
+ *
+ * Type signature note:
+ *
+ *   `defaultHook` on `OpenAPIHono` is internally typed against Hono's
+ *   `Hook<any, …>`, which accepts a `ZodError<unknown>`. Zod 4's
+ *   `$ZodIssue.path` is `PropertyKey[]` (it can include `symbol`), while
+ *   Hono's older internal definition expects `(string | number)[]`. A
+ *   strictly-typed hook signature won't structurally match either side
+ *   cleanly. Rather than chase the moving target across Zod / Hono
+ *   versions, accept `unknown` and use a small runtime extractor — the
+ *   payload shape is well-known at runtime even when the static types
+ *   don't agree.
  */
-export const validationHook = (
-  result: { success: true; data: unknown } | { success: false; error: { issues: { path: (string | number)[]; message: string }[] } },
-  c: Context,
-) => {
-  if (!result.success) {
-    const issues = result.error.issues.map((i) => ({
-      path: i.path.map(String).join(".") || "(root)",
-      message: i.message,
-    }));
-    const problem = badRequest("Request validation failed", issues).problem;
-    return c.json(problem, 400, {
-      "Content-Type": "application/problem+json; charset=utf-8",
-    });
-  }
-  return undefined;
+export const validationHook = (result: unknown, c: Context) => {
+  const r = result as {
+    success: boolean;
+    error?: { issues?: { path?: PropertyKey[]; message?: string }[] };
+  };
+  if (r.success) return undefined;
+
+  const rawIssues = r.error?.issues ?? [];
+  const issues = rawIssues.map((i) => ({
+    path: (i.path ?? []).map((p) => String(p)).join(".") || "(root)",
+    message: i.message ?? "Invalid value",
+  }));
+  const problem = badRequest("Request validation failed", issues).problem;
+  return c.json(problem, 400, {
+    "Content-Type": "application/problem+json; charset=utf-8",
+  });
 };

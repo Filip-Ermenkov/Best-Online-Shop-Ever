@@ -3,12 +3,11 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useCart } from "@/contexts/CartContext";
-import { useAuth } from "@/contexts/AuthContext";
 import { CheckoutFormData } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { ButtonLink } from "@/components/ui/button-link";
 import { Separator } from "@/components/ui/separator";
-import { formatPrice } from "@/lib/utils";
+import { formatCents } from "@/lib/utils";
 import { CheckCircle, ArrowLeft, Truck, Store, Banknote } from "lucide-react";
 import { getOfficeById } from "@/lib/mock-data/courier-offices";
 
@@ -18,8 +17,10 @@ const courierLabels: Record<string, string> = { econt: "Еконт", speedy: "С
 
 export default function CheckoutReviewPage() {
   const router = useRouter();
-  const { items, subtotal, clearCart } = useCart();
-  const { user } = useAuth();
+  const { items, subtotalCents, clearCart } = useCart();
+  // Note: useAuth is intentionally not consumed here — the review screen
+  // displays whatever was captured on the previous step. When the corporate
+  // account slice lands, this is the place to surface VAT identifiers etc.
   const [formData, setFormData] = useState<CheckoutFormData | null>(null);
   const [placing, setPlacing] = useState(false);
 
@@ -34,17 +35,18 @@ export default function CheckoutReviewPage() {
   // and applies it at order creation. Setting to 0 here keeps the UI numbers
   // consistent with what the backend will price the order at.
   const discountPercent = 0;
-  const discountAmount = subtotal * (discountPercent / 100);
-  const total = subtotal - discountAmount;
+  const discountAmountCents = Math.round(subtotalCents * (discountPercent / 100));
+  const totalCents = subtotalCents - discountAmountCents;
 
   if (!formData) return null;
 
   async function handleConfirm() {
     setPlacing(true);
-    // Simulate API call
+    // Simulate API call. The real /orders endpoint is a later slice; until
+    // then we just generate an opaque ID and clear the cart.
     await new Promise((r) => setTimeout(r, 1200));
     const orderId = `ORD-2026-${String(Date.now()).slice(-4)}`;
-    clearCart();
+    await clearCart();
     sessionStorage.removeItem("checkoutData");
     router.push(`/checkout/confirmation?orderId=${orderId}`);
   }
@@ -119,14 +121,18 @@ export default function CheckoutReviewPage() {
               <div key={item.productId} className="flex items-center gap-3">
                 <div className="w-12 h-12 flex-shrink-0 rounded bg-muted overflow-hidden">
                   {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img src={item.imageUrl} alt={item.name} className="w-full h-full object-cover" />
+                  <img
+                    src={item.image?.url ?? "https://placehold.co/200x200/e2e8f0/94a3b8?text=N/A"}
+                    alt={item.image?.alt ?? item.name}
+                    className="w-full h-full object-cover"
+                  />
                 </div>
                 <div className="flex-1 min-w-0">
                   <p className="text-sm font-medium truncate">{item.name}</p>
                   <p className="text-xs text-muted-foreground">{item.code}</p>
                 </div>
                 <div className="text-right text-sm">
-                  <p className="font-semibold">{formatPrice(item.price * item.quantity)}</p>
+                  <p className="font-semibold">{formatCents(item.priceCents * item.quantity)}</p>
                   <p className="text-muted-foreground">{item.quantity} бр.</p>
                 </div>
               </div>
@@ -136,19 +142,19 @@ export default function CheckoutReviewPage() {
           <div className="space-y-1 text-sm">
             <div className="flex justify-between">
               <span className="text-muted-foreground">Сума</span>
-              <span>{formatPrice(subtotal)}</span>
+              <span>{formatCents(subtotalCents)}</span>
             </div>
             {discountPercent > 0 && (
               <div className="flex justify-between text-green-600">
                 <span>Отстъпка ({discountPercent}%)</span>
-                <span>- {formatPrice(discountAmount)}</span>
+                <span>- {formatCents(discountAmountCents)}</span>
               </div>
             )}
           </div>
           <Separator className="my-3" />
           <div className="flex justify-between font-bold text-base">
             <span>Общо</span>
-            <span className="text-primary">{formatPrice(total)}</span>
+            <span className="text-primary">{formatCents(totalCents)}</span>
           </div>
         </div>
 
