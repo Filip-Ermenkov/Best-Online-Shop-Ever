@@ -57,7 +57,15 @@ of products to the cart while anonymous, then log in. The previously local
 `sessionStorage` cart is silently merged into your server cart and persists
 across devices.
 
-To smoke-test order placement, the API call shape is:
+To smoke-test order placement, you can now drive the whole thing through the
+UI: register and log in, add a couple of products to the cart, walk through
+`/checkout` → `/checkout/review`, click **Потвърди поръчката**, land on
+`/account/orders/{orderNumber}?confirm=1` with a green confirmation banner,
+and see your order appear at `/account/orders`. The browser issues an
+`OPTIONS` preflight for `Idempotency-Key` (a non-simple header) before the
+`POST` — the API's CORS allowlist explicitly includes it.
+
+If you'd rather drive the API directly, the call shape is:
 
 ```http
 POST /orders
@@ -134,8 +142,11 @@ have to be re-derived when extending the codebase.
   `requireAuth` (gate). `currentUser` runs on `/products/*`, `/categories/*`,
   `/auth/*`. `/health` is intentionally excluded.
 - **CORS with credentials** explicitly enabled. Frontend uses
-  `credentials: "include"` on every `/auth/*` fetch; API echoes the origin
-  from an allowlist (no wildcard, which is incompatible with credentials).
+  `credentials: "include"` on every `/auth/*`, `/cart/*`, `/orders/*` fetch;
+  API echoes the origin from an allowlist (no wildcard, which is incompatible
+  with credentials). `allowHeaders` includes `Idempotency-Key` — a non-simple
+  request header forces an `OPTIONS` preflight, and the server has to
+  advertise the header explicitly or the browser blocks the actual `POST`.
 - **Next.js 16 thin proxy** (`frontend/src/proxy.ts`, formerly `middleware.ts`):
   cookie-presence check only, never validates the token. Real auth happens
   in pages and Server Components.
@@ -230,10 +241,33 @@ have to be re-derived when extending the codebase.
   - `CartDrawer`, `ProductCard`, `ProductDetailView`, `/checkout`,
     `/checkout/review` migrated from the old decimal-`price` shape to the
     server's `priceCents` shape. New `formatCents` helper in `lib/utils.ts`.
-- **Still on mock data**: product detail pages, search, account orders,
-  checkout submit (UI exists for cart/review but does NOT yet call the new
-  `POST /orders` endpoint), admin product/category/order/customer screens.
-  These are next slices.
+- **Real order placement wired end-to-end** to `@shop/api`:
+  - `lib/orders/types.ts` — wire DTOs (`OrderDTO`, `OrderItem`,
+    `OrderDeliveryAddress`, `OrderCorporateData`) and an `OrderError`
+    discriminated union with one variant per RFC 9457 `type` the backend
+    can return (`validation`, `unauthenticated`, `email_not_verified`,
+    `out_of_stock`, `idempotency_conflict`, `cart_empty`, `profile_required`,
+    `not_found`, `network`, `unknown`). The submit handler exhaustively
+    branches and TS flags any new variant.
+  - `lib/orders/client.ts` — typed REST client (`placeOrder`, `fetchOrders`,
+    `fetchOrder`) sending `credentials: "include"` and the
+    `Idempotency-Key` header on placement.
+  - `app/(shop)/checkout/review/page.tsx` — submit handler generates one
+    `crypto.randomUUID()` Idempotency-Key per page mount, kept in a
+    `useRef` so retries reuse it. Regenerates only on the rare
+    `/problems/idempotency-conflict` 409. Translates every error into
+    Bulgarian copy. Calls `clearCart()` after success so the cart drawer
+    doesn't show stale lines until the next reload. Routes to
+    `/account/orders/{orderNumber}?confirm=1` on 201.
+  - `app/(shop)/account/orders/page.tsx` — real `GET /orders`, skeleton
+    loading, login bounce.
+  - `app/(shop)/account/orders/[id]/page.tsx` — real `GET /orders/:n`,
+    doubles as the post-checkout confirmation page (driven by
+    `?confirm=1`). Renders delivery address, corporate snapshot for B2B,
+    notes. Cross-user 404s render the same not-found copy as a missing
+    order — preserves the backend's enumeration-resistant contract.
+- **Still on mock data**: product detail pages, search, admin
+  product/category/order/customer screens. These are next slices.
 
 ### Deferred (auth-adjacent, not in this slice)
 
@@ -253,25 +287,23 @@ have to be re-derived when extending the codebase.
 
 ### Recommended next slices
 
-- **Frontend checkout submit** — the only piece remaining to make the user-
-  facing flow end-to-end real. `/checkout/review` already collects the
-  payment method, address, notes; wire its submit handler to `POST /orders`
-  with a freshly-minted `crypto.randomUUID()` `Idempotency-Key`, surface
-  RFC 9457 errors (cart-empty 422, out-of-stock 409, email-not-verified
-  403) into the existing Bulgarian error banner, then route to a new
-  `/account/orders/:orderNumber` confirmation page.
 - **CI on GitHub Actions** — `pull_request` + `push to main` running
   `typecheck` + `auth:test` + `api:test` against a service-container
   Postgres. Protects the 93 backend tests as the surface keeps growing.
+  Highest-leverage foundational slice now that the user-facing flow is
+  real and regressions can affect actual checkout.
 - **Email + verification** (SES wiring + 24h tokens + rate-limited resend).
   Closes the registration enumeration loop and unblocks password reset.
   Also lifts the manual `UPDATE users SET email_verified_at = now()`
   workaround currently required to test order placement.
-- **Real product detail / search / account orders pages** — biggest
-  visible-progress slice; replaces the remaining mock data. The orders
-  detail page can already hit `GET /orders/:orderNumber`.
+- **Real product detail / search pages** — replaces the remaining mock
+  catalog data on the storefront. Account orders pages are already real.
 - **Production driver swap for orders** — `db.transaction()` on Drizzle's
   `neon-http` simulates batching rather than holding a connection, so
   `SELECT FOR UPDATE` locks won't survive between sub-statements in
   production. Either swap the orders Lambda to `neon-serverless`
   (WebSocket) or rely on an additional optimistic check.
+- **14-day right-of-withdrawal button** — required by EU Directive
+  2023/2673 from June 19 2026. The `complaints` table already carries
+  a `withdrawal` enum value; only the customer-facing button + admin
+  workflow are missing.

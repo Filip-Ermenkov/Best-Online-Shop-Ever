@@ -66,7 +66,14 @@ export function buildApp() {
         return env.CORS_ORIGINS.includes(origin) ? origin : null;
       },
       allowMethods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-      allowHeaders: ["Content-Type", "Authorization", "If-None-Match", "X-Request-Id"],
+      // `Idempotency-Key` is a non-simple header (not in CORS's safelist),
+      // so the browser issues an OPTIONS preflight on any request that
+      // sets it, and the server must advertise it here explicitly. Required
+      // by POST /orders. CORS header-name matching is case-insensitive per
+      // RFC 9110 §5.1, but Hono's middleware echoes the exact string we
+      // provide — we use the canonical PascalCase the wider ecosystem
+      // (Stripe, MDN, the IETF draft) writes it as.
+      allowHeaders: ["Content-Type", "Authorization", "If-None-Match", "X-Request-Id", "Idempotency-Key"],
       exposeHeaders: ["ETag", "X-Request-Id"],
       credentials: true,
       maxAge: 600,

@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useCart } from "@/contexts/CartContext";
+import { useAuth } from "@/contexts/AuthContext";
 import { CheckoutFormData } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { ButtonLink } from "@/components/ui/button-link";
@@ -10,19 +11,57 @@ import { Separator } from "@/components/ui/separator";
 import { formatCents } from "@/lib/utils";
 import { CheckCircle, ArrowLeft, Truck, Store, Banknote } from "lucide-react";
 import { getOfficeById } from "@/lib/mock-data/courier-offices";
+import { placeOrder } from "@/lib/orders/client";
+import type { OrderError, PlaceOrderInput } from "@/lib/orders/types";
 
 const deliveryLabels = { courier: "Доставка с куриер", pickup: "Вземане от магазин" };
 const paymentLabels: Record<string, string> = { cash_on_delivery: "Наложен платеж", pay_at_store: "Плащане на място" };
 const courierLabels: Record<string, string> = { econt: "Еконт", speedy: "Спиди" };
 
+/**
+ * Generate a fresh idempotency key. Browser-native crypto.randomUUID is
+ * available in every browser since 2022 and in Node ≥ 19. Per IETF
+ * httpapi-idempotency-key (and Stripe / Adyen / MDN guidance), the *client*
+ * is responsible for generation, and a v4 UUID is the recommended shape.
+ */
+function freshIdempotencyKey(): string {
+  return crypto.randomUUID();
+}
+
 export default function CheckoutReviewPage() {
   const router = useRouter();
-  const { items, subtotalCents, clearCart } = useCart();
-  // Note: useAuth is intentionally not consumed here — the review screen
-  // displays whatever was captured on the previous step. When the corporate
-  // account slice lands, this is the place to surface VAT identifiers etc.
+  const { items, subtotalCents, isAuthenticated, clearCart } = useCart();
+  const { user, status: authStatus } = useAuth();
+
   const [formData, setFormData] = useState<CheckoutFormData | null>(null);
   const [placing, setPlacing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  /**
+   * Idempotency-Key handling.
+   *
+   * The user's "intent to place this order" is the moment they land on this
+   * review screen. We generate ONE key on first mount and store it in a
+   * ref so the value is preserved across re-renders without participating
+   * in React's render cycle. All retries — network blips, transient 5xx,
+   * even resubmits after a recoverable error — reuse the same key. The
+   * server's replay logic then guarantees we never double-charge.
+   *
+   * We regenerate on:
+   *   - The very rare /problems/idempotency-conflict 409 (cross-customer
+   *     UUID collision; ~zero with v4 but spec'd anyway), so the next
+   *     attempt has a fresh key.
+   *   - Page unmount → remount (e.g. user goes back to /checkout, edits,
+   *     and comes back) — the ref is re-initialised on mount.
+   */
+  const idempotencyKeyRef = useRef<string | null>(null);
+  if (idempotencyKeyRef.current === null) {
+    // Lazy init — runs once per mount. Avoids the "useEffect for default
+    // state" anti-pattern and the SSR mismatch that would come from
+    // running crypto.randomUUID() during render on the server. Render is
+    // only invoked client-side here ("use client"), so this is safe.
+    idempotencyKeyRef.current = freshIdempotencyKey();
+  }
 
   useEffect(() => {
     const saved = sessionStorage.getItem("checkoutData");
@@ -40,15 +79,201 @@ export default function CheckoutReviewPage() {
 
   if (!formData) return null;
 
+  /**
+   * Translate every branch of OrderError into Bulgarian copy. Centralised
+   * so the UI text stays consistent and the switch is exhaustive — TS
+   * will flag any new error variant added to the union.
+   */
+  function translateError(err: OrderError): string {
+    switch (err.kind) {
+      case "validation":
+        // Field-level errors come back as { path, message }. The most
+        // common case here is "deliveryAddress required for cash_on_delivery";
+        // we surface the first field's message if present, otherwise a
+        // generic copy. The backend's messages are English; we override
+        // for known paths and fall back to generic Bulgarian.
+        if (err.fields.some((f) => f.path === "deliveryAddress")) {
+          return "Моля, посочете адрес за доставка при наложен платеж.";
+        }
+        return err.detail ?? "Невалидни данни за поръчката. Проверете полетата и опитайте отново.";
+      case "unauthenticated":
+        return "Сесията Ви е изтекла. Моля, влезте отново.";
+      case "email_not_verified":
+        return "Моля, потвърдете email адреса си преди да направите поръчка.";
+      case "out_of_stock":
+        if (err.offendingCodes.length > 0) {
+          return `Някои продукти не са налични: ${err.offendingCodes.join(", ")}. Премахнете ги от количката и опитайте отново.`;
+        }
+        return "Някои продукти в количката не са налични. Премахнете ги и опитайте отново.";
+      case "idempotency_conflict":
+        return "Възникна конфликт при обработката. Опитайте отново.";
+      case "cart_empty":
+        return "Количката е празна. Добавете продукти, за да направите поръчка.";
+      case "profile_required":
+        return "Моля, попълнете профила си преди да направите поръчка.";
+      case "not_found":
+        // Not expected on POST /orders, listed for exhaustive type-checking.
+        return "Поръчката не е намерена.";
+      case "network":
+        return "Не може да се свърже със сървъра. Проверете интернет връзката и опитайте отново.";
+      case "unknown":
+        return err.detail ?? `Възникна неочаквана грешка (HTTP ${err.status}). Опитайте отново.`;
+    }
+  }
+
+  /**
+   * Build the POST /orders body from the in-flight CheckoutFormData.
+   * The backend validates conditional shape — deliveryAddress required iff
+   * paymentMethod === "cash_on_delivery", forbidden otherwise (well,
+   * silently dropped for "pay_at_store"). We mirror that conditional here.
+   *
+   * Address composition: the backend's DeliveryAddressInput has 4 fields
+   * (city, postalCode, street, optional apartmentOrOffice). The current
+   * checkout form has either an address (street/city/postalCode/country)
+   * or an officeId pick. For the office case we synthesise a one-line
+   * address from the office record because the backend has no
+   * "courier office" concept yet — the order_delivery_address row carries
+   * the office name + address as the street; future couriers slice will
+   * formalise this with a separate column.
+   */
+  function buildOrderInput(data: CheckoutFormData): PlaceOrderInput | null {
+    const base: PlaceOrderInput = {
+      paymentMethod: data.paymentMethod,
+    };
+
+    if (data.paymentMethod !== "cash_on_delivery") {
+      return base;
+    }
+
+    // cash_on_delivery requires an address. Source it from either the
+    // typed address fields or the picked courier office.
+    if (data.deliveryMethod === "courier" && data.deliveryType === "to_address" && data.address) {
+      return {
+        ...base,
+        deliveryAddress: {
+          city: data.address.city.trim(),
+          postalCode: data.address.postalCode.trim(),
+          street: data.address.street.trim(),
+        },
+      };
+    }
+    if (data.deliveryMethod === "courier" && data.deliveryType === "to_office" && data.officeId) {
+      const office = getOfficeById(data.officeId);
+      if (!office) return null;
+      // The CourierOffice type doesn't carry an explicit postalCode field — the
+      // mock embeds the 4-digit Bulgarian postal code at the end of the address
+      // string ("ул. Сердика 4, София 1000"). Extract it via regex; fall back
+      // to "0000" only as a last-ditch sentinel — the backend's min(1) check
+      // would still pass and the order_delivery_address row carries the full
+      // human-readable address in `street` either way. The dedicated couriers
+      // slice (deferred) will formalise office records with proper postcode
+      // columns and let us drop this regex.
+      const postalMatch = office.address.match(/\b(\d{4})\b/);
+      const postalCode = postalMatch?.[1] ?? "0000";
+      return {
+        ...base,
+        deliveryAddress: {
+          city: office.city,
+          postalCode,
+          street: `${office.name} — ${office.address}`,
+          apartmentOrOffice: office.name,
+        },
+      };
+    }
+    // Pickup with cash_on_delivery is a quirky combination — the spec
+    // forbids it implicitly (cash on delivery means a courier delivers).
+    // The form should have prevented it, but we guard anyway.
+    return null;
+  }
+
   async function handleConfirm() {
+    if (!formData) return;
+    setError(null);
+
+    // Pre-flight UX guards. These don't *need* to be here — the backend
+    // would reject with 401 / 422 / 400 anyway — but skipping the network
+    // round-trip on a clear user-state error is faster and friendlier.
+    if (authStatus !== "authenticated" || !isAuthenticated || !user) {
+      router.push(`/account/login?next=${encodeURIComponent("/checkout/review")}`);
+      return;
+    }
+    if (items.length === 0) {
+      setError("Количката е празна. Добавете продукти, за да направите поръчка.");
+      return;
+    }
+
+    const input = buildOrderInput(formData);
+    if (!input) {
+      setError("Моля, посочете адрес или офис за доставка.");
+      return;
+    }
+
     setPlacing(true);
-    // Simulate API call. The real /orders endpoint is a later slice; until
-    // then we just generate an opaque ID and clear the cart.
-    await new Promise((r) => setTimeout(r, 1200));
-    const orderId = `ORD-2026-${String(Date.now()).slice(-4)}`;
-    await clearCart();
-    sessionStorage.removeItem("checkoutData");
-    router.push(`/checkout/confirmation?orderId=${orderId}`);
+    try {
+      const idempotencyKey = idempotencyKeyRef.current!;
+      const res = await placeOrder(input, idempotencyKey);
+
+      if (res.ok) {
+        // Backend has already DELETE'd the cart_items rows inside the
+        // checkout transaction. The CartContext's local `items` state,
+        // however, is purely client-side and only re-syncs on auth-flip
+        // or explicit mutation — neither of which fires on a successful
+        // /orders POST. Without explicit help, the cart drawer would
+        // keep showing the now-stale lines until the next reload. So
+        // we call clearCart() here, which (in the authenticated branch)
+        // round-trips DELETE /cart — idempotent against an already-empty
+        // cart on the server side — and updates the local view.
+        //
+        // We deliberately don't await: the navigation is the user's
+        // intent and shouldn't be delayed by a cart sync round-trip.
+        // The server is already in the right state; this is purely a
+        // client-side cleanup, and a stray failure (very unlikely on a
+        // freshly-emptied cart) doesn't affect the order at all.
+        void clearCart();
+        sessionStorage.removeItem("checkoutData");
+        sessionStorage.removeItem("checkoutOffice");
+        // ?confirm=1 turns the destination into a celebratory landing
+        // (green success banner). On regular history-navigation visits to
+        // the same page the param is absent and only the order detail
+        // shows. The query param is intentionally lightweight — no PII.
+        router.push(
+          `/account/orders/${encodeURIComponent(res.value.orderNumber)}?confirm=1`,
+        );
+        // refresh() so any Server Component reading auth/cart state
+        // re-renders with the post-checkout truth.
+        router.refresh();
+        return;
+      }
+
+      // Map errors into copy. Some kinds also need extra side-effects:
+      switch (res.error.kind) {
+        case "unauthenticated":
+          // Cookie expired between page load and submit. Bounce to login
+          // with a return-to so the user resumes seamlessly after re-auth.
+          router.push(`/account/login?next=${encodeURIComponent("/checkout/review")}`);
+          return;
+        case "idempotency_conflict":
+          // Cross-customer UUID collision. Regenerate the key so the next
+          // submit has a fresh one. The user can click "Потвърди" again.
+          idempotencyKeyRef.current = freshIdempotencyKey();
+          setError(translateError(res.error));
+          return;
+        case "cart_empty":
+          // Whole cart was soft-deleted between page load and submit. No
+          // recovery on this screen — send the user back to /checkout.
+          setError(translateError(res.error));
+          // Best-effort: clear the stale checkoutData so a fresh attempt
+          // doesn't replay the same intent.
+          sessionStorage.removeItem("checkoutData");
+          sessionStorage.removeItem("checkoutOffice");
+          return;
+        default:
+          setError(translateError(res.error));
+          return;
+      }
+    } finally {
+      setPlacing(false);
+    }
   }
 
   return (
@@ -157,6 +382,17 @@ export default function CheckoutReviewPage() {
             <span className="text-primary">{formatCents(totalCents)}</span>
           </div>
         </div>
+
+        {/* Error banner — same visual language as login / register pages */}
+        {error && (
+          <p
+            role="alert"
+            aria-live="polite"
+            className="text-sm text-destructive bg-destructive/5 border border-destructive/20 rounded-md p-3"
+          >
+            {error}
+          </p>
+        )}
 
         {/* Actions */}
         <div className="flex flex-col sm:flex-row gap-3">
