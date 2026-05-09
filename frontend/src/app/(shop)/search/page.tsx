@@ -1,4 +1,3 @@
-import Link from "next/link";
 import { searchProducts } from "@/lib/mock-data/products";
 import ProductCard from "@/components/shop/ProductCard";
 import { Input } from "@/components/ui/input";

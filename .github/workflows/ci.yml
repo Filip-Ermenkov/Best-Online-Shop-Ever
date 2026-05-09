@@ -1,0 +1,265 @@
+# =============================================================================
+# Continuous Integration for the @shop monorepo.
+#
+# Triggers:
+#   - Every pull_request targeting main.
+#   - Every push to main (catches anything that bypassed PR review, e.g.
+#     direct merges, history rewrites, or admin overrides).
+#
+# Jobs (run in parallel, each independently failable so PR status checks
+# pinpoint the exact regression):
+#   - typecheck       — `tsc --noEmit` across @shop/db, @shop/auth, @shop/api.
+#                       The frontend's typecheck script is intentionally
+#                       absent — see "What's intentionally NOT here" below.
+#   - lint            — `next lint` (only the frontend has eslint configured;
+#                       the other workspaces print a sentinel until a shared
+#                       config lands).
+#   - auth-tests      — 16 unit tests in @shop/auth (Argon2 + session
+#                       primitives). Pure crypto, no service dependencies.
+#   - api-tests       — 93 integration tests in @shop/api against a real
+#                       Postgres 17 service container (mirrors production's
+#                       Neon Scale stack and local docker-compose).
+#
+# What's intentionally NOT here:
+#   - `next build` — the home page uses Next.js ISR (`next: { revalidate: 300 }`
+#     in fetchProducts/fetchCategoryTree), which makes the page statically
+#     generated at build time. `next build` would need to reach a live shop-api
+#     against a seeded Postgres. Add this once we either (a) spin the API up
+#     in CI alongside the build job (ergonomically painful and slow), or (b)
+#     refactor the home page to dynamic rendering. Typecheck + lint cover the
+#     bulk of build-time failures in the meantime.
+#
+#   - Frontend `tsc --noEmit`. When running tsc cross-workspace, the
+#     frontend's `hc<AppType>(...)` from "@shop/api" infers `unknown` —
+#     AppType resolution doesn't propagate through the workspace symlink the
+#     same way Next.js's TS plugin (which the dev server and `next build`
+#     use) handles it. Adding this back is a follow-up that needs digging
+#     into Hono RPC type resolution; for now `next build` is the frontend's
+#     type gate (run it locally before pushing). The api/auth/db tsc check
+#     in CI catches the underlying server-side breaks.
+#
+#   - Frontend e2e (Playwright). Future slice; covered today by the manual
+#     smoke checklist in the rolling project notes.
+#
+# Security hardening (per the 2026 GitHub Actions security roadmap and
+# StepSecurity guidance after the tj-actions/changed-files (Mar 2025) and
+# trivy-action (Mar 2026) supply-chain attacks):
+#
+#   1. Third-party actions pinned to full 40-char commit SHAs, not version
+#      tags. Tags are mutable; SHAs are not. The `# v6.0.2 — DD MMM YYYY`
+#      comment next to each pin documents what we believed we were getting,
+#      so the next maintainer can verify without spelunking.
+#
+#   2. Top-level `permissions: contents: read` enforces least-privilege.
+#      The default GITHUB_TOKEN has write scope on contents, packages, etc.
+#      — overkill for a CI that only reads and runs tests.
+#
+#   3. `persist-credentials: false` on every checkout. We don't push back
+#      from CI, so no reason to keep the token in `.git/config` where a
+#      later malicious step could exfiltrate it.
+#
+#   4. No secrets referenced. The Postgres service container uses hardcoded
+#      `shop:shop` credentials matching docker-compose.yml. Production secrets
+#      (Neon connection string, SES keys, etc.) come from Lambda env / Secrets
+#      Manager, not CI.
+#
+# Cost control:
+#   - `concurrency.cancel-in-progress: true` cancels superseded runs when a
+#     dev pushes fixup commits to the same branch. Saves several runner-minutes
+#     per noisy PR.
+#   - Per-job `timeout-minutes` caps a stuck step at 10–15 min instead of
+#     letting it consume the full 6h account budget.
+#   - npm cache restored via setup-node's built-in `cache: 'npm'`, keyed on
+#     the root `package-lock.json` hash — no hand-rolled actions/cache step.
+#
+# Future tightening (not blocking today):
+#   - StepSecurity Harden-Runner for runtime egress monitoring on every job.
+#   - Dependabot for automated SHA bumps with PR review.
+#   - GitHub's upcoming `dependencies:` workflow lock (announced for the 2026
+#     security roadmap) once it ships GA.
+
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+# Cancel a stale run when a new commit lands on the same branch / PR. We
+# cancel on pushes to main too — this workflow is purely a quality gate (no
+# deploys), so the latest commit's signal is what matters.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Least-privilege default. Individual jobs can override if they need more
+# (none currently do — all jobs only need read access to the checkout).
+permissions:
+  contents: read
+
+env:
+  # Single Node version — this is an application, not a library, so testing
+  # the matrix is overkill. Node 22 is the active LTS; Node 20 went EOL
+  # April 2026. Bumping to 24 (next LTS) is a one-line change here once
+  # we've confirmed the prebuilt argon2 binary tracks 24 (it does as of
+  # node-argon2 v0.41).
+  NODE_VERSION: '22'
+
+jobs:
+  # ────────────────────────────────────────────────────────────────────────
+  # Static analysis: TypeScript across @shop/db, @shop/auth, @shop/api,
+  # and the frontend. Runs in seconds on a warm npm cache.
+  # ────────────────────────────────────────────────────────────────────────
+  typecheck:
+    name: Typecheck (all workspaces)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        # actions/checkout v6.0.2 — 09 Jan 2026
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+
+      - name: Setup Node.js
+        # actions/setup-node v6.3.0 — 04 Mar 2026
+        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        # `npm ci` is reproducible — it errors if the lockfile is out of
+        # sync, where `npm install` would silently update it. Required for
+        # CI determinism.
+        run: npm ci
+
+      - name: Typecheck across backend workspaces
+        # `--if-present` lets a workspace opt out by omitting the script.
+        # @shop/db, @shop/auth, @shop/api each provide one. The frontend
+        # workspace deliberately doesn't — its types are checked at
+        # `next build` time via the official Next.js TS plugin, which
+        # handles the @shop/api workspace symlink + Hono RPC AppType
+        # resolution differently to a top-level tsc invocation. See the
+        # header comment for the full rationale.
+        run: npm run typecheck --workspaces --if-present
+
+  # ────────────────────────────────────────────────────────────────────────
+  # Linting. Only the frontend has eslint wired up today; the backend
+  # workspaces print "add eslint when shared config lands". When the shared
+  # eslint config arrives, swap this to `npm run lint --workspaces`.
+  # ────────────────────────────────────────────────────────────────────────
+  lint:
+    name: Lint (frontend)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f  # v6.3.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - run: npm ci
+
+      - name: Lint frontend
+        # Calling the frontend workspace directly (rather than
+        # `npm run lint --workspaces --if-present`) avoids the sentinel
+        # echo in the backend workspaces masking a real frontend lint
+        # failure with a cumulative success.
+        run: npm --workspace shop run lint
+
+  # ────────────────────────────────────────────────────────────────────────
+  # @shop/auth unit tests — Argon2 hashing, session token CSPRNG, constant-
+  # time helpers. Pure crypto. No DB, no network, no secrets.
+  # ────────────────────────────────────────────────────────────────────────
+  auth-tests:
+    name: Auth tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f  # v6.3.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - run: npm ci
+
+      - name: Run @shop/auth tests
+        # node-argon2 ships prebuilt binaries for Linux x64 glibc, which is
+        # what ubuntu-latest runners provide. No C++ toolchain step needed.
+        # Switch to ubuntu-arm64 runners later? Add:
+        #   - run: sudo apt-get update && sudo apt-get install -y build-essential
+        # before this step so node-gyp can fall back to a source build.
+        run: npm --workspace @shop/auth run test
+
+  # ────────────────────────────────────────────────────────────────────────
+  # @shop/api integration tests — 93 tests, hit a real Postgres. The
+  # service container is health-checked before our steps start, so we don't
+  # need a wait-for-postgres dance inside the job.
+  # ────────────────────────────────────────────────────────────────────────
+  api-tests:
+    name: API tests (Postgres)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    services:
+      postgres:
+        # Match production (Neon GA stays on 14/15/16/17 with 18 still in
+        # preview as of April 2026) AND backend/db/docker-compose.yml. Bump
+        # both files together when Neon promotes 18 to GA.
+        image: postgres:17-alpine
+        env:
+          # Same superuser as docker-compose so the vitest globalSetup can
+          # DROP+CREATE the `shop_test` database. (The Postgres image makes
+          # POSTGRES_USER a superuser when no separate POSTGRES_DB-owner is
+          # configured — that's what we want.)
+          POSTGRES_USER: shop
+          POSTGRES_PASSWORD: shop
+          POSTGRES_DB: shop
+        ports:
+          # Bind container 5432 to host 5432 so tests can use the same
+          # localhost URL they use in dev. Service containers otherwise
+          # only resolve via their service name from within job containers,
+          # which we don't use here (the job runs directly on the runner).
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U shop -d shop"
+          --health-interval 3s
+          --health-timeout 3s
+          --health-retries 10
+
+    env:
+      # vitest.config.ts already defaults this, but setting it here makes
+      # the CI environment explicit and lets you override it via "Re-run
+      # with debug logging" without editing config.
+      DATABASE_URL: postgresql://shop:shop@localhost:5432/shop_test
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f  # v6.3.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - run: npm ci
+
+      - name: Run @shop/api integration tests
+        # The vitest globalSetup will:
+        #   1. Connect to the `postgres` admin DB on the service container.
+        #   2. DROP DATABASE IF EXISTS shop_test; CREATE DATABASE shop_test.
+        #   3. Apply migrations from @shop/db/drizzle (0000_initial.sql,
+        #      0001_orders_sequence.sql, …).
+        # Each test then TRUNCATEs all tables in beforeEach for isolation.
+        run: npm --workspace @shop/api run test

@@ -15,7 +15,6 @@ import {
   register as apiRegister,
 } from "@/lib/auth/client";
 import type {
-  AuthError,
   AuthResult,
   AuthUser,
   LoginInput,
@@ -96,8 +95,19 @@ export function AuthProvider({ children, initialUser }: AuthProviderProps) {
   }, []);
 
   // Bootstrap on mount only when we don't already have an SSR-provided user.
+  //
+  // The lint suppression below is deliberate. `react-hooks/set-state-in-effect`
+  // (new in React 19) flags the chain because `refresh()` ultimately calls
+  // `setUser`/`setStatus`. That's the canonical "subscribe to / read from an
+  // external system on mount" pattern useEffect was designed for — the
+  // external system is the session cookie + GET /auth/me. The proper "fix"
+  // is a data-fetching layer (TanStack Query, SWR, Suspense + use()), which
+  // is a separate slice. Until then this is intentionally an effect, runs
+  // exactly once per mount when no SSR user is present, and does NOT cascade
+  // (refresh resolves to a stable user/anonymous state).
   useEffect(() => {
     if (initialUser !== undefined) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- see block comment above
     void refresh();
   }, [initialUser, refresh]);
 

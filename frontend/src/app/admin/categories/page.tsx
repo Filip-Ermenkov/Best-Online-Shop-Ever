@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo } from "react";
 import { categories as initialCategories } from "@/lib/mock-data/categories";
 import { CategoryNode } from "@/lib/types";
 import { Button } from "@/components/ui/button";
@@ -312,16 +312,19 @@ function CategoryFormDialog({
   }, [dialog]);
 
   const [name, setName] = useState(initial.name);
-  const [slug, setSlug] = useState(initial.slug);
-  const [slugManuallyEdited, setSlugManuallyEdited] = useState(dialog.type === "edit");
+  // `manualSlug === null` means "auto-derive from name". As soon as the user
+  // edits the slug input we capture their value here; from that point on the
+  // slug is no longer reactive to name changes. Editing an existing category
+  // starts in manual mode (we already have a slug worth preserving).
+  const [manualSlug, setManualSlug] = useState<string | null>(
+    dialog.type === "edit" ? initial.slug : null,
+  );
   const [imageUrl, setImageUrl] = useState(initial.imageUrl);
 
-  // Auto-generate slug from name until user manually edits it
-  useEffect(() => {
-    if (!slugManuallyEdited) {
-      setSlug(slugify(name));
-    }
-  }, [name, slugManuallyEdited]);
+  // Slug is derived state: manualSlug if the user has touched it, otherwise
+  // slugify(name). Computing during render avoids the setState-in-effect
+  // anti-pattern (re-render → effect → setSlug → another re-render).
+  const slug = manualSlug ?? slugify(name);
 
   const title =
     dialog.type === "add-root"
@@ -364,10 +367,7 @@ function CategoryFormDialog({
             <Input
               id="cat-slug"
               value={slug}
-              onChange={(e) => {
-                setSlug(e.target.value);
-                setSlugManuallyEdited(true);
-              }}
+              onChange={(e) => setManualSlug(e.target.value)}
               placeholder="elektronika"
               className="mt-1 font-mono text-xs"
               required

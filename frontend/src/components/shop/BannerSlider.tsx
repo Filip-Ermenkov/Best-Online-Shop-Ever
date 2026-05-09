@@ -3,7 +3,6 @@
 import { useState, useEffect } from "react";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import { Banner } from "@/lib/types";
-import { ButtonLink } from "@/components/ui/button-link";
 import { cn } from "@/lib/utils";
 import Link from "next/link";
 
@@ -31,7 +30,6 @@ export default function BannerSlider({ banners }: BannerSliderProps) {
       setCurrent((c) => (c + 1) % active.length);
     }, 5000);
     return () => clearInterval(timer);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [timerKey, active.length]);
 
   if (active.length === 0) return null;

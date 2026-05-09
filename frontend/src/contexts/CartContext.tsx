@@ -73,7 +73,13 @@ const GUEST_CART_KEY = "shop_guest_cart";
 
 // ─── Public types ──────────────────────────────────────────────────────────
 
-export interface CartItem extends CartLine {}
+// CartItem is currently structurally identical to CartLine. Kept as a named
+// alias rather than a re-export so that future cart-only fields (e.g.
+// `optimisticPending: boolean` for in-flight mutations) can land here without
+// touching every caller. Type alias rather than `interface … extends` because
+// @typescript-eslint/no-empty-object-type rightly flags the latter as a
+// no-op declaration that's better expressed as an alias.
+export type CartItem = CartLine;
 
 export interface CartContextValue {
   items: CartItem[];
@@ -269,6 +275,25 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
   );
 
   // ── Auth-driven mode switching ────────────────────────────────────────────
+  //
+  // The block-level lint suppression below is deliberate. `react-hooks/
+  // set-state-in-effect` (new in React 19) flags this effect because every
+  // branch eventually calls setState — `refreshGuestState()` repopulates
+  // local state from sessionStorage, `mergeAndLoad()` and `reloadServerCart()`
+  // both update items/status after their network calls. That's the canonical
+  // "subscribe to external state changes" pattern useEffect was designed for
+  // — the external state is the auth context's status, and we have to swap
+  // between the guest sessionStorage cart and the server cart whenever auth
+  // flips. The proper "fix" is a state-management library that owns this
+  // transition (Zustand / TanStack Query); that's a separate slice. Until
+  // then this is intentionally an effect, dedupes on identical status (see
+  // `lastReactedAuthStatus` ref), and cannot cascade.
+  //
+  // We use eslint-disable / eslint-enable around the whole useEffect rather
+  // than per-line disables because there are 3+ setState chain calls inside,
+  // and we want any future call sites added to the same effect to be covered
+  // by the same rationale automatically.
+  /* eslint-disable react-hooks/set-state-in-effect -- bootstrap pattern, see comment block above */
   useEffect(() => {
     // We only react when authStatus actually changes from what we last saw.
     // Re-running on identical status would re-fetch the cart on every render.
@@ -306,6 +331,7 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
       void reloadServerCart();
     }
   }, [authStatus, mergeAndLoad, reloadServerCart, refreshGuestState]);
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   // ── Mutations ─────────────────────────────────────────────────────────────
 

@@ -1,7 +1,6 @@
 "use client";
 
 import { notFound } from "next/navigation";
-import Link from "next/link";
 import { use } from "react";
 import { useState } from "react";
 import { ArrowLeft, Truck, Store, Package } from "lucide-react";
