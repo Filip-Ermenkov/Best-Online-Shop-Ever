@@ -1,13 +1,12 @@
 "use client";
 
 import Link from "next/link";
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useMemo, useCallback } from "react";
 import { Search, ShoppingCart, User, X, LogOut, Package, Settings } from "lucide-react";
 import { useCart } from "@/contexts/CartContext";
 import { useAuth } from "@/contexts/AuthContext";
 import { searchProducts } from "@/lib/mock-data/products";
 import { getCategoryAncestors } from "@/lib/mock-data/categories";
-import { Product } from "@/lib/types";
 import CartDrawer from "@/components/shop/CartDrawer";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -23,27 +22,46 @@ export default function Header() {
   const { itemCount } = useCart();
   const { user, logout, isLoggedIn } = useAuth();
   const [cartOpen, setCartOpen] = useState(false);
-  const [searchQuery, setSearchQuery] = useState("");
-  const [suggestions, setSuggestions] = useState<Product[]>([]);
-  const [showSuggestions, setShowSuggestions] = useState(false);
+  const [searchQuery, setSearchQueryState] = useState("");
+  // `dismissed` controls whether the autocomplete popup is hidden after the
+  // user has actively closed it (outside-click, clear button, suggestion
+  // pick). It's intentionally separate from `searchQuery` so the popup can
+  // re-open when the user resumes typing without us re-running the search
+  // from scratch.
+  const [dismissed, setDismissed] = useState(false);
   const searchRef = useRef<HTMLDivElement>(null);
 
-  useEffect(() => {
-    if (searchQuery.trim().length >= 2) {
-      const results = searchProducts(searchQuery).slice(0, 5);
-      setSuggestions(results);
-      setShowSuggestions(true);
-    } else {
-      setSuggestions([]);
-      setShowSuggestions(false);
-    }
-  }, [searchQuery]);
+  // `suggestions` is purely derived from `searchQuery` — compute during
+  // render rather than chasing it from a useEffect. searchProducts works
+  // against an in-memory mock list today, so the cost is trivial; when the
+  // real /products?q= search lands this becomes a Suspense-driven
+  // `use(fetchSuggestions(searchQuery))` instead.
+  const suggestions = useMemo(
+    () =>
+      searchQuery.trim().length >= 2
+        ? searchProducts(searchQuery).slice(0, 5)
+        : [],
+    [searchQuery],
+  );
 
-  // Close suggestions on outside click
+  // `showSuggestions` is also derived: if the user hasn't dismissed and we
+  // have results, show the popup.
+  const showSuggestions = !dismissed && suggestions.length > 0;
+
+  // Wrap setSearchQuery so resuming typing re-opens the popup without the
+  // caller having to know about the dismissed flag.
+  const setSearchQuery = useCallback((value: string) => {
+    setSearchQueryState(value);
+    setDismissed(false);
+  }, []);
+
+  // Close suggestions on outside click. The setState here is event-driven
+  // (a real DOM event fires it), not a render-time derivation, so it's the
+  // canonical useEffect use case.
   useEffect(() => {
     function handleClick(e: MouseEvent) {
       if (searchRef.current && !searchRef.current.contains(e.target as Node)) {
-        setShowSuggestions(false);
+        setDismissed(true);
       }
     }
     document.addEventListener("mousedown", handleClick);
@@ -80,14 +98,14 @@ export default function Header() {
                 placeholder="Търси продукти..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                onFocus={() => suggestions.length > 0 && setShowSuggestions(true)}
+                onFocus={() => setDismissed(false)}
                 className="w-full h-9 pl-9 pr-4 text-sm rounded-md border border-input bg-background focus:outline-none focus:ring-2 focus:ring-ring"
                 aria-label="Търси продукти"
               />
               {searchQuery && (
                 <button
                   type="button"
-                  onClick={() => { setSearchQuery(""); setShowSuggestions(false); }}
+                  onClick={() => { setSearchQuery(""); setDismissed(true); }}
                   className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
                   aria-label="Изчисти търсенето"
                 >
@@ -108,7 +126,7 @@ export default function Header() {
                   <Link
                     key={p.id}
                     href={productUrl}
-                    onClick={() => { setSearchQuery(""); setShowSuggestions(false); }}
+                    onClick={() => { setSearchQuery(""); setDismissed(true); }}
                     className="flex items-center gap-3 px-3 py-2 hover:bg-muted transition-colors text-sm"
                   >
                     <div className="w-8 h-8 flex-shrink-0 rounded bg-muted overflow-hidden">
@@ -127,7 +145,7 @@ export default function Header() {
                 })}
                 <Link
                   href={`/search?q=${encodeURIComponent(searchQuery)}`}
-                  onClick={() => setShowSuggestions(false)}
+                  onClick={() => setDismissed(true)}
                   className="block px-3 py-2 text-sm text-primary font-medium border-t border-border hover:bg-muted transition-colors text-center"
                 >
                   Виж всички резултати за &ldquo;{searchQuery}&rdquo;

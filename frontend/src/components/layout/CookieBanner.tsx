@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useSyncExternalStore } from "react";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -11,29 +11,71 @@ type CookiePrefs = { functional: boolean; analytics: boolean };
 
 const STORAGE_KEY = "cookie_consent";
 
+/**
+ * Subscribe to the consent record in localStorage.
+ *
+ * Why useSyncExternalStore (not useEffect-on-mount + useState):
+ *   • The render-time derivation `stored === null ⇒ show banner` keeps
+ *     visibility out of effects — no `setState-in-effect` warning, no
+ *     extra render after mount.
+ *   • The `subscribe` callback wires up two events:
+ *       - `storage` — fires in OTHER tabs when localStorage changes. Lets
+ *         a customer who accepts in one tab see the banner disappear in
+ *         the other tab automatically.
+ *       - A custom `CONSENT_CHANGED_EVENT` we dispatch from `writeConsent`
+ *         below. Required because the `storage` event explicitly does NOT
+ *         fire in the *same* tab that wrote the value (per HTML spec
+ *         §9.4) — without this, clicking "Accept all" wouldn't hide the
+ *         banner until a re-mount.
+ *   • `getServerSnapshot` returns "" (empty string, NOT null), so the SSR
+ *     pass's `stored === null` check evaluates false and the server emits
+ *     no banner markup. Avoids the SSR-flash where the banner appears for
+ *     one frame before hydration corrects it.
+ */
+const CONSENT_CHANGED_EVENT = "shop:cookie-consent-changed";
+
+function subscribeConsent(callback: () => void): () => void {
+  if (typeof window === "undefined") return () => {};
+  window.addEventListener("storage", callback);
+  window.addEventListener(CONSENT_CHANGED_EVENT, callback);
+  return () => {
+    window.removeEventListener("storage", callback);
+    window.removeEventListener(CONSENT_CHANGED_EVENT, callback);
+  };
+}
+function getConsentSnapshot(): string | null {
+  return localStorage.getItem(STORAGE_KEY);
+}
+function getConsentServerSnapshot(): string {
+  return ""; // sentinel: SSR treats consent as "given" so the banner stays hidden
+}
+function writeConsent(value: object): void {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(value));
+  // Notify the in-tab subscribers — `storage` events don't fire here.
+  window.dispatchEvent(new Event(CONSENT_CHANGED_EVENT));
+}
+
 export default function CookieBanner() {
-  const [visible, setVisible] = useState(false);
+  const stored = useSyncExternalStore(
+    subscribeConsent,
+    getConsentSnapshot,
+    getConsentServerSnapshot,
+  );
+  const visible = stored === null;
+
   const [showDetails, setShowDetails] = useState(false);
   const [prefs, setPrefs] = useState<CookiePrefs>({ functional: false, analytics: false });
 
-  useEffect(() => {
-    const stored = localStorage.getItem(STORAGE_KEY);
-    if (!stored) setVisible(true);
-  }, []);
-
   function acceptAll() {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ essential: true, functional: true, analytics: true }));
-    setVisible(false);
+    writeConsent({ essential: true, functional: true, analytics: true });
   }
 
   function rejectAll() {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ essential: true, functional: false, analytics: false }));
-    setVisible(false);
+    writeConsent({ essential: true, functional: false, analytics: false });
   }
 
   function savePrefs() {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ essential: true, ...prefs }));
-    setVisible(false);
+    writeConsent({ essential: true, ...prefs });
   }
 
   if (!visible) return null;

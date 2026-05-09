@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { useRouter } from "next/navigation";
 import { useCart } from "@/contexts/CartContext";
 import { useAuth } from "@/contexts/AuthContext";
@@ -28,12 +28,51 @@ function freshIdempotencyKey(): string {
   return crypto.randomUUID();
 }
 
+/**
+ * Read the checkout draft from sessionStorage at render time via
+ * useSyncExternalStore. The draft is written by the previous page
+ * (/checkout) and is only ever READ here — it doesn't mutate during this
+ * page's lifetime, so the `subscribe` callback is a no-op.
+ *
+ * Why this and not `useState + useEffect(setState)`:
+ *   • `setState` inside `useEffect` is exactly the pattern
+ *     `react-hooks/set-state-in-effect` (new in React 19) flags as a perf
+ *     anti-pattern (extra render after mount).
+ *   • A lazy `useState` initialiser would run on the SSR pass (where
+ *     `window` is undefined) and never re-run on the client, so the read
+ *     would always come back empty.
+ *   • `useSyncExternalStore` properly separates the SSR snapshot
+ *     (`getCheckoutServerSnapshot` returns null → component renders
+ *     nothing during SSR) from the client snapshot (reads sessionStorage
+ *     post-hydration), and React handles the transition without a
+ *     hydration-mismatch warning.
+ */
+const CHECKOUT_DRAFT_KEY = "checkoutData";
+function subscribeNoop(): () => void {
+  return () => {};
+}
+function getCheckoutDraftSnapshot(): string | null {
+  return sessionStorage.getItem(CHECKOUT_DRAFT_KEY);
+}
+function getCheckoutDraftServerSnapshot(): string | null {
+  return null;
+}
+
 export default function CheckoutReviewPage() {
   const router = useRouter();
   const { items, subtotalCents, isAuthenticated, clearCart } = useCart();
   const { user, status: authStatus } = useAuth();
 
-  const [formData, setFormData] = useState<CheckoutFormData | null>(null);
+  const savedRaw = useSyncExternalStore(
+    subscribeNoop,
+    getCheckoutDraftSnapshot,
+    getCheckoutDraftServerSnapshot,
+  );
+  const formData = useMemo<CheckoutFormData | null>(
+    () => (savedRaw ? (JSON.parse(savedRaw) as CheckoutFormData) : null),
+    [savedRaw],
+  );
+
   const [placing, setPlacing] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -63,11 +102,11 @@ export default function CheckoutReviewPage() {
     idempotencyKeyRef.current = freshIdempotencyKey();
   }
 
+  // Side effect (navigation) is the only thing left for useEffect to do
+  // here — formData is now derived from savedRaw above, no setState needed.
   useEffect(() => {
-    const saved = sessionStorage.getItem("checkoutData");
-    if (!saved) { router.replace("/checkout"); return; }
-    setFormData(JSON.parse(saved));
-  }, [router]);
+    if (savedRaw === null) router.replace("/checkout");
+  }, [savedRaw, router]);
 
   // TODO(auth slice 2): the public /auth/me endpoint does not yet expose
   // the customer discount. Backend stores it on users.customer_discount_percent

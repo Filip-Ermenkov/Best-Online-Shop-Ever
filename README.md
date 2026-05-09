@@ -1,5 +1,7 @@
 # Best-Online-Shop
 
+[![CI](https://github.com/Filip-Ermenkov/Best-Online-Shop-Ever/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Filip-Ermenkov/Best-Online-Shop-Ever/actions/workflows/ci.yml)
+
 Online shop project — Bulgarian-language e-commerce platform on AWS.
 
 ## Repository layout
@@ -14,7 +16,7 @@ Online shop project — Bulgarian-language e-commerce platform on AWS.
 │   └── shop-api/     Hono API: catalog read + auth slice (@shop/api)
 ├── infra/            Terraform IaC (planned)
 ├── .github/
-│   └── workflows/    CI/CD pipelines (planned)
+│   └── workflows/    CI: typecheck, lint, auth tests, API tests w/ Postgres
 └── docs/
     ├── README.md                     Functional / product specification
     ├── TECHSPEC.md                   AWS infrastructure architecture
@@ -46,7 +48,57 @@ npm run frontend:dev
 # Tests:
 npm --workspace @shop/auth run test    # 16 unit tests   (pure crypto)
 npm --workspace @shop/api  run test    # 93 integration tests against shop_test DB
+
+# Everything CI runs (typecheck + lint + tests). Approximates a green PR:
+npm run typecheck --workspaces --if-present   # 3 backend workspaces
+npm --workspace shop run lint
+npm --workspace @shop/auth run test
+npm --workspace @shop/api  run test
 ```
+
+## Continuous integration
+
+Every pull request and every push to `main` runs
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml). Four jobs run in
+parallel and each is independently failable so PR status checks pinpoint the
+exact regression:
+
+| Job              | What it runs                                                          | Service |
+| ---------------- | --------------------------------------------------------------------- | ------- |
+| `typecheck`      | `tsc --noEmit` across `@shop/db`, `@shop/auth`, `@shop/api`           | —       |
+| `lint`           | `next lint` on the frontend                                           | —       |
+| `auth-tests`     | 16 unit tests in `@shop/auth` (Argon2 + session tokens)               | —       |
+| `api-tests`      | 93 integration tests in `@shop/api`                                   | Postgres 17 |
+
+Hardening:
+
+- All third-party actions pinned to **commit SHAs**, not tags — immutable
+  against repo-jacking (after the tj-actions/changed-files attack of March
+  2025 and the trivy-action attack of March 2026).
+- Top-level `permissions: contents: read` (least privilege; the GitHub default
+  would be write).
+- `persist-credentials: false` on every `actions/checkout` so a later
+  malicious step can't exfiltrate the workflow token from `.git/config`.
+- `concurrency.cancel-in-progress: true` cancels superseded runs when a
+  developer pushes fixup commits to the same branch — saves several
+  runner-minutes per noisy PR.
+
+Two checks are deliberately deferred:
+
+- **`next build`** — the home page uses Next.js ISR
+  (`next: { revalidate: 300 }` in `fetchProducts` / `fetchCategoryTree`),
+  which performs static generation against a live API at build time.
+  Spinning up the API + a seeded Postgres alongside the build is doable
+  but slow and fragile; `typecheck` + `lint` cover the bulk of the
+  build-time signal in the meantime. Add it once we either move the home
+  page to dynamic rendering or have a build-time API stub.
+
+- **Frontend `tsc --noEmit`** — running tsc cross-workspace, the frontend's
+  `hc<AppType>(...)` from `@shop/api` infers `unknown`. The Hono RPC
+  AppType resolution doesn't propagate through the npm workspace symlink
+  the same way Next.js's official TS plugin (which the dev server and
+  `next build` use) does. Until that's untangled, `next build` is the
+  frontend's type gate — run it locally before pushing.
 
 Visit http://localhost:3000 — register a personal account, log in, click
 through to `/account/profile`. The session cookie is set by the API and the
@@ -281,17 +333,22 @@ have to be re-derived when extending the codebase.
 ### Infrastructure / CI
 
 - Infrastructure (Terraform): not started.
-- GitHub Actions workflows: not started. CI on `pull_request` + `push to main`
-  running `typecheck` + `auth:test` + `api:test` against a service-container
-  Postgres is the recommended next foundational slice.
+- **GitHub Actions CI** ([`.github/workflows/ci.yml`](.github/workflows/ci.yml))
+  — landed. Runs on every `pull_request` against `main` and every `push` to
+  `main`. Four parallel jobs: `typecheck` (3 backend workspaces), `lint`
+  (frontend), `auth-tests` (16 unit tests), `api-tests` (93 integration
+  tests against a Postgres 17 service container). All third-party actions
+  pinned to commit SHAs; least-privilege `permissions: contents: read`;
+  `concurrency.cancel-in-progress: true`. See the
+  [Continuous integration](#continuous-integration) section above for the
+  full design notes and what's deliberately deferred.
+- **Branch protection**: not configured yet. Once the workflow has run
+  green at least once, add a branch protection rule on `main` requiring
+  all four checks to pass before merging — this is what converts CI from
+  "informational" to "actually protective".
 
 ### Recommended next slices
 
-- **CI on GitHub Actions** — `pull_request` + `push to main` running
-  `typecheck` + `auth:test` + `api:test` against a service-container
-  Postgres. Protects the 93 backend tests as the surface keeps growing.
-  Highest-leverage foundational slice now that the user-facing flow is
-  real and regressions can affect actual checkout.
 - **Email + verification** (SES wiring + 24h tokens + rate-limited resend).
   Closes the registration enumeration loop and unblocks password reset.
   Also lifts the manual `UPDATE users SET email_verified_at = now()`
@@ -303,6 +360,15 @@ have to be re-derived when extending the codebase.
   `SELECT FOR UPDATE` locks won't survive between sub-statements in
   production. Either swap the orders Lambda to `neon-serverless`
   (WebSocket) or rely on an additional optimistic check.
+- **Frontend `tsc --noEmit` in CI** — the cross-workspace `hc<AppType>(...)`
+  inference issue (see CI section above) needs to be untangled before the
+  frontend can join the typecheck job. Workaround today: `next build`
+  locally before pushing.
+- **`react-hooks/set-state-in-effect` two architectural cases** — the
+  in-effect refresh in `AuthContext` (initial `/auth/me` bootstrap) and
+  the auth-flip mode switch in `CartContext` are currently suppressed
+  with rationale comments. The proper fix is a data-fetching layer
+  (TanStack Query / SWR / Suspense + `use()`) — separate slice.
 - **14-day right-of-withdrawal button** — required by EU Directive
   2023/2673 from June 19 2026. The `complaints` table already carries
   a `withdrawal` enum value; only the customer-facing button + admin

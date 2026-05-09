@@ -24,20 +24,52 @@ import * as schema from "./schema/index";
  *
  * Both drivers expose the SAME drizzle interface; switching is invisible to
  * application code.
+ *
+ * Why the overloads on createDb
+ * -----------------------------
+ * `DbClient` is the *union* of the two driver return types. That union is
+ * fine for code that doesn't care about driver-specific calls, but it makes
+ * builder-style chains like `db.insert(...).values(...).returning({...})`
+ * fail to typecheck — TS intersects the two `.returning(...)` overloads from
+ * the union members and the result collapses to a no-arg signature.
+ *
+ * The overloads below let callers that explicitly force a driver get back
+ * the *narrow* driver type, so chained methods like `.returning({...})`
+ * resolve cleanly:
+ *
+ *   const db = createDb({ databaseUrl, driver: "node-postgres" });
+ *   //    ^? NodePgDatabase<typeof schema>           ← narrow, .returning() works
+ *
+ *   const db2 = createDb({ databaseUrl });
+ *   //    ^? DbClient                                ← union, for driver-agnostic code
  */
 
 export type DbClient =
   | ReturnType<typeof drizzleNeonHttp<typeof schema>>
   | ReturnType<typeof drizzleNodePg<typeof schema>>;
 
+export type NeonHttpDb = ReturnType<typeof drizzleNeonHttp<typeof schema>>;
+export type NodePgDb = ReturnType<typeof drizzleNodePg<typeof schema>>;
+
 export interface CreateDbOptions {
   databaseUrl: string;
   /**
    * Force a specific driver (overrides hostname detection). Useful in tests
-   * where you want to assert driver-specific behaviour.
+   * where you want to assert driver-specific behaviour, and in scripts (like
+   * `seed.ts`) that need a narrow driver type for chained builder methods.
    */
   driver?: "neon-http" | "node-postgres";
 }
+
+// Narrow returns when the driver is explicitly forced.
+export function createDb(
+  opts: CreateDbOptions & { driver: "node-postgres" },
+): NodePgDb;
+export function createDb(
+  opts: CreateDbOptions & { driver: "neon-http" },
+): NeonHttpDb;
+// Wide return for the driver-agnostic call.
+export function createDb(opts: CreateDbOptions): DbClient;
 
 export function createDb({ databaseUrl, driver }: CreateDbOptions): DbClient {
   const useNeon =

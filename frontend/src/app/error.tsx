@@ -4,7 +4,6 @@ import { useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { ButtonLink } from "@/components/ui/button-link";
 import { AlertTriangle, RefreshCw, Home } from "lucide-react";
-import Link from "next/link";
 
 export default function Error({ error, reset }: { error: Error & { digest?: string }; reset: () => void }) {
   useEffect(() => {

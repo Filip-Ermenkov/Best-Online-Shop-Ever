@@ -1,11 +1,11 @@
 "use client";
 
 import Link from "next/link";
-import { use, useState, useMemo } from "react";
+import { use } from "react";
 import { notFound } from "next/navigation";
-import { ArrowRight, SlidersHorizontal, ShoppingCart, Minus, Plus } from "lucide-react";
+import { ArrowRight, SlidersHorizontal } from "lucide-react";
 import {
-  resolveCategoryPath, getCategoryAncestors, getCategoryBySlug,
+  resolveCategoryPath,
   NEW_PRODUCTS_CATEGORY,
 } from "@/lib/mock-data/categories";
 import { getProductsByCategoryId, getProductBySlug, getNewProducts } from "@/lib/mock-data/products";

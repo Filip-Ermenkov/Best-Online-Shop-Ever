@@ -6,7 +6,14 @@ import { Separator } from "@/components/ui/separator";
 import { cn } from "@/lib/utils";
 
 interface ProductFiltersProps {
-  category: CategoryNode;
+  // `category` is currently passed by every caller but isn't read inside the
+  // component yet — the filter URL is built from `activeSort` / price range
+  // alone, with the route already scoped to the category at the page level.
+  // Kept on the public prop API because the upcoming "category-specific
+  // filters" slice (e.g. brand chips for /electronics, material chips for
+  // /home) will read it. Until then we mark it `?` so the destructure can
+  // omit it without callers having to change.
+  category?: CategoryNode;
   activeSort: string;
   priceMin: number;
   priceMax: number;
@@ -20,7 +27,7 @@ const sortOptions = [
   { value: "name_asc", label: "По азбучен ред" },
 ];
 
-export default function ProductFilters({ category, activeSort, priceMin, priceMax }: ProductFiltersProps) {
+export default function ProductFilters({ activeSort, priceMin, priceMax }: ProductFiltersProps) {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
