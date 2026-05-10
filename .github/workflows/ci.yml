@@ -8,15 +8,18 @@
 #
 # Jobs (run in parallel, each independently failable so PR status checks
 # pinpoint the exact regression):
-#   - typecheck       — `tsc --noEmit` across @shop/db, @shop/auth, @shop/api.
-#                       The frontend's typecheck script is intentionally
-#                       absent — see "What's intentionally NOT here" below.
+#   - typecheck       — `tsc --noEmit` across @shop/db, @shop/auth,
+#                       @shop/email, @shop/api. The frontend's typecheck
+#                       script is intentionally absent — see "What's
+#                       intentionally NOT here" below.
 #   - lint            — `next lint` (only the frontend has eslint configured;
 #                       the other workspaces print a sentinel until a shared
 #                       config lands).
-#   - auth-tests      — 16 unit tests in @shop/auth (Argon2 + session
+#   - auth-tests      — Unit tests in @shop/auth (Argon2 + session
 #                       primitives). Pure crypto, no service dependencies.
-#   - api-tests       — 93 integration tests in @shop/api against a real
+#   - email-tests     — Unit tests in @shop/email (verification template +
+#                       SES/console/stub transports). SES is mocked.
+#   - api-tests       — Integration tests in @shop/api against a real
 #                       Postgres 17 service container (mirrors production's
 #                       Neon Scale stack and local docker-compose).
 #
@@ -202,9 +205,36 @@ jobs:
         run: npm --workspace @shop/auth run test
 
   # ────────────────────────────────────────────────────────────────────────
-  # @shop/api integration tests — 93 tests, hit a real Postgres. The
-  # service container is health-checked before our steps start, so we don't
-  # need a wait-for-postgres dance inside the job.
+  # @shop/email unit tests — verification template rendering + transports
+  # (console / SES / stub). The SES test mocks SESv2Client.send so we
+  # never hit AWS and don't need credentials. Pure unit tests; no DB, no
+  # network. Lives in its own job (rather than folded into auth-tests) so
+  # the PR status check pinpoints email-template regressions distinctly
+  # from auth-crypto regressions.
+  # ────────────────────────────────────────────────────────────────────────
+  email-tests:
+    name: Email tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f  # v6.3.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - run: npm ci
+
+      - name: Run @shop/email tests
+        run: npm --workspace @shop/email run test
+
+  # ────────────────────────────────────────────────────────────────────────
+  # @shop/api integration tests — hit a real Postgres. The service
+  # container is health-checked before our steps start, so we don't need a
+  # wait-for-postgres dance inside the job.
   # ────────────────────────────────────────────────────────────────────────
   api-tests:
     name: API tests (Postgres)

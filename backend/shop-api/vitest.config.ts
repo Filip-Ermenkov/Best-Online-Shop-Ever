@@ -23,6 +23,12 @@ process.env.DATABASE_URL ??=
   "postgresql://shop:shop@localhost:5432/shop_test";
 process.env.NODE_ENV ??= "test";
 process.env.LOG_LEVEL ??= "silent";
+// Force the in-memory stub transport so tests never hit AWS and can assert
+// on what was "sent". Per-test setup resets the recorder before each test.
+process.env.EMAIL_TRANSPORT ??= "stub";
+// PUBLIC_APP_BASE_URL drives the verifyUrl built into the email body.
+// A stable test value lets tests assert on the URL shape if they wish.
+process.env.PUBLIC_APP_BASE_URL ??= "http://localhost:3000";
 
 export default defineConfig({
   test: {
@@ -45,6 +51,8 @@ export default defineConfig({
         "postgresql://shop:shop@localhost:5432/shop_test",
       NODE_ENV: "test",
       LOG_LEVEL: "silent",
+      EMAIL_TRANSPORT: "stub",
+      PUBLIC_APP_BASE_URL: "http://localhost:3000",
     },
   },
 });

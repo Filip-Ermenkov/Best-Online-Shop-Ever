@@ -1,6 +1,11 @@
 import { afterAll, beforeEach } from "vitest";
 import { sql } from "drizzle-orm";
 import { getDb } from "../../src/lib/db.js";
+import {
+  _resetEmailTransportForTests,
+  getEmailTransport,
+  getStubTransportForTests,
+} from "../../src/lib/emails.js";
 
 /**
  * Per-test isolation strategy:
@@ -50,6 +55,13 @@ beforeEach(async () => {
   // numeric suffix of orderNumber would otherwise drift across runs and
   // become flaky. ALTER … RESTART takes a metadata-only lock and is fast.
   await db.execute(sql`ALTER SEQUENCE orders_order_number_seq RESTART WITH 1`);
+
+  // Email transport: rebuild on first test, then reset the recorder. Without
+  // resetting, recorded emails from prior tests would leak into helpers that
+  // assert "exactly one mail sent for this test".
+  _resetEmailTransportForTests();
+  getEmailTransport(); // builds the stub from env
+  getStubTransportForTests().reset();
 });
 
 afterAll(async () => {

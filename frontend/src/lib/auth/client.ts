@@ -87,6 +87,9 @@ function classifyError(status: number, problem?: ProblemResponse): AuthError {
       unlockAt: problem.unlockAt,
     };
   }
+  if (status === 429 && problem?.type === "/problems/resend-rate-limited") {
+    return { kind: "resend_rate_limited", detail: problem.detail };
+  }
   return { kind: "unknown", status, detail: problem?.detail };
 }
 
@@ -155,6 +158,49 @@ export async function logout(): Promise<AuthResult<null>> {
   } catch (err) {
     return { ok: false, error: { kind: "network", cause: err } };
   }
+}
+
+/**
+ * Confirm an email address. The token comes from the verification email
+ * link's `?token=...` query parameter. The backend hashes it, looks up the
+ * row, marks consumed, sets users.email_verified_at.
+ *
+ * No session cookie required — the link IS the proof of ownership. The user
+ * may click it from any device, including one that has never logged in.
+ */
+export async function verifyEmail(
+  token: string,
+): Promise<AuthResult<{ ok: true }>> {
+  let res: Response;
+  try {
+    res = await authFetch("/auth/verify-email", {
+      method: "POST",
+      body: JSON.stringify({ token }),
+    });
+  } catch (err) {
+    return { ok: false, error: { kind: "network", cause: err } };
+  }
+  return withErrorMapping(res, async (r) => {
+    return (await r.json()) as { ok: true };
+  });
+}
+
+/**
+ * Trigger another verification email for the currently logged-in user.
+ * Backend rate-limits at 3/hour, 5/day. Already-verified accounts return
+ * the same 200 — UI consumers should refresh /auth/me afterwards if they
+ * want to confirm status.
+ */
+export async function resendVerification(): Promise<AuthResult<{ ok: true }>> {
+  let res: Response;
+  try {
+    res = await authFetch("/auth/resend-verification", { method: "POST" });
+  } catch (err) {
+    return { ok: false, error: { kind: "network", cause: err } };
+  }
+  return withErrorMapping(res, async (r) => {
+    return (await r.json()) as { ok: true };
+  });
 }
 
 /**

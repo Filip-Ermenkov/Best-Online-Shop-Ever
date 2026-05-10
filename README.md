@@ -13,6 +13,7 @@ Online shop project — Bulgarian-language e-commerce platform on AWS.
 ├── backend/
 │   ├── db/           Drizzle schema + migrations + seed (@shop/db)
 │   ├── auth/         Pure auth crypto primitives (@shop/auth)
+│   ├── email/        Transactional email — SES + console + stub (@shop/email)
 │   └── shop-api/     Hono API: catalog read + auth slice (@shop/api)
 ├── infra/            Terraform IaC (planned)
 ├── .github/
@@ -46,14 +47,16 @@ npm run api:dev
 npm run frontend:dev
 
 # Tests:
-npm --workspace @shop/auth run test    # 16 unit tests   (pure crypto)
-npm --workspace @shop/api  run test    # 93 integration tests against shop_test DB
+npm --workspace @shop/auth  run test   # pure crypto unit tests
+npm --workspace @shop/email run test   # template + transport unit tests
+npm --workspace @shop/api   run test   # integration tests against shop_test DB
 
 # Everything CI runs (typecheck + lint + tests). Approximates a green PR:
-npm run typecheck --workspaces --if-present   # 3 backend workspaces
+npm run typecheck --workspaces --if-present   # 4 backend workspaces
 npm --workspace shop run lint
-npm --workspace @shop/auth run test
-npm --workspace @shop/api  run test
+npm --workspace @shop/auth  run test
+npm --workspace @shop/email run test
+npm --workspace @shop/api   run test
 ```
 
 ## Continuous integration
@@ -65,10 +68,10 @@ exact regression:
 
 | Job              | What it runs                                                          | Service |
 | ---------------- | --------------------------------------------------------------------- | ------- |
-| `typecheck`      | `tsc --noEmit` across `@shop/db`, `@shop/auth`, `@shop/api`           | —       |
+| `typecheck`      | `tsc --noEmit` across `@shop/db`, `@shop/auth`, `@shop/email`, `@shop/api` | —  |
 | `lint`           | `next lint` on the frontend                                           | —       |
-| `auth-tests`     | 16 unit tests in `@shop/auth` (Argon2 + session tokens)               | —       |
-| `api-tests`      | 93 integration tests in `@shop/api`                                   | Postgres 17 |
+| `auth-tests`     | Unit tests in `@shop/auth` (Argon2 + session tokens) and `@shop/email` (templates + transports) | —       |
+| `api-tests`      | Integration tests in `@shop/api`                                      | Postgres 17 |
 
 Hardening:
 
@@ -144,10 +147,41 @@ Idempotency-Key: <client-generated v4 UUID>
 ```
 
 Replaying the same `Idempotency-Key` returns the original order verbatim
-(no second order, cart left untouched). Until the email-verification slice
-lands, customers registered via the live API have a NULL `email_verified_at`
-and the order endpoint returns 403 — bump it manually with
-`UPDATE users SET email_verified_at = now() WHERE email = '…';` to test.
+(no second order, cart left untouched).
+
+## Email verification
+
+Registration issues a 32-byte CSPRNG token (SHA-256 at rest, 24h validity)
+and sends a Bulgarian verification email. Until the email is confirmed,
+order placement returns
+`403 /problems/email-not-verified`; the rest of the catalog and cart
+remain reachable. The shop layout shows a sticky amber banner to logged-in
+users with `email_verified_at = NULL` carrying an "Изпрати отново" button,
+which calls `POST /auth/resend-verification` (rate-limited to 3/hour and
+5/day per user, returning `429 /problems/resend-rate-limited`).
+
+In **local dev** the `console` transport prints the verification email to
+`api:dev`'s stdout with a `VERIFY URL ⇒ …` line you can copy-paste into
+a browser tab. No SMTP server, no AWS account, no DKIM dance — just
+register → look at the API terminal → open the URL → done.
+
+In **production** flip `EMAIL_TRANSPORT=ses` and complete the SES DNS
+prerequisites BEFORE going live (Google/Yahoo/Microsoft 2026 bulk-sender
+rules require all three to be aligned):
+
+- DKIM verified (3 CNAMEs in the SES console).
+- Custom MAIL FROM subdomain (e.g. `mail.shop.example.com`) so the SPF
+  record aligns with the visible `From:` domain.
+- DMARC record at `_dmarc.shop.example.com` — start with `p=none` to
+  collect aggregate reports, tighten to `p=quarantine` once clean.
+- Move the SES account out of sandbox via Service Quotas → SES.
+
+Token cryptography mirrors the session-token design in `@shop/auth`:
+32-byte CSPRNG → base64url, SHA-256 hashed in the DB, single-use
+(`consumed_at` set on first use, subsequent uses rejected with the same
+generic 400 — no enumeration of token state). 24-hour expiry; the
+schema's `email_verification_tokens.kind` enum already supports the
+future `email_change` flow without a migration.
 
 ## Documentation
 
@@ -239,6 +273,23 @@ have to be re-derived when extending the codebase.
 - **Email-verified gate on order placement**: customers with a NULL
   `email_verified_at` get a 403 `/problems/email-not-verified`. Browsing
   and cart building stay unrestricted.
+- **Email transports** (`@shop/email`): a small interface (`send(email)`)
+  with three implementations — `ses` (production, `@aws-sdk/client-sesv2`
+  SESv2 `SendEmailCommand`, region-pinned to `eu-central-1` for GDPR
+  data residency), `console` (dev — logs the payload + a `VERIFY URL ⇒`
+  line so a developer can click straight from the API terminal), and
+  `stub` (in-memory recorder for tests). Selected by
+  `EMAIL_TRANSPORT={ses,console,stub}` env. The transport is constructed
+  lazily on first send, then memoised — keeps the Lambda cold-start
+  budget tight.
+- **Verification token cryptography** mirrors session tokens: 32-byte
+  CSPRNG → base64url, SHA-256 hashed in `email_verification_tokens.token_hash`,
+  single-use, 24-hour validity. Bad / expired / already-consumed tokens
+  return the SAME generic 400, no enumeration of token state.
+- **Best-effort verification email send**: registration NEVER rolls back
+  on email failure (an SES outage would otherwise block all signups).
+  Logs the error and continues; the user can recover via
+  `/auth/resend-verification` (rate-limited 3/hour, 5/day).
 
 ## Status
 
@@ -246,11 +297,31 @@ have to be re-derived when extending the codebase.
 
 - **`@shop/db`** — schema feature-complete for catalog, auth, cart, and orders.
   30 tables, 32 FKs, 43 indexes, 10 enums. Idempotent seed.
+  `email_verification_tokens` and `password_reset_tokens` were already in
+  the schema with `kind` (`signup` / `email_change`), `consumed_at`,
+  `expires_at` — the verification slice consumed them without a migration.
 - **`@shop/auth`** — Argon2id helpers, session token generation/hashing,
   `DUMMY_PASSWORD_HASH`. 16 unit tests.
+- **`@shop/email`** — transactional email. Three transports
+  (`createSesTransport`, `createConsoleTransport`, `createStubTransport`)
+  behind a common `EmailTransport` interface, plus the
+  `renderVerificationEmail` template (Bulgarian copy, inline-styled HTML
+  + plain-text fallback). `@aws-sdk/client-sesv2` is the only runtime
+  dep — no Nodemailer, no full SDK. Unit tests cover template rendering,
+  the SES `SendEmailCommand` shape (with a mocked client — never hits
+  AWS), and the stub transport's recorder API.
 - **`@shop/api`** — exposes:
   - `/products`, `/categories` (read API, ETag, cursor pagination)
   - `/auth/register`, `/auth/login`, `/auth/logout`, `/auth/me`
+  - `/auth/verify-email`, `/auth/resend-verification` — signup-token
+    flow. 32-byte CSPRNG → base64url, SHA-256 at rest, 24h validity,
+    single-use (`consumed_at`). `verify-email` is unauthenticated (the
+    link IS the proof of ownership); `resend-verification` requires a
+    session, is rate-limited at 3/hour and 5/day per user (returning
+    `429 /problems/resend-rate-limited`), and silently no-ops for an
+    already-verified user (no enumeration of verification state). Bad,
+    expired, or already-consumed tokens return the SAME generic
+    `400 /problems/invalid-verification-token`.
   - `/cart`, `/cart/items`, `/cart/items/:productId`, `/cart/merge`
     (gated by `requireAuth`; live-price hydration; silent-sum merge on
     duplicate; per-line cap of 99; out-of-stock add → 409; soft-deleted
@@ -263,8 +334,12 @@ have to be re-derived when extending the codebase.
     requires `deliveryAddress`, `pay_at_store` does not; corporate accounts
     snapshot `order_corporate_data`; email-verified gate)
   - `/health`, `/openapi.json`
-  - 93 integration tests (15 catalog + 7 categories + 16 auth + 30 cart +
-    25 orders) against `shop_test` DB.
+  - 100+ integration tests (catalog, categories, auth, cart, orders, and
+    the verification slice — register-sends-mail, verify happy/unknown/
+    expired/reused, resend auth-required/already-verified/rate-limit)
+    against `shop_test` DB. The vitest config forces
+    `EMAIL_TRANSPORT=stub` so tests can assert on what was "sent" without
+    hitting AWS; `per-test.ts` resets the recorder before every test.
   - `PublicUser` response includes `fullName` resolved from
     `customer_profiles` / `corporate_profiles` (null for admins).
 
@@ -318,12 +393,28 @@ have to be re-derived when extending the codebase.
     `?confirm=1`). Renders delivery address, corporate snapshot for B2B,
     notes. Cross-user 404s render the same not-found copy as a missing
     order — preserves the backend's enumeration-resistant contract.
+- **Email verification UI** wired end-to-end:
+  - `lib/auth/client.ts` — added `verifyEmail(token)` and
+    `resendVerification()`. New `resend_rate_limited` variant on the
+    `AuthError` discriminated union.
+  - `app/(shop)/account/verify-email/page.tsx` — handles the
+    `?token=…` link click. Posts once on mount (a `useRef` guards the
+    React 19 strict-mode double-invoke that would otherwise burn the
+    token). Three terminal states: pending → success / failure with
+    Bulgarian copy. On success, `AuthContext.refresh()` re-reads
+    `/auth/me` so the unverified-banner disappears immediately.
+  - `components/layout/EmailVerificationBanner.tsx` — sticky amber banner
+    in `(shop)/layout.tsx` shown to logged-in users with
+    `emailVerifiedAt = null`. Carries an "Изпрати отново" button that
+    calls `/auth/resend-verification` and surfaces the 429 message
+    inline. Hidden for the admin surface.
 - **Still on mock data**: product detail pages, search, admin
   product/category/order/customer screens. These are next slices.
 
 ### Deferred (auth-adjacent, not in this slice)
 
-- Email verification + password reset (need SES wiring).
+- Password reset (token table is in place; UI + endpoints are the next
+  slice that pairs with email verification).
 - MFA for admin (admin-api is its own slice).
 - Corporate registration UI + backend endpoint.
 - Account deletion / GDPR anonymization.
@@ -334,25 +425,34 @@ have to be re-derived when extending the codebase.
 
 - Infrastructure (Terraform): not started.
 - **GitHub Actions CI** ([`.github/workflows/ci.yml`](.github/workflows/ci.yml))
-  — landed. Runs on every `pull_request` against `main` and every `push` to
-  `main`. Four parallel jobs: `typecheck` (3 backend workspaces), `lint`
-  (frontend), `auth-tests` (16 unit tests), `api-tests` (93 integration
-  tests against a Postgres 17 service container). All third-party actions
-  pinned to commit SHAs; least-privilege `permissions: contents: read`;
+  — five parallel jobs running on every `pull_request` against `main`
+  and every `push` to `main`: `typecheck` (4 backend workspaces),
+  `lint` (frontend), `auth-tests`, `email-tests` (templates +
+  transports, SES mocked), and `api-tests` (against a Postgres 17
+  service container). All third-party actions pinned to commit SHAs;
+  least-privilege `permissions: contents: read`;
   `concurrency.cancel-in-progress: true`. See the
-  [Continuous integration](#continuous-integration) section above for the
-  full design notes and what's deliberately deferred.
+  [Continuous integration](#continuous-integration) section above for
+  the full design notes and what's deliberately deferred.
 - **Branch protection**: not configured yet. Once the workflow has run
   green at least once, add a branch protection rule on `main` requiring
-  all four checks to pass before merging — this is what converts CI from
+  all five checks to pass before merging — this is what converts CI from
   "informational" to "actually protective".
 
 ### Recommended next slices
 
-- **Email + verification** (SES wiring + 24h tokens + rate-limited resend).
-  Closes the registration enumeration loop and unblocks password reset.
-  Also lifts the manual `UPDATE users SET email_verified_at = now()`
-  workaround currently required to test order placement.
+- **Password reset** — pairs naturally with the verification slice.
+  Schema's `password_reset_tokens` table is already in place. Endpoints
+  needed: `POST /auth/forgot-password` (issues a token + sends mail,
+  returns generic ok), `POST /auth/reset-password` (consumes token,
+  rotates `password_hash`, drops all sessions for the user via the
+  existing `deleteAllSessionsForUser`). 1h token lifetime per OWASP.
+- **SES production DNS** — before flipping `EMAIL_TRANSPORT=ses` in
+  production, complete DKIM verification (3 CNAMEs), Custom MAIL FROM
+  subdomain (so SPF aligns with the visible `From:`), DMARC TXT record,
+  and move the SES account out of sandbox via Service Quotas. Required
+  by Google/Yahoo/Microsoft/La Poste 2026 bulk-sender rules — without
+  it, every verification email lands in spam.
 - **Real product detail / search pages** — replaces the remaining mock
   catalog data on the storefront. Account orders pages are already real.
 - **Production driver swap for orders** — `db.transaction()` on Drizzle's

@@ -29,6 +29,7 @@ export type AuthError =
   | { kind: "validation"; fields: { path: string; message: string }[]; detail?: string }
   | { kind: "invalid_credentials"; detail?: string }
   | { kind: "account_locked"; detail?: string; unlockAt?: string }
+  | { kind: "resend_rate_limited"; detail?: string }
   | { kind: "unauthenticated" }
   | { kind: "network"; cause: unknown }
   | { kind: "unknown"; status: number; detail?: string };

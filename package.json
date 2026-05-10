@@ -7,6 +7,7 @@
     "frontend",
     "backend/db",
     "backend/auth",
+    "backend/email",
     "backend/shop-api"
   ],
   "scripts": {
@@ -19,6 +20,7 @@
     "db:seed": "npm --workspace @shop/db run db:seed",
     "db:reset": "npm --workspace @shop/db run db:reset",
     "auth:test": "npm --workspace @shop/auth run test",
+    "email:test": "npm --workspace @shop/email run test",
     "api:dev": "npm --workspace @shop/api run dev",
     "api:test": "npm --workspace @shop/api run test",
     "frontend:dev": "npm --workspace shop run dev"

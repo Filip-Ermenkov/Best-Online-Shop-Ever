@@ -15,7 +15,14 @@ import {
   setSessionCookie,
 } from "../lib/cookies.js";
 import { getDb } from "../lib/db.js";
+import {
+  consumeSignupVerificationToken,
+  evaluateResendRateLimit,
+  issueSignupVerificationToken,
+  sendSignupVerificationEmail,
+} from "../lib/email-verification.js";
 import { ApiError, ProblemSchema, internal } from "../lib/errors.js";
+import { logger as baseLogger } from "../lib/logger.js";
 import { getLockoutState, recordAttempt } from "../lib/lockout.js";
 import { createSession, deleteSession } from "../lib/sessions.js";
 import { validationHook } from "../lib/validation-hook.js";
@@ -23,12 +30,6 @@ import { requireAuth, type AuthVariables } from "../middleware/auth.js";
 
 // ─── Reusable schemas ──────────────────────────────────────────────────────
 
-/**
- * Email validation:
- *   - RFC-style email shape via Zod
- *   - max 254 chars (RFC 5321 SMTP path limit)
- *   - normalised to lowercase + trim before storage / lookup
- */
 const EmailSchema = z
   .string()
   .trim()
@@ -37,21 +38,6 @@ const EmailSchema = z
   .max(254, "Email is too long")
   .openapi({ example: "ivan@example.com" });
 
-/**
- * Password validation matches README §8 spec:
- *   - min 8 characters
- *   - at least one uppercase letter
- *   - at least one lowercase letter
- *   - at least one digit
- *
- * NIST 800-63B Rev 4 (July 2025) drops mandatory complexity in favour of
- * length, but the spec's complexity rules are application-side product
- * decisions and we honour them. The frontend already shows a real-time
- * checklist matching these.
- *
- * No max length here — argon2id rehashes any input length to a fixed-size
- * digest, so allowing 256+ char passphrases costs nothing.
- */
 const PasswordSchema = z
   .string()
   .min(8, "Password must be at least 8 characters")
@@ -62,8 +48,6 @@ const PasswordSchema = z
   .openapi({ description: "≥8 chars, ≥1 upper, ≥1 lower, ≥1 digit." });
 
 const FullNameSchema = z.string().trim().min(1, "Name is required").max(120);
-// Keep the phone permissive — proper E.164 validation belongs in a follow-up
-// once we know which markets the spec targets beyond Bulgaria.
 const PhoneSchema = z.string().trim().min(3, "Phone is required").max(40);
 
 const PublicUserSchema = z
@@ -73,13 +57,6 @@ const PublicUserSchema = z
     role: z.enum(["admin", "customer"]),
     accountType: z.enum(["personal", "corporate"]).nullable(),
     emailVerifiedAt: z.string().nullable(),
-    /**
-     * Display name. For customer accounts this is `customer_profiles.full_name`
-     * (single field — splitting into first/last is a UI concern). For corporate
-     * it's `corporate_profiles.contact_name` (the buyer-on-record). For admin
-     * accounts there is no profile row, so this is `null` and the UI should
-     * fall back to the email.
-     */
     fullName: z.string().nullable(),
   })
   .openapi("PublicUser");
@@ -95,19 +72,6 @@ const RegisterRequestSchema = z
   })
   .openapi("RegisterRequest");
 
-/**
- * Register response.
- *
- * We deliberately return a generic { ok: true } shape rather than the new
- * user object. Reason: spec README §8 forbids leaking whether an email is
- * already registered. If we returned the user record on the new path and
- * an error on the existing path, the status code itself would leak.
- *
- * In this slice email isn't wired, so a duplicate email currently still
- * 200s and silently no-ops. When SES + verification land, the duplicate
- * branch will send a "you already have an account" email. The HTTP shape
- * stays the same.
- */
 const RegisterResponseSchema = z
   .object({ ok: z.literal(true) })
   .openapi("RegisterResponse");
@@ -141,9 +105,6 @@ const registerRoute = createRoute({
 const LoginRequestSchema = z
   .object({
     email: EmailSchema,
-    // Login does NOT enforce the registration complexity rules — old accounts
-    // that pre-date a tightening must still be able to authenticate. Just
-    // bound the length to deflect abuse.
     password: z.string().min(1).max(1024),
     rememberMe: z.boolean().default(false),
   })
@@ -215,6 +176,73 @@ const meRoute = createRoute({
   },
 });
 
+// ─── Verify email ──────────────────────────────────────────────────────────
+
+const VerifyEmailRequestSchema = z
+  .object({
+    token: z.string().trim().min(20).max(200),
+  })
+  .openapi("VerifyEmailRequest");
+
+const VerifyEmailResponseSchema = z
+  .object({ ok: z.literal(true) })
+  .openapi("VerifyEmailResponse");
+
+const verifyEmailRoute = createRoute({
+  method: "post",
+  path: "/verify-email",
+  tags: ["auth"],
+  summary: "Confirm an email address using a token from the verification link",
+  request: {
+    body: {
+      required: true,
+      content: { "application/json": { schema: VerifyEmailRequestSchema } },
+    },
+  },
+  responses: {
+    200: {
+      description: "Token consumed; the user's email is now verified.",
+      content: { "application/json": { schema: VerifyEmailResponseSchema } },
+    },
+    400: {
+      description:
+        "Token is invalid, expired, or already consumed. Same body for all three to prevent enumeration of token state.",
+      content: { "application/problem+json": { schema: ProblemSchema } },
+    },
+  },
+});
+
+// ─── Resend verification ───────────────────────────────────────────────────
+
+const ResendVerificationResponseSchema = z
+  .object({ ok: z.literal(true) })
+  .openapi("ResendVerificationResponse");
+
+const resendVerificationRoute = createRoute({
+  method: "post",
+  path: "/resend-verification",
+  tags: ["auth"],
+  summary: "Resend the email-verification link to the current user",
+  request: {},
+  responses: {
+    200: {
+      description:
+        "Always 200 unless rate-limited. If the user is already verified the response is the same — no enumeration of state.",
+      content: {
+        "application/json": { schema: ResendVerificationResponseSchema },
+      },
+    },
+    401: {
+      description: "No active session.",
+      content: { "application/problem+json": { schema: ProblemSchema } },
+    },
+    429: {
+      description: "Resend rate limit exceeded.",
+      content: { "application/problem+json": { schema: ProblemSchema } },
+    },
+  },
+});
+
 // ─── Router ────────────────────────────────────────────────────────────────
 
 export const authRoutes = new OpenAPIHono<{ Variables: AuthVariables }>({
@@ -224,8 +252,8 @@ export const authRoutes = new OpenAPIHono<{ Variables: AuthVariables }>({
 authRoutes.openapi(registerRoute, async (c) => {
   const body = c.req.valid("json");
   const db = getDb();
+  const log = baseLogger;
 
-  // Check for existing — but NEVER let the response distinguish.
   const [existing] = await db
     .select({ id: schema.users.id })
     .from(schema.users)
@@ -235,19 +263,12 @@ authRoutes.openapi(registerRoute, async (c) => {
     .limit(1);
 
   if (existing) {
-    // Quiet idempotent success — frontend always tells the user "check your
-    // inbox". When SES is wired, the duplicate branch will send the existing
-    // owner a "you already have an account" notice. We deliberately do not
-    // log the email at INFO here because that would be PII at scale; the
-    // request_end log already shows the route + status.
     return c.json({ ok: true } as const, 200);
   }
 
   const passwordHash = await hashPassword(body.password);
 
-  // Two-step insert (user + customer_profiles) inside a transaction so a
-  // crash between them can't leave a profile-less customer.
-  await db.transaction(async (tx) => {
+  const created = await db.transaction(async (tx) => {
     const inserted = await tx
       .insert(schema.users)
       .values({
@@ -255,7 +276,6 @@ authRoutes.openapi(registerRoute, async (c) => {
         passwordHash,
         role: "customer",
         accountType: "personal",
-        // emailVerifiedAt stays null until the email-verification flow lands.
       })
       .returning();
 
@@ -267,7 +287,21 @@ authRoutes.openapi(registerRoute, async (c) => {
       fullName: body.fullName,
       phone: body.phone,
     });
+
+    return user;
   });
+
+  try {
+    const issued = await issueSignupVerificationToken({ userId: created.id });
+    await sendSignupVerificationEmail({
+      to: body.email,
+      token: issued.token,
+      fullName: body.fullName,
+      logger: log,
+    });
+  } catch (err) {
+    log?.error({ err }, "verification_token_issue_failed");
+  }
 
   return c.json({ ok: true } as const, 200);
 });
@@ -276,8 +310,6 @@ authRoutes.openapi(loginRoute, async (c) => {
   const body = c.req.valid("json");
   const db = getDb();
 
-  // 1. Lockout pre-check. Cheap — single COUNT — and short-circuits the
-  //    expensive argon2 verify when we're already locked out.
   const lockout = await getLockoutState(body.email);
   if (lockout.locked) {
     throw new ApiError({
@@ -290,9 +322,6 @@ authRoutes.openapi(loginRoute, async (c) => {
     });
   }
 
-  // 2. Lookup. Even unknown emails advance through argon2.verify() against
-  //    DUMMY_PASSWORD_HASH so the response time is constant regardless of
-  //    whether the email exists.
   const [user] = await db
     .select({
       id: schema.users.id,
@@ -312,8 +341,6 @@ authRoutes.openapi(loginRoute, async (c) => {
     : await DUMMY_PASSWORD_HASH;
   const ok = await verifyPassword(targetHash, body.password);
 
-  // 3. Audit log + lockout-counter advance. We log BOTH success and failure
-  //    so a future "show recent logins" page on /account is straightforward.
   const ip = clientIp(c);
   const ua = c.req.header("user-agent") ?? null;
   const isRealSuccess = ok && !!user && !user.deletedAt;
@@ -325,7 +352,6 @@ authRoutes.openapi(loginRoute, async (c) => {
   });
 
   if (!isRealSuccess || !user) {
-    // Identical body for unknown email and wrong password — no enumeration.
     throw new ApiError({
       type: "about:blank",
       title: "Unauthorized",
@@ -334,10 +360,6 @@ authRoutes.openapi(loginRoute, async (c) => {
     });
   }
 
-  // 4. Opportunistic rehash if the stored hash uses outdated parameters.
-  //    Cheap to check; only runs on params drift. Fire-and-forget would be
-  //    nicer but we want the new hash to be in place before the next login,
-  //    so we await.
   if (needsRehash(user.passwordHash)) {
     const upgraded = await hashPassword(body.password);
     await db
@@ -346,7 +368,6 @@ authRoutes.openapi(loginRoute, async (c) => {
       .where(eq(schema.users.id, user.id));
   }
 
-  // 5. Mint the session, set the cookie, return the public user view.
   const { token } = await createSession({
     userId: user.id,
     rememberMe: body.rememberMe,
@@ -380,18 +401,13 @@ authRoutes.openapi(logoutRoute, async (c) => {
     await deleteSession(token);
   }
   clearSessionCookie(c);
-  // 204 is the right shape — no body, request was processed.
   return c.body(null, 204);
 });
 
-// /me uses the requireAuth gate. currentUser at the app level has already
-// populated c.var.user when a valid cookie is present.
 authRoutes.use(meRoute.path, requireAuth);
 authRoutes.openapi(meRoute, async (c) => {
-  // requireAuth guaranteed user is set, but the type system can't see that.
   const user = c.get("user");
   if (!user) {
-    // Defensive — should never trigger.
     throw new ApiError({
       type: "about:blank",
       title: "Unauthorized",
@@ -417,20 +433,78 @@ authRoutes.openapi(meRoute, async (c) => {
   );
 });
 
+// /verify-email is intentionally NOT gated by requireAuth. Anyone holding the
+// link can confirm the address — that IS the proof of email ownership.
+authRoutes.openapi(verifyEmailRoute, async (c) => {
+  const body = c.req.valid("json");
+  const log = baseLogger;
+
+  const result = await consumeSignupVerificationToken(body.token);
+  if (!result) {
+    throw new ApiError({
+      type: "/problems/invalid-verification-token",
+      title: "Invalid Verification Link",
+      status: 400,
+      detail:
+        "This verification link is invalid or has expired. Request a new one from your account.",
+    });
+  }
+
+  log?.info(
+    { userId: result.userId, alreadyVerified: result.alreadyVerified },
+    "email_verified",
+  );
+
+  return c.json({ ok: true } as const, 200);
+});
+
+// /resend-verification REQUIRES a session — only the account owner can
+// trigger another mail to themselves.
+authRoutes.use(resendVerificationRoute.path, requireAuth);
+authRoutes.openapi(resendVerificationRoute, async (c) => {
+  const user = c.get("user");
+  if (!user) {
+    throw new ApiError({
+      type: "about:blank",
+      title: "Unauthorized",
+      status: 401,
+      detail: "Authentication is required.",
+    });
+  }
+  const log = baseLogger;
+
+  if (user.emailVerifiedAt) {
+    return c.json({ ok: true } as const, 200);
+  }
+
+  const decision = await evaluateResendRateLimit(user.id);
+  if (!decision.allowed) {
+    throw new ApiError({
+      type: "/problems/resend-rate-limited",
+      title: "Too Many Resend Requests",
+      status: 429,
+      detail:
+        decision.reason === "hourly"
+          ? "You can request another verification email in about an hour."
+          : "You can request another verification email tomorrow.",
+    });
+  }
+
+  const fullName = await resolveFullName(getDb(), user.id, user.role);
+
+  const issued = await issueSignupVerificationToken({ userId: user.id });
+  await sendSignupVerificationEmail({
+    to: user.email,
+    token: issued.token,
+    fullName,
+    logger: log,
+  });
+
+  return c.json({ ok: true } as const, 200);
+});
+
 // ─── Helpers ───────────────────────────────────────────────────────────────
 
-/**
- * Resolve a display name for a user. Customers store it in
- * customer_profiles.full_name (single field by design — splitting into
- * first/last is a UI concern). Corporate accounts use the contact-on-record
- * from corporate_profiles. Admins have no profile row, so this returns null
- * and the UI should fall back to the email.
- *
- * Single targeted query per branch — cheaper than a left-join we'd then have
- * to type-narrow. /me is gated by a valid session anyway, so the cost is
- * bounded to authenticated reads (frontend calls it on mount + after login,
- * not on every navigation).
- */
 async function resolveFullName(
   db: DbClient,
   userId: string,
@@ -438,9 +512,6 @@ async function resolveFullName(
 ): Promise<string | null> {
   if (role === "admin") return null;
 
-  // Try customer profile first — that's the personal-account path, which is
-  // the only one we currently register through /auth/register. Corporate
-  // accounts will land here once the corporate registration slice ships.
   const [customer] = await db
     .select({ fullName: schema.customerProfiles.fullName })
     .from(schema.customerProfiles)
@@ -455,20 +526,9 @@ async function resolveFullName(
     .limit(1);
   if (corporate) return corporate.contactName;
 
-  // Customer with no profile row should not happen — register transaction
-  // creates both atomically. Defensive null keeps the response shape stable.
   return null;
 }
 
-/**
- * Best-effort client IP. CloudFront in production sets x-forwarded-for; we
- * trust only the FIRST hop (the public client) and ignore everything after,
- * because intermediate hops can be forged by clients sending fake headers.
- *
- * In local dev the header is absent — we get the connecting socket's address
- * from Hono's connInfo if available, or null. Null is fine: ipAddress is
- * a nullable column.
- */
 function clientIp(c: Context): string | null {
   const xff = c.req.header("x-forwarded-for");
   if (xff) {

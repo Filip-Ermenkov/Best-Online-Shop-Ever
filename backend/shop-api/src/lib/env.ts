@@ -29,6 +29,45 @@ const EnvSchema = z.object({
     .enum(["fatal", "error", "warn", "info", "debug", "trace", "silent"])
     .default("info"),
   NODE_ENV: z.enum(["development", "production", "test"]).default("development"),
+
+  // ─── Email transport ──────────────────────────────────────────────────────
+  /**
+   * Which transport to use.
+   *   - `console` → log payload to stdout (dev default; zero setup).
+   *   - `ses`     → AWS SESv2; production. Requires verified sender + IAM.
+   *   - `stub`    → record-only in-memory. Tests force this via vitest.config.
+   *
+   * Defaults to `console`. Production deploys must explicitly set `ses`.
+   */
+  EMAIL_TRANSPORT: z.enum(["console", "ses", "stub"]).default("console"),
+  /**
+   * RFC 5322 mailbox of the sender. Must be a verified identity in SES when
+   * EMAIL_TRANSPORT=ses. In dev/test it can be any string — the console and
+   * stub transports never actually send.
+   */
+  EMAIL_FROM: z.string().default("Best Online Shop <noreply@example.com>"),
+  /**
+   * AWS region for SES. eu-central-1 (Frankfurt) is the project's default
+   * for GDPR data-residency. Override per environment if needed.
+   */
+  EMAIL_AWS_REGION: z.string().default("eu-central-1"),
+  /**
+   * Optional SES configuration set name. Wire bounce/complaint events
+   * through this when the suppression-list slice ships. Empty string is
+   * treated as "not set" by the transport.
+   */
+  EMAIL_CONFIGURATION_SET: z.string().default(""),
+  /**
+   * Public URL of the frontend, used to build clickable links in emails:
+   *   `${PUBLIC_APP_BASE_URL}/account/verify-email?token=…`
+   *
+   * No trailing slash (the transformer strips them). Local dev defaults to
+   * the Next.js dev server.
+   */
+  PUBLIC_APP_BASE_URL: z
+    .string()
+    .default("http://localhost:3000")
+    .transform((s) => s.replace(/\/+$/, "")),
 });
 
 export type Env = z.infer<typeof EnvSchema>;

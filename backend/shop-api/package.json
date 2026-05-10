@@ -23,6 +23,7 @@
     "@hono/node-server": "^2.0.1",
     "@shop/auth": "*",
     "@shop/db": "*",
+    "@shop/email": "*",
     "drizzle-orm": "^0.36.4",
     "hono": "^4.12.16",
     "pino": "^10.3.1",
