@@ -25,12 +25,25 @@ import { NextResponse, type NextRequest } from "next/server";
 //   Development: shop_session         (no __Host- prefix because dev is http)
 const SESSION_COOKIE_NAMES = ["__Host-shop_session", "shop_session"];
 
-/** Paths under /account that anonymous visitors are allowed to reach. */
+/**
+ * Paths under /account that anonymous visitors are allowed to reach.
+ *
+ * The two recovery flows — verify-email and reset-password — MUST be public.
+ * The link in the email IS the proof of identity for those flows; the user
+ * may legitimately click from any device, including one that has never
+ * logged in (a phone after registering on a desktop, for example). Gating
+ * them behind a session would force the user to log in first, which is
+ * precisely the wrong UX for a "I forgot how to log in" recovery path.
+ *
+ * Token validation still happens at the API layer — the proxy just gets out
+ * of the way and lets the page mount.
+ */
 const PUBLIC_ACCOUNT_PATHS = [
   "/account/login",
   "/account/register",
   "/account/forgot-password",
-  // /account/reset-password/* will go here once the password-reset slice ships.
+  "/account/reset-password",
+  "/account/verify-email",
 ];
 
 function hasSessionCookie(req: NextRequest): boolean {

@@ -183,6 +183,68 @@ generic 400 — no enumeration of token state). 24-hour expiry; the
 schema's `email_verification_tokens.kind` enum already supports the
 future `email_change` flow without a migration.
 
+## Password reset
+
+`/account/forgot-password` accepts an email and POSTs to
+`POST /auth/forgot-password`, which issues a 32-byte CSPRNG token
+(SHA-256 at rest, **1-hour validity** — the OWASP-recommended upper
+bound) and sends a Bulgarian "set a new password" email. The endpoint
+ALWAYS returns the same `{ ok: true }` regardless of whether the address
+is registered, regardless of internal rate-limiting, regardless of email-
+send failure — leaking any of those would defeat the
+enumeration-resistance work in `/auth/register`.
+
+The email links to `/account/reset-password?token=…`. The page fires
+`POST /auth/reset-password/check` **on mount** to validate the token
+without consuming it, so a dead/used link renders the "invalid link" UI
+immediately — no form, no wasted password typing. Industry-standard UX
+(GitHub, Google, Auth0, Stripe). The check endpoint returns the same
+generic `400 /problems/invalid-reset-token` for unknown/expired/consumed.
+
+Posting the token plus a new password to `POST /auth/reset-password`
+atomically (a) marks the token consumed, (b) invalidates **every other**
+outstanding reset token for the same user (defends against parallel-
+token phishing), (c) rotates `password_hash`, and (d) drops every
+active session for the user (per NIST SP 800-63B-4 and OWASP — an
+attacker who initiated the reset is signed out alongside the legitimate
+user). The reset endpoint is unauthenticated: the link IS the proof of
+identity, just like `/verify-email`.
+
+After a successful reset the API sends a **second** Bulgarian email,
+`auth.password-changed`, telling the recipient when the change happened
+and what to do if they did NOT request it (lock down email, contact
+support). 2026 best practice — gives the victim of a phished mailbox a
+real-time alert.
+
+Rate limiting on the forgot endpoint: per-EMAIL caps (3/hour, 5/day)
+evaluated BEFORE issuing a token. A rate-limited request still returns
+the same generic 200 — surfacing 429 here would itself leak that the
+email is registered. Per-IP volume defence stays at WAF (matches the
+lockout slice's stance).
+
+**Multi-device session drop:** the reset deletes every `sessions` row
+for the user server-side, but a cookie sitting in another browser
+isn't reachable that way (cookies live in the browser; only Set-Cookie
+response headers can clear them). The `currentUser` middleware closes
+the loop: whenever a request arrives with a cookie that no longer
+matches any session row, the response carries a `Set-Cookie: Max-Age=0`
+header that wipes the orphaned cookie. One round-trip on the other
+browser is enough — without this, the thin proxy keeps treating the
+dead cookie as "logged in" and bounces `/account/login` back to
+`/account/profile` in a UX loop.
+
+In **local dev**, `console`-transport prints both emails to `api:dev`'s
+stdout. Smoke flow: register → log in → /account/forgot-password →
+copy the reset URL from the API terminal → submit a new password →
+land on /account/login with a green "Паролата Ви беше променена
+успешно" banner → log in with the new password.
+
+**Cross-device behaviour you can demo locally:** open two browsers
+logged in as the same user; reset from one; navigate anywhere on the
+second; AuthContext fetches /auth/me which clears the stale cookie via
+Set-Cookie; the second browser is now signed out cleanly and can log
+in with the new password.
+
 ## Documentation
 
 Read the docs in this order:
@@ -227,6 +289,17 @@ have to be re-derived when extending the codebase.
 - **Two-tier auth middleware**: `currentUser` (best-effort, never 401s) plus
   `requireAuth` (gate). `currentUser` runs on `/products/*`, `/categories/*`,
   `/auth/*`. `/health` is intentionally excluded.
+- **Orphaned-cookie cleanup**: `currentUser` calls `clearSessionCookie(c)`
+  whenever the cookie is present but `validateSession` returns null
+  (session expired / user deleted / session row dropped by a password
+  reset on another device). The response carries `Set-Cookie:
+  …; Max-Age=0` which wipes the stale cookie on the caller's browser.
+  Without this, the thin proxy's cookie-presence check would keep
+  treating Browser B as authenticated indefinitely, redirecting
+  `/account/login` → `/account/profile` → 401 → `/login` in a loop the
+  user can't escape from. A DB hiccup branch deliberately does NOT
+  clear the cookie — the session may still be perfectly valid; we just
+  couldn't reach the DB to confirm.
 - **CORS with credentials** explicitly enabled. Frontend uses
   `credentials: "include"` on every `/auth/*`, `/cart/*`, `/orders/*` fetch;
   API echoes the origin from an allowlist (no wildcard, which is incompatible
@@ -235,7 +308,13 @@ have to be re-derived when extending the codebase.
   advertise the header explicitly or the browser blocks the actual `POST`.
 - **Next.js 16 thin proxy** (`frontend/src/proxy.ts`, formerly `middleware.ts`):
   cookie-presence check only, never validates the token. Real auth happens
-  in pages and Server Components.
+  in pages and Server Components. `PUBLIC_ACCOUNT_PATHS` enumerates the
+  account-prefixed routes anonymous visitors are allowed to reach:
+  `/login`, `/register`, `/forgot-password`, `/reset-password`,
+  `/verify-email`. Both recovery routes MUST be public — the email link
+  IS the proof of identity, and the user may legitimately click it from
+  any device, including one that has never logged in. Token validation
+  stays at the API layer; the proxy just gets out of the way.
 - **SSR identity bootstrap**: root layout calls `getServerUser()` which
   forwards the session cookie via `next/headers` to `GET /auth/me`. Initial
   user is passed into the client `AuthProvider` so first paint already shows
@@ -290,6 +369,51 @@ have to be re-derived when extending the codebase.
   on email failure (an SES outage would otherwise block all signups).
   Logs the error and continues; the user can recover via
   `/auth/resend-verification` (rate-limited 3/hour, 5/day).
+- **Password-reset token cryptography** mirrors verification: 32-byte
+  CSPRNG → base64url, SHA-256 hashed in `password_reset_tokens.token_hash`,
+  single-use, **1-hour validity** (per OWASP — tighter than the 24h
+  verification token because the attack value is higher). Bad / expired /
+  already-consumed tokens return the SAME generic
+  `400 /problems/invalid-reset-token`.
+- **`POST /auth/forgot-password` is enumeration-resistant by contract**:
+  the response body is identical for known emails, unknown emails,
+  internally-rate-limited emails, and SES-failure emails. Surfacing a
+  429 (or any 4xx/5xx beyond input-validation) on the forgot endpoint
+  would itself leak which addresses are registered. The hourly/daily
+  caps are evaluated INSIDE the handler before issuing a token, but the
+  decision is invisible to the caller.
+- **`POST /auth/reset-password` invalidates ALL outstanding reset tokens
+  for the user**, not just the one being consumed. An attacker who
+  phished token #1 must lose access the moment the user resets via
+  token #2 — single-token consumption alone doesn't cover that
+  attack class.
+- **`POST /auth/reset-password` drops every session for the user** (NIST
+  SP 800-63B-4 + OWASP defence-in-depth). The reset page intentionally
+  redirects to `/account/login?reset=success` rather than auto-logging
+  in: rewarding the page that just rotated the password with a fresh
+  session would benefit an attacker who clicked the link in a phished
+  inbox just as much as the legitimate user.
+- **Post-reset notification email** (`auth.password-changed`) sent on
+  every successful reset. Best-effort like the reset email itself —
+  failure to notify must NOT roll back the rotation. The notice carries
+  the timestamp + what to do if you didn't initiate the change.
+- **Validate-on-mount reset UX**: `/account/reset-password` POSTs to
+  `/auth/reset-password/check` on mount to discover dead links before
+  the user types anything. The check endpoint is pure-read: it does
+  NOT consume the token (consuming-as-probe doesn't work anyway —
+  Zod password-strength validation runs before token lookup, so the
+  consume endpoint can't be used as an oracle without rotating the
+  password). The endpoint is not meaningfully an attack surface either:
+  tokens are 256-bit random, so an attacker who could probe them still
+  couldn't enumerate the search space. Same generic
+  `400 /problems/invalid-reset-token` for any failure case.
+- **Reset page calls `logout()` before redirecting on success**: the
+  API drops every session for the user, but the cookie still sits in
+  THIS browser. Without a local logout, the redirect to
+  `/account/login?reset=success` would be bounced by the proxy
+  ("cookie present → logged in → /profile") and the user would loop.
+  `/auth/logout` is idempotent so this is also safe when the device
+  wasn't actually logged in.
 
 ## Status
 
@@ -304,10 +428,12 @@ have to be re-derived when extending the codebase.
   `DUMMY_PASSWORD_HASH`. 16 unit tests.
 - **`@shop/email`** — transactional email. Three transports
   (`createSesTransport`, `createConsoleTransport`, `createStubTransport`)
-  behind a common `EmailTransport` interface, plus the
-  `renderVerificationEmail` template (Bulgarian copy, inline-styled HTML
-  + plain-text fallback). `@aws-sdk/client-sesv2` is the only runtime
-  dep — no Nodemailer, no full SDK. Unit tests cover template rendering,
+  behind a common `EmailTransport` interface, plus three templates:
+  `renderVerificationEmail` (signup), `renderPasswordResetEmail`
+  (forgot-password link), and `renderPasswordChangedEmail` (post-reset
+  security notice). All Bulgarian copy, inline-styled HTML + plain-text
+  fallback. `@aws-sdk/client-sesv2` is the only runtime dep — no
+  Nodemailer, no full SDK. Unit tests cover every template's rendering,
   the SES `SendEmailCommand` shape (with a mocked client — never hits
   AWS), and the stub transport's recorder API.
 - **`@shop/api`** — exposes:
@@ -322,6 +448,25 @@ have to be re-derived when extending the codebase.
     already-verified user (no enumeration of verification state). Bad,
     expired, or already-consumed tokens return the SAME generic
     `400 /problems/invalid-verification-token`.
+  - `/auth/forgot-password`, `/auth/reset-password/check`,
+    `/auth/reset-password` — password-recovery flow. Same crypto shape
+    as verification; **1h validity** per OWASP.
+    `forgot-password` is unauthenticated and ALWAYS returns the same
+    `{ ok: true }` (enumeration-resistant); known emails get a Bulgarian
+    reset link, unknown emails get nothing, internally-rate-limited
+    emails (3/hr, 5/day per user) silently get nothing.
+    `reset-password/check` is the read-only "is this link still good?"
+    probe the reset page fires on mount — returns 200 `{ valid: true }`
+    for live tokens, 400 `/problems/invalid-reset-token` for any failure
+    state. Does NOT consume the token.
+    `reset-password` is unauthenticated (token IS the proof), accepts a
+    token + new password, atomically rotates `password_hash`,
+    invalidates EVERY other outstanding reset token for the user, and
+    drops EVERY session for the user. Bad / expired / already-consumed
+    tokens return the SAME generic `400 /problems/invalid-reset-token`.
+    After a successful reset, sends a Bulgarian "your password was
+    changed" notification (`auth.password-changed` template) —
+    best-effort, doesn't roll back on send failure.
   - `/cart`, `/cart/items`, `/cart/items/:productId`, `/cart/merge`
     (gated by `requireAuth`; live-price hydration; silent-sum merge on
     duplicate; per-line cap of 99; out-of-stock add → 409; soft-deleted
@@ -393,6 +538,36 @@ have to be re-derived when extending the codebase.
     `?confirm=1`). Renders delivery address, corporate snapshot for B2B,
     notes. Cross-user 404s render the same not-found copy as a missing
     order — preserves the backend's enumeration-resistant contract.
+- **Password reset UI** wired end-to-end:
+  - `lib/auth/client.ts` — added `forgotPassword(email)`,
+    `validateResetToken(token)`, and `resetPassword(token, newPassword)`.
+    New `invalid_reset_token` variant on the `AuthError`
+    discriminated union.
+  - `app/(shop)/account/forgot-password/page.tsx` — single email input.
+    Always shows the SAME "if this email exists, you'll receive a link"
+    success copy on any non-validation/non-network outcome — mirrors the
+    backend's enumeration-resistant contract.
+  - `app/(shop)/account/reset-password/page.tsx` — handles the
+    `?token=…` link click. Mount lifecycle: `checking` (validates the
+    token via `/auth/reset-password/check`) → `live` (shows form) or
+    `dead` (shows "invalid/expired" UI with a "Поискай нов линк"
+    button). React 19 strict-mode double-invoke guarded with a useRef.
+    New + confirm password inputs (confirm is client-only — the API has
+    no notion of confirm). Server-side validation rules are the source
+    of truth for password strength — the page surfaces the field error
+    inline. On success: calls `logout()` first to wipe a possibly-stale
+    local cookie (otherwise the proxy would bounce us off `/login`),
+    then redirects to `/account/login?reset=success` so the login page
+    renders a green "Паролата Ви беше променена успешно" banner.
+    Auto-login on success is intentionally NOT implemented — it would
+    benefit an attacker who clicked the link in a phished mailbox just
+    as much as the user.
+  - `proxy.ts` `PUBLIC_ACCOUNT_PATHS` — added `/account/reset-password`
+    AND (latent bug from the verification slice) `/account/verify-email`
+    to the anonymous-allowed list. Both recovery flows must work
+    without a session; the email link IS the proof of identity.
+  - The login page already linked to `/account/forgot-password`; that
+    link is now wired to a real handler.
 - **Email verification UI** wired end-to-end:
   - `lib/auth/client.ts` — added `verifyEmail(token)` and
     `resendVerification()`. New `resend_rate_limited` variant on the
@@ -413,8 +588,6 @@ have to be re-derived when extending the codebase.
 
 ### Deferred (auth-adjacent, not in this slice)
 
-- Password reset (token table is in place; UI + endpoints are the next
-  slice that pairs with email verification).
 - MFA for admin (admin-api is its own slice).
 - Corporate registration UI + backend endpoint.
 - Account deletion / GDPR anonymization.
@@ -441,12 +614,6 @@ have to be re-derived when extending the codebase.
 
 ### Recommended next slices
 
-- **Password reset** — pairs naturally with the verification slice.
-  Schema's `password_reset_tokens` table is already in place. Endpoints
-  needed: `POST /auth/forgot-password` (issues a token + sends mail,
-  returns generic ok), `POST /auth/reset-password` (consumes token,
-  rotates `password_hash`, drops all sessions for the user via the
-  existing `deleteAllSessionsForUser`). 1h token lifetime per OWASP.
 - **SES production DNS** — before flipping `EMAIL_TRANSPORT=ses` in
   production, complete DKIM verification (3 CNAMEs), Custom MAIL FROM
   subdomain (so SPF aligns with the visible `From:`), DMARC TXT record,

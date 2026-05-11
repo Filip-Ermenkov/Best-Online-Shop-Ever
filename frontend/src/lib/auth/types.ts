@@ -30,6 +30,13 @@ export type AuthError =
   | { kind: "invalid_credentials"; detail?: string }
   | { kind: "account_locked"; detail?: string; unlockAt?: string }
   | { kind: "resend_rate_limited"; detail?: string }
+  /**
+   * The reset link was unknown / expired / already consumed. The backend
+   * returns `application/problem+json` with type=/problems/invalid-reset-token
+   * for all three cases — we deliberately do NOT distinguish them in the UI
+   * either, to mirror the no-enumeration contract.
+   */
+  | { kind: "invalid_reset_token"; detail?: string }
   | { kind: "unauthenticated" }
   | { kind: "network"; cause: unknown }
   | { kind: "unknown"; status: number; detail?: string };

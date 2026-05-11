@@ -1,6 +1,6 @@
 import type { MiddlewareHandler } from "hono";
 import { getCookie } from "hono/cookie";
-import { sessionCookieName } from "../lib/cookies.js";
+import { clearSessionCookie, sessionCookieName } from "../lib/cookies.js";
 import { ApiError } from "../lib/errors.js";
 import { validateSession, type SessionAndUser } from "../lib/sessions.js";
 
@@ -49,10 +49,31 @@ export const currentUser: MiddlewareHandler<{ Variables: AuthVariables }> =
       if (result) {
         c.set("user", result.user);
         c.set("session", result.session);
+      } else {
+        // The cookie was present, but the session is gone — expired, the
+        // user was deleted, or the session row was dropped (the canonical
+        // case: someone hit /auth/reset-password from another device,
+        // which calls `deleteAllSessionsForUser`).
+        //
+        // Set-Cookie with Max-Age=0 wipes the now-orphaned cookie from the
+        // caller's browser. Without this, the cookie keeps coming back on
+        // every request and the thin proxy keeps treating cookie-presence
+        // as "logged in" — bouncing /account/login to /account/profile,
+        // which 401s, which redirects back to /login, in a UX loop the
+        // user can't escape from without manually clearing cookies.
+        //
+        // We do this in `currentUser` (not `requireAuth`) so the cleanup
+        // happens on EVERY route that mounts this middleware — including
+        // anonymous-allowed reads like /products and /categories. One
+        // navigation anywhere on the site is enough to break Browser B
+        // out of the loop.
+        clearSessionCookie(c);
       }
     } catch {
       // DB hiccup → treat as anonymous. The next request will retry.
-      // Don't leak the error into the request lifecycle.
+      // Don't leak the error into the request lifecycle, and don't
+      // clear the cookie either — it may be perfectly valid; we just
+      // couldn't reach the DB.
     }
 
     return next();

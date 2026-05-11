@@ -21,6 +21,14 @@ import {
   issueSignupVerificationToken,
   sendSignupVerificationEmail,
 } from "../lib/email-verification.js";
+import {
+  consumeResetToken,
+  evaluateForgotPasswordRateLimit,
+  issueResetToken,
+  sendPasswordChangedNotification,
+  sendPasswordResetEmail,
+  validateResetToken,
+} from "../lib/password-reset.js";
 import { ApiError, ProblemSchema, internal } from "../lib/errors.js";
 import { logger as baseLogger } from "../lib/logger.js";
 import { getLockoutState, recordAttempt } from "../lib/lockout.js";
@@ -238,6 +246,117 @@ const resendVerificationRoute = createRoute({
     },
     429: {
       description: "Resend rate limit exceeded.",
+      content: { "application/problem+json": { schema: ProblemSchema } },
+    },
+  },
+});
+
+// ─── Forgot password ───────────────────────────────────────────────────────
+
+const ForgotPasswordRequestSchema = z
+  .object({
+    email: EmailSchema,
+  })
+  .openapi("ForgotPasswordRequest");
+
+const ForgotPasswordResponseSchema = z
+  .object({ ok: z.literal(true) })
+  .openapi("ForgotPasswordResponse");
+
+const forgotPasswordRoute = createRoute({
+  method: "post",
+  path: "/forgot-password",
+  tags: ["auth"],
+  summary: "Request a password-reset email",
+  request: {
+    body: {
+      required: true,
+      content: { "application/json": { schema: ForgotPasswordRequestSchema } },
+    },
+  },
+  responses: {
+    200: {
+      description:
+        "Always 200 — the response body is identical regardless of whether the email is registered, regardless of internal rate-limiting, regardless of email-send success. This is the OWASP-recommended enumeration-resistant contract.",
+      content: { "application/json": { schema: ForgotPasswordResponseSchema } },
+    },
+    400: {
+      description: "Validation error (e.g. malformed email).",
+      content: { "application/problem+json": { schema: ProblemSchema } },
+    },
+  },
+});
+
+// ─── Check reset token (read-only validation, no consumption) ──────────────
+
+const CheckResetTokenRequestSchema = z
+  .object({
+    token: z.string().trim().min(20).max(200),
+  })
+  .openapi("CheckResetTokenRequest");
+
+const CheckResetTokenResponseSchema = z
+  .object({ valid: z.literal(true) })
+  .openapi("CheckResetTokenResponse");
+
+const checkResetTokenRoute = createRoute({
+  method: "post",
+  path: "/reset-password/check",
+  tags: ["auth"],
+  summary:
+    "Validate a reset token WITHOUT consuming it — used by the reset page to fail fast on a dead link",
+  request: {
+    body: {
+      required: true,
+      content: { "application/json": { schema: CheckResetTokenRequestSchema } },
+    },
+  },
+  responses: {
+    200: {
+      description: "Token is live (exists, unexpired, unconsumed, user OK).",
+      content: { "application/json": { schema: CheckResetTokenResponseSchema } },
+    },
+    400: {
+      description:
+        "Token is unknown, expired, or already consumed. Same generic body — no enumeration of token state.",
+      content: { "application/problem+json": { schema: ProblemSchema } },
+    },
+  },
+});
+
+// ─── Reset password ────────────────────────────────────────────────────────
+
+const ResetPasswordRequestSchema = z
+  .object({
+    token: z.string().trim().min(20).max(200),
+    newPassword: PasswordSchema,
+  })
+  .openapi("ResetPasswordRequest");
+
+const ResetPasswordResponseSchema = z
+  .object({ ok: z.literal(true) })
+  .openapi("ResetPasswordResponse");
+
+const resetPasswordRoute = createRoute({
+  method: "post",
+  path: "/reset-password",
+  tags: ["auth"],
+  summary: "Set a new password using a token from the reset email",
+  request: {
+    body: {
+      required: true,
+      content: { "application/json": { schema: ResetPasswordRequestSchema } },
+    },
+  },
+  responses: {
+    200: {
+      description:
+        "Password rotated; all sessions for the user have been dropped. The caller must redirect to /login — the session cookie they may be carrying is now dead.",
+      content: { "application/json": { schema: ResetPasswordResponseSchema } },
+    },
+    400: {
+      description:
+        "Token is invalid/expired/consumed, OR newPassword failed strength validation. The two cases are distinguished by `type`: /problems/invalid-reset-token vs the default validation problem with field-level errors.",
       content: { "application/problem+json": { schema: ProblemSchema } },
     },
   },
@@ -500,6 +619,133 @@ authRoutes.openapi(resendVerificationRoute, async (c) => {
     logger: log,
   });
 
+  return c.json({ ok: true } as const, 200);
+});
+
+// /forgot-password is intentionally unauthenticated — the user has FORGOTTEN
+// their password, so requireAuth is impossible. Enumeration resistance lives
+// inside the handler: every code path returns the same 200, always.
+authRoutes.openapi(forgotPasswordRoute, async (c) => {
+  const body = c.req.valid("json");
+  const db = getDb();
+  const log = baseLogger;
+
+  const [user] = await db
+    .select({
+      id: schema.users.id,
+      email: schema.users.email,
+      role: schema.users.role,
+    })
+    .from(schema.users)
+    .where(
+      and(eq(schema.users.email, body.email), isNull(schema.users.deletedAt)),
+    )
+    .limit(1);
+
+  if (!user) {
+    // Unknown email. Do nothing visible. We deliberately do NOT add a
+    // sleep-to-match here — Argon2 (~50ms) and SES API call (~100ms) dominate
+    // the timing variance, so a fake delay would have to be variable, which
+    // gives no real signal. Document the limitation: a determined attacker
+    // can probably distinguish via timing on a quiet endpoint, but combined
+    // with WAF rate-limiting and the per-email cap below for known users, the
+    // information value is very low.
+    log?.info({ outcome: "unknown_email" }, "forgot_password");
+    return c.json({ ok: true } as const, 200);
+  }
+
+  const decision = await evaluateForgotPasswordRateLimit(user.id);
+  if (!decision.allowed) {
+    // Internal rate limit hit. Same response — the caller MUST NOT learn
+    // that this email is registered AND being hammered.
+    log?.warn(
+      { userId: user.id, reason: decision.reason },
+      "forgot_password_rate_limited",
+    );
+    return c.json({ ok: true } as const, 200);
+  }
+
+  const fullName = await resolveFullName(db, user.id, user.role);
+
+  try {
+    const issued = await issueResetToken({ userId: user.id });
+    await sendPasswordResetEmail({
+      to: user.email,
+      token: issued.token,
+      fullName,
+      logger: log,
+    });
+  } catch (err) {
+    log?.error({ err, userId: user.id }, "forgot_password_issue_failed");
+  }
+
+  return c.json({ ok: true } as const, 200);
+});
+
+// /reset-password/check is the read-only "is this link still good?" probe
+// the reset page fires on mount. Returns 200 for live tokens, the SAME
+// generic 400/invalid-reset-token as the consume endpoint for any failure
+// state (unknown / expired / consumed / user deleted) — the page renders
+// the same dead-link UI in every failure case, no enumeration of why.
+authRoutes.openapi(checkResetTokenRoute, async (c) => {
+  const body = c.req.valid("json");
+  const valid = await validateResetToken(body.token);
+  if (!valid) {
+    throw new ApiError({
+      type: "/problems/invalid-reset-token",
+      title: "Invalid Reset Link",
+      status: 400,
+      detail:
+        "This reset link is invalid or has expired. Request a new one from the forgot-password page.",
+    });
+  }
+  return c.json({ valid: true } as const, 200);
+});
+
+// /reset-password is intentionally unauthenticated — the token IS the proof
+// of identity. The user clicking from the email link is by definition not
+// logged in (or, if they are, on an unrelated device); requiring a session
+// would defeat the recovery purpose.
+authRoutes.openapi(resetPasswordRoute, async (c) => {
+  const body = c.req.valid("json");
+  const log = baseLogger;
+
+  const result = await consumeResetToken({
+    rawToken: body.token,
+    newPassword: body.newPassword,
+  });
+  if (!result) {
+    throw new ApiError({
+      type: "/problems/invalid-reset-token",
+      title: "Invalid Reset Link",
+      status: 400,
+      detail:
+        "This reset link is invalid or has expired. Request a new one from the forgot-password page.",
+    });
+  }
+
+  // Best-effort notification. Failure to send the "your password was changed"
+  // email must NOT roll back the actual reset — the user has just lost
+  // access and recovering is the whole point. Log loudly instead.
+  const db = getDb();
+  // Re-resolve the full name post-rotation (cheap; one row by PK).
+  const [profile] = await db
+    .select({
+      fullName: schema.customerProfiles.fullName,
+    })
+    .from(schema.customerProfiles)
+    .where(eq(schema.customerProfiles.userId, result.userId))
+    .limit(1);
+  const fullName = profile?.fullName ?? null;
+
+  await sendPasswordChangedNotification({
+    to: result.email,
+    fullName,
+    changedAt: new Date(),
+    logger: log,
+  });
+
+  log?.info({ userId: result.userId }, "password_reset_completed");
   return c.json({ ok: true } as const, 200);
 });
 

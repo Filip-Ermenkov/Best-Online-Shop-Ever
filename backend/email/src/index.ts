@@ -34,3 +34,15 @@ export {
   VERIFICATION_TEMPLATE_ID,
 } from "./templates/verification.js";
 export type { VerificationTemplateInput } from "./templates/verification.js";
+
+export {
+  renderPasswordResetEmail,
+  PASSWORD_RESET_TEMPLATE_ID,
+} from "./templates/password-reset.js";
+export type { PasswordResetTemplateInput } from "./templates/password-reset.js";
+
+export {
+  renderPasswordChangedEmail,
+  PASSWORD_CHANGED_TEMPLATE_ID,
+} from "./templates/password-changed.js";
+export type { PasswordChangedTemplateInput } from "./templates/password-changed.js";

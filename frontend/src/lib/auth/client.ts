@@ -90,6 +90,9 @@ function classifyError(status: number, problem?: ProblemResponse): AuthError {
   if (status === 429 && problem?.type === "/problems/resend-rate-limited") {
     return { kind: "resend_rate_limited", detail: problem.detail };
   }
+  if (status === 400 && problem?.type === "/problems/invalid-reset-token") {
+    return { kind: "invalid_reset_token", detail: problem.detail };
+  }
   return { kind: "unknown", status, detail: problem?.detail };
 }
 
@@ -195,6 +198,94 @@ export async function resendVerification(): Promise<AuthResult<{ ok: true }>> {
   let res: Response;
   try {
     res = await authFetch("/auth/resend-verification", { method: "POST" });
+  } catch (err) {
+    return { ok: false, error: { kind: "network", cause: err } };
+  }
+  return withErrorMapping(res, async (r) => {
+    return (await r.json()) as { ok: true };
+  });
+}
+
+/**
+ * Request a password-reset email.
+ *
+ * The backend returns the same `{ ok: true }` regardless of whether the
+ * email is registered (enumeration resistance). Callers should always show
+ * the same "if the email exists, you'll receive a link" copy to the user.
+ *
+ * Validation errors (e.g. malformed email) still surface as 400 — render
+ * them inline against the input.
+ */
+export async function forgotPassword(
+  email: string,
+): Promise<AuthResult<{ ok: true }>> {
+  let res: Response;
+  try {
+    res = await authFetch("/auth/forgot-password", {
+      method: "POST",
+      body: JSON.stringify({ email }),
+    });
+  } catch (err) {
+    return { ok: false, error: { kind: "network", cause: err } };
+  }
+  return withErrorMapping(res, async (r) => {
+    return (await r.json()) as { ok: true };
+  });
+}
+
+/**
+ * Probe whether a reset token is still good, WITHOUT consuming it.
+ *
+ * The reset page fires this on mount so it can render the dead-link UI
+ * immediately for a consumed/expired link instead of making the user type
+ * a new password before learning the link is dead. Industry-standard UX
+ * (GitHub, Google, Auth0).
+ *
+ * 400/invalid_reset_token = dead. 200 = live. Network errors bubble up as
+ * `kind: "network"` and the caller should keep the form usable (fall back
+ * to the post-submit failure path) rather than hide it — better to let
+ * the user try than to lock them out on a transient blip.
+ */
+export async function validateResetToken(
+  token: string,
+): Promise<AuthResult<{ valid: true }>> {
+  let res: Response;
+  try {
+    res = await authFetch("/auth/reset-password/check", {
+      method: "POST",
+      body: JSON.stringify({ token }),
+    });
+  } catch (err) {
+    return { ok: false, error: { kind: "network", cause: err } };
+  }
+  return withErrorMapping(res, async (r) => {
+    return (await r.json()) as { valid: true };
+  });
+}
+
+/**
+ * Submit a new password using the token from the reset email.
+ *
+ * On success the backend has rotated the password AND dropped every session
+ * for the user — including, in the unlikely case the user was logged in on
+ * THIS device, this one. UI should redirect to /account/login afterwards.
+ *
+ * Errors:
+ *   - kind === "invalid_reset_token": link is bad/expired/consumed. Show
+ *     the generic "request a new link" copy.
+ *   - kind === "validation": the new password failed strength rules. Render
+ *     the field-level errors inline.
+ */
+export async function resetPassword(
+  token: string,
+  newPassword: string,
+): Promise<AuthResult<{ ok: true }>> {
+  let res: Response;
+  try {
+    res = await authFetch("/auth/reset-password", {
+      method: "POST",
+      body: JSON.stringify({ token, newPassword }),
+    });
   } catch (err) {
     return { ok: false, error: { kind: "network", cause: err } };
   }

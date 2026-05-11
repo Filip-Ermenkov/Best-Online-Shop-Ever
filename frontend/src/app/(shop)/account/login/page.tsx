@@ -29,6 +29,12 @@ export default function LoginPage() {
       ? nextParam
       : null;
 
+  // /account/reset-password redirects here with ?reset=success on a
+  // successful password reset. The banner is purely advisory — we don't
+  // pre-fill anything, and the URL parameter survives only until the user
+  // submits (the redirect on login wipes the query).
+  const justReset = params.get("reset") === "success";
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
@@ -77,6 +83,16 @@ export default function LoginPage() {
         <h1 className="text-2xl font-bold">Вход</h1>
         <p className="text-muted-foreground text-sm mt-1">Влезте в своя акаунт</p>
       </div>
+
+      {justReset && (
+        <div
+          role="status"
+          aria-live="polite"
+          className="mb-4 rounded-md border border-green-200 bg-green-50 p-3 text-sm text-green-700"
+        >
+          Паролата Ви беше променена успешно. Моля влезте с новата парола.
+        </div>
+      )}
 
       <form onSubmit={handleSubmit} className="space-y-4" noValidate>
         <div>
