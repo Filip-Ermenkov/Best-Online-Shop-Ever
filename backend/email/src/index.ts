@@ -46,3 +46,21 @@ export {
   PASSWORD_CHANGED_TEMPLATE_ID,
 } from "./templates/password-changed.js";
 export type { PasswordChangedTemplateInput } from "./templates/password-changed.js";
+
+export {
+  renderEmailChangeVerifyEmail,
+  EMAIL_CHANGE_VERIFY_TEMPLATE_ID,
+} from "./templates/email-change-verify.js";
+export type { EmailChangeVerifyTemplateInput } from "./templates/email-change-verify.js";
+
+export {
+  renderEmailChangeAlertEmail,
+  EMAIL_CHANGE_ALERT_TEMPLATE_ID,
+} from "./templates/email-change-alert.js";
+export type { EmailChangeAlertTemplateInput } from "./templates/email-change-alert.js";
+
+export {
+  renderEmailChangedEmail,
+  EMAIL_CHANGED_TEMPLATE_ID,
+} from "./templates/email-changed.js";
+export type { EmailChangedTemplateInput } from "./templates/email-changed.js";

@@ -29,7 +29,16 @@ import {
   sendPasswordResetEmail,
   validateResetToken,
 } from "../lib/password-reset.js";
-import { ApiError, ProblemSchema, internal } from "../lib/errors.js";
+import {
+  consumeEmailChangeToken,
+  evaluateEmailChangeRateLimit,
+  issueEmailChangeToken,
+  sendEmailChangeAlertEmail,
+  sendEmailChangeVerifyEmail,
+  sendEmailChangedNotification,
+  validateEmailChangeToken,
+} from "../lib/email-change.js";
+import { ApiError, ProblemSchema, badRequest, internal } from "../lib/errors.js";
 import { logger as baseLogger } from "../lib/logger.js";
 import { getLockoutState, recordAttempt } from "../lib/lockout.js";
 import { createSession, deleteSession } from "../lib/sessions.js";
@@ -357,6 +366,141 @@ const resetPasswordRoute = createRoute({
     400: {
       description:
         "Token is invalid/expired/consumed, OR newPassword failed strength validation. The two cases are distinguished by `type`: /problems/invalid-reset-token vs the default validation problem with field-level errors.",
+      content: { "application/problem+json": { schema: ProblemSchema } },
+    },
+  },
+});
+
+// ─── Email change: request ─────────────────────────────────────────────────
+
+const EmailChangeRequestSchema = z
+  .object({
+    currentPassword: z.string().min(1).max(1024),
+    newEmail: EmailSchema,
+  })
+  .openapi("EmailChangeRequest");
+
+const EmailChangeRequestResponseSchema = z
+  .object({ ok: z.literal(true) })
+  .openapi("EmailChangeRequestResponse");
+
+const emailChangeRequestRoute = createRoute({
+  method: "post",
+  path: "/email-change/request",
+  tags: ["auth"],
+  summary:
+    "Request to change the authenticated user's email address. Requires the current password as re-auth proof.",
+  request: {
+    body: {
+      required: true,
+      content: { "application/json": { schema: EmailChangeRequestSchema } },
+    },
+  },
+  responses: {
+    200: {
+      description:
+        "Request accepted. ALWAYS returns the same shape regardless of whether the new address is already in use or whether the internal rate-limit was hit — same enumeration-resistant contract as forgot-password. A verify link is sent to the new address; an alert is sent to the old.",
+      content: {
+        "application/json": { schema: EmailChangeRequestResponseSchema },
+      },
+    },
+    400: {
+      description:
+        "Validation error (e.g. malformed email, or new email equal to current).",
+      content: { "application/problem+json": { schema: ProblemSchema } },
+    },
+    401: {
+      description:
+        "Either no active session OR the supplied current password is wrong. Identical response body for both — distinguishing them would leak whether the cookie alone is enough.",
+      content: { "application/problem+json": { schema: ProblemSchema } },
+    },
+  },
+});
+
+// ─── Email change: check verify token (read-only) ──────────────────────────
+
+const CheckEmailChangeTokenRequestSchema = z
+  .object({
+    token: z.string().trim().min(20).max(200),
+  })
+  .openapi("CheckEmailChangeTokenRequest");
+
+const CheckEmailChangeTokenResponseSchema = z
+  .object({
+    valid: z.literal(true),
+    newEmail: z.string().openapi({
+      description:
+        "The proposed new address — surfaced so the verify page can render 'you are confirming change to X' copy.",
+    }),
+  })
+  .openapi("CheckEmailChangeTokenResponse");
+
+const checkEmailChangeTokenRoute = createRoute({
+  method: "post",
+  path: "/email-change/verify/check",
+  tags: ["auth"],
+  summary:
+    "Validate an email-change verify token WITHOUT consuming it. Used by the verify page to fail fast on a dead link.",
+  request: {
+    body: {
+      required: true,
+      content: {
+        "application/json": { schema: CheckEmailChangeTokenRequestSchema },
+      },
+    },
+  },
+  responses: {
+    200: {
+      description: "Token is live; surfaces the destination address.",
+      content: {
+        "application/json": { schema: CheckEmailChangeTokenResponseSchema },
+      },
+    },
+    400: {
+      description:
+        "Token is unknown / expired / consumed / destination conflicts. Same generic body — no enumeration of why.",
+      content: { "application/problem+json": { schema: ProblemSchema } },
+    },
+  },
+});
+
+// ─── Email change: verify (consume) ────────────────────────────────────────
+
+const VerifyEmailChangeRequestSchema = z
+  .object({
+    token: z.string().trim().min(20).max(200),
+  })
+  .openapi("VerifyEmailChangeRequest");
+
+const VerifyEmailChangeResponseSchema = z
+  .object({ ok: z.literal(true) })
+  .openapi("VerifyEmailChangeResponse");
+
+const verifyEmailChangeRoute = createRoute({
+  method: "post",
+  path: "/email-change/verify",
+  tags: ["auth"],
+  summary:
+    "Confirm an email change using the token from the verification link. Rotates users.email, marks the new address verified, drops all sessions, sends a notification to the OLD address.",
+  request: {
+    body: {
+      required: true,
+      content: {
+        "application/json": { schema: VerifyEmailChangeRequestSchema },
+      },
+    },
+  },
+  responses: {
+    200: {
+      description:
+        "Email rotated; all sessions dropped. The caller must redirect to /login — the user must re-authenticate with the new address.",
+      content: {
+        "application/json": { schema: VerifyEmailChangeResponseSchema },
+      },
+    },
+    400: {
+      description:
+        "Token is invalid / expired / consumed / destination conflicts. Same generic body as the check endpoint.",
       content: { "application/problem+json": { schema: ProblemSchema } },
     },
   },
@@ -746,6 +890,196 @@ authRoutes.openapi(resetPasswordRoute, async (c) => {
   });
 
   log?.info({ userId: result.userId }, "password_reset_completed");
+  return c.json({ ok: true } as const, 200);
+});
+
+// /email-change/request REQUIRES a session — only the account owner can
+// initiate an email change on themselves. Additionally requires the current
+// password as re-auth proof: a stolen session alone must not be enough to
+// pivot to a permanent account takeover.
+authRoutes.use(emailChangeRequestRoute.path, requireAuth);
+authRoutes.openapi(emailChangeRequestRoute, async (c) => {
+  const body = c.req.valid("json");
+  const user = c.get("user");
+  if (!user) {
+    throw new ApiError({
+      type: "about:blank",
+      title: "Unauthorized",
+      status: 401,
+      detail: "Authentication is required.",
+    });
+  }
+  const log = baseLogger;
+  const db = getDb();
+
+  // Re-auth: verify the current password. Same 401 shape as login on
+  // failure — a stolen cookie holder must not be able to learn from the
+  // response that their session is otherwise valid but the password is
+  // wrong (and vice versa).
+  const [row] = await db
+    .select({ passwordHash: schema.users.passwordHash })
+    .from(schema.users)
+    .where(eq(schema.users.id, user.id))
+    .limit(1);
+  if (!row) {
+    throw new ApiError({
+      type: "about:blank",
+      title: "Unauthorized",
+      status: 401,
+      detail: "Authentication is required.",
+    });
+  }
+  const passwordOk = await verifyPassword(row.passwordHash, body.currentPassword);
+  if (!passwordOk) {
+    throw new ApiError({
+      type: "about:blank",
+      title: "Unauthorized",
+      status: 401,
+      detail: "Current password is incorrect.",
+    });
+  }
+
+  // The user is authenticated and knows their own email. We can safely
+  // reject a request to "change to my current email" as a 400 — no
+  // enumeration is possible here because there's nothing to learn from
+  // the response. Reject early with a clear validation problem so the UI
+  // can surface field-level guidance.
+  if (body.newEmail === user.email) {
+    // Standard validation 400 (type: "about:blank" + errors[]). The frontend
+    // classifies any 400 with errors as kind:"validation" and renders the
+    // field-level message inline against the input.
+    throw badRequest("New email must differ from your current address.", [
+      {
+        path: "newEmail",
+        message: "New email must differ from your current address.",
+      },
+    ]);
+  }
+
+  // Conflict check — is the new address already used by another active
+  // user? If so, silently 200 (enumeration resistance: an authenticated
+  // attacker could otherwise probe addresses on this endpoint as readily
+  // as on /auth/login). The user simply won't get a verify email. The
+  // legitimate owner of the proposed address is unaffected — no mail is
+  // sent to them.
+  const [conflict] = await db
+    .select({ id: schema.users.id })
+    .from(schema.users)
+    .where(
+      and(eq(schema.users.email, body.newEmail), isNull(schema.users.deletedAt)),
+    )
+    .limit(1);
+  if (conflict && conflict.id !== user.id) {
+    log?.info(
+      { userId: user.id, outcome: "conflict" },
+      "email_change_request",
+    );
+    return c.json({ ok: true } as const, 200);
+  }
+
+  const decision = await evaluateEmailChangeRateLimit(user.id);
+  if (!decision.allowed) {
+    log?.warn(
+      { userId: user.id, reason: decision.reason },
+      "email_change_request_rate_limited",
+    );
+    return c.json({ ok: true } as const, 200);
+  }
+
+  const fullName = await resolveFullName(db, user.id, user.role);
+
+  try {
+    const issued = await issueEmailChangeToken({
+      userId: user.id,
+      newEmail: body.newEmail,
+    });
+    const requestedAt = new Date();
+    // Two best-effort sends in parallel — neither failure blocks the
+    // other, and neither failure surfaces to the caller (the same
+    // enumeration-resistant 200 shape covers it).
+    await Promise.allSettled([
+      sendEmailChangeVerifyEmail({
+        to: body.newEmail,
+        token: issued.token,
+        fullName,
+        logger: log,
+      }),
+      sendEmailChangeAlertEmail({
+        to: user.email,
+        newEmail: body.newEmail,
+        fullName,
+        requestedAt,
+        logger: log,
+      }),
+    ]);
+  } catch (err) {
+    log?.error({ err, userId: user.id }, "email_change_issue_failed");
+  }
+
+  return c.json({ ok: true } as const, 200);
+});
+
+// /email-change/verify/check is the read-only "is this link still good?"
+// probe the verify page fires on mount. Returns 200 + the destination
+// address on live tokens; the SAME generic 400/invalid-email-change-token
+// for any failure state — same posture as reset-password/check.
+authRoutes.openapi(checkEmailChangeTokenRoute, async (c) => {
+  const body = c.req.valid("json");
+  const result = await validateEmailChangeToken(body.token);
+  if (!result) {
+    throw new ApiError({
+      type: "/problems/invalid-email-change-token",
+      title: "Invalid Email-Change Link",
+      status: 400,
+      detail:
+        "This email-change link is invalid or has expired. Request a new one from your account.",
+    });
+  }
+  return c.json({ valid: true, newEmail: result.newEmail } as const, 200);
+});
+
+// /email-change/verify is intentionally unauthenticated — the token IS the
+// proof of control of the NEW mailbox. The user clicking from the email
+// link may be on a device that has never logged in (a phone after
+// requesting from a desktop, for example). Same posture as reset-password.
+authRoutes.openapi(verifyEmailChangeRoute, async (c) => {
+  const body = c.req.valid("json");
+  const log = baseLogger;
+
+  const result = await consumeEmailChangeToken(body.token);
+  if (!result) {
+    throw new ApiError({
+      type: "/problems/invalid-email-change-token",
+      title: "Invalid Email-Change Link",
+      status: 400,
+      detail:
+        "This email-change link is invalid or has expired. Request a new one from your account.",
+    });
+  }
+
+  // Best-effort notification. Failure to send the post-action email must
+  // NOT roll back the rotation — the user has just confirmed a new
+  // mailbox; reverting would orphan them.
+  const db = getDb();
+  const [profile] = await db
+    .select({ fullName: schema.customerProfiles.fullName })
+    .from(schema.customerProfiles)
+    .where(eq(schema.customerProfiles.userId, result.userId))
+    .limit(1);
+  const fullName = profile?.fullName ?? null;
+
+  await sendEmailChangedNotification({
+    to: result.oldEmail,
+    newEmail: result.newEmail,
+    fullName,
+    changedAt: new Date(),
+    logger: log,
+  });
+
+  log?.info(
+    { userId: result.userId },
+    "email_change_completed",
+  );
   return c.json({ ok: true } as const, 200);
 });
 

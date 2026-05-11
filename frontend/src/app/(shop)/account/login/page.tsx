@@ -35,6 +35,10 @@ export default function LoginPage() {
   // submits (the redirect on login wipes the query).
   const justReset = params.get("reset") === "success";
 
+  // /account/email-change/verify redirects here with ?email-changed=success
+  // after a successful email rotation. Same advisory banner pattern.
+  const justChangedEmail = params.get("email-changed") === "success";
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
@@ -91,6 +95,17 @@ export default function LoginPage() {
           className="mb-4 rounded-md border border-green-200 bg-green-50 p-3 text-sm text-green-700"
         >
           Паролата Ви беше променена успешно. Моля влезте с новата парола.
+        </div>
+      )}
+
+      {justChangedEmail && (
+        <div
+          role="status"
+          aria-live="polite"
+          className="mb-4 rounded-md border border-green-200 bg-green-50 p-3 text-sm text-green-700"
+        >
+          Имейл адресът на акаунта Ви беше променен успешно. Моля влезте с
+          новия имейл.
         </div>
       )}
 

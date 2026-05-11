@@ -98,7 +98,14 @@ export default function ProfilePage() {
           <Label htmlFor="email">Email</Label>
           <Input id="email" type="email" defaultValue={user.email} className="mt-1" disabled />
           <p className="mt-1 text-xs text-muted-foreground">
-            За промяна на имейл адреса се свържете с поддръжката.
+            За промяна на имейл адреса{" "}
+            <a
+              href="/account/email-change"
+              className="text-primary hover:underline"
+            >
+              кликнете тук
+            </a>
+            . Ще изпратим линк за потвърждаване на новия адрес.
           </p>
         </div>
         <div>

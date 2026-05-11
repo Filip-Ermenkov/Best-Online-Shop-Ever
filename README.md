@@ -180,8 +180,9 @@ Token cryptography mirrors the session-token design in `@shop/auth`:
 32-byte CSPRNG → base64url, SHA-256 hashed in the DB, single-use
 (`consumed_at` set on first use, subsequent uses rejected with the same
 generic 400 — no enumeration of token state). 24-hour expiry; the
-schema's `email_verification_tokens.kind` enum already supports the
-future `email_change` flow without a migration.
+schema's `email_verification_tokens.kind` enum carries `signup` (this
+flow) and `email_change` (the email-change flow — see below) so the
+same table serves both without a migration.
 
 ## Password reset
 
@@ -244,6 +245,88 @@ logged in as the same user; reset from one; navigate anywhere on the
 second; AuthContext fetches /auth/me which clears the stale cookie via
 Set-Cookie; the second browser is now signed out cleanly and can log
 in with the new password.
+
+## Email change
+
+`/account/email-change` accepts a new email plus the user's CURRENT
+password as re-auth proof, and POSTs to `POST /auth/email-change/request`.
+The endpoint is authenticated AND requires the current password — a
+stolen cookie alone is NOT enough to pivot to a permanent account
+takeover. This is OWASP's "MFA may be appropriate for sensitive
+actions" advice; we don't yet have MFA so password re-auth is the
+strongest local equivalent.
+
+On request the backend issues a 32-byte CSPRNG token (SHA-256 at rest,
+**1-hour validity**) into the existing `email_verification_tokens`
+table with `kind = 'email_change'` and the proposed new address on
+`new_email`. `users.email` is NOT updated yet — the change is gated on
+the click. Two emails are sent best-effort, in parallel:
+
+- **Verify link to the NEW address** (`auth.email-change-verify`).
+  Only the holder of the proposed new mailbox can complete the change.
+  The link lands on `/account/email-change/verify?token=…`.
+- **Alert to the OLD address** (`auth.email-change-alert`). Plainly
+  shows the proposed new address. No actionable link — doing nothing
+  IS the revert. This is OWASP's "out-of-band notification of a
+  sensitive change" defence: if the request was unauthorised, the
+  legitimate owner gets a real-time heads-up via the channel they
+  still control.
+
+The request endpoint is **enumeration-resistant by contract**:
+identical 200 for the happy path, for the "new address already in use
+by another active user" case (silent — we never send a verify mail to
+an existing user's address), and for internally-rate-limited cases
+(3/hour, 5/day per user). The two non-resistant 4xx branches are
+explicit user errors: 401 for a wrong current password (the user can
+see they typed wrong), and 400 for "new == current" (the authenticated
+user can already see their own email; nothing to enumerate).
+
+The verify page fires `POST /auth/email-change/verify/check` **on
+mount** — same validate-on-mount pattern as the reset page. On a live
+token it returns the destination email so the page can render "you are
+confirming change to X". On dead it returns the generic
+`400 /problems/invalid-email-change-token` — the page locks into
+"invalid/expired" UI on first paint. The verify is **not** auto-fired:
+email-client scanners (Microsoft Defender for Office 365, antivirus,
+link-checkers) sometimes prefetch the first link they parse, which
+would burn the token before the user even sees the page. The explicit
+"Потвърди смяната" button means scanners see HTML but never POST.
+
+Posting the token to `POST /auth/email-change/verify` atomically:
+
+1. Marks this token consumed.
+2. Marks **every other** outstanding email-change token for the user
+   consumed (parallel-token phishing defence, same as password-reset).
+3. Rotates `users.email` to the new address.
+4. Sets `users.email_verified_at = now()` — the click IS the proof
+   that the new mailbox is controlled by the user.
+5. Drops EVERY session for the user (per NIST + OWASP).
+6. Best-effort sends `auth.email-changed` to the OLD address.
+
+A late-conflict check guards against the destination being claimed by
+a different user between request and verify (race window). If the new
+address has been taken in the meantime, the verify returns the same
+generic 400 and the original `users.email` is unchanged.
+
+The verify endpoint is unauthenticated — the token IS the proof of
+control of the new mailbox, just like the reset and signup-verify
+endpoints. Same posture, same threat model.
+
+After success the user must re-log-in with the new address. The verify
+page calls `useAuth().logout()` first (to wipe the orphaned local
+cookie) and redirects to `/account/login?email-changed=success` so the
+login page renders a green confirmation banner.
+
+Rate limiting on the request endpoint: per-USER caps (3/hour, 5/day)
+evaluated BEFORE issuing a token. A rate-limited request still returns
+the same generic 200 (consistent with the forgot-password contract).
+
+In **local dev**, `console`-transport prints all three emails (verify,
+alert, post-change notification) to `api:dev`'s stdout. Smoke flow:
+log in → /account/email-change → enter new address + current password
+→ copy verify URL from the API terminal → click it → "Потвърди
+смяната" → land on /account/login with the green banner → log in with
+the new address.
 
 ## Documentation
 
@@ -311,10 +394,12 @@ have to be re-derived when extending the codebase.
   in pages and Server Components. `PUBLIC_ACCOUNT_PATHS` enumerates the
   account-prefixed routes anonymous visitors are allowed to reach:
   `/login`, `/register`, `/forgot-password`, `/reset-password`,
-  `/verify-email`. Both recovery routes MUST be public — the email link
-  IS the proof of identity, and the user may legitimately click it from
-  any device, including one that has never logged in. Token validation
-  stays at the API layer; the proxy just gets out of the way.
+  `/verify-email`, `/email-change/verify`. All four recovery routes
+  MUST be public — the email link IS the proof of identity (of the
+  mailbox, in the email-change case), and the user may legitimately
+  click it from any device, including one that has never logged in.
+  Token validation stays at the API layer; the proxy just gets out of
+  the way.
 - **SSR identity bootstrap**: root layout calls `getServerUser()` which
   forwards the session cookie via `next/headers` to `GET /auth/me`. Initial
   user is passed into the client `AuthProvider` so first paint already shows
@@ -414,6 +499,72 @@ have to be re-derived when extending the codebase.
   ("cookie present → logged in → /profile") and the user would loop.
   `/auth/logout` is idempotent so this is also safe when the device
   wasn't actually logged in.
+- **Email-change token cryptography** mirrors password-reset and
+  verification: 32-byte CSPRNG → base64url, SHA-256 hashed in
+  `email_verification_tokens.token_hash`, single-use, **1-hour
+  validity** (per OWASP — same threat tier as password reset). The
+  proposed-new address rides on the existing `new_email` column;
+  `users.email` is NOT mutated until the verify link is clicked, per
+  the OWASP "store the proposed-new email as a proposed-new value"
+  guidance. Bad / expired / already-consumed / now-conflicting tokens
+  all return the SAME generic
+  `400 /problems/invalid-email-change-token`.
+- **`POST /auth/email-change/request` requires current-password
+  re-auth.** OWASP "Changing A User's Registered Email Address"
+  explicitly recommends MFA for this action; we don't yet have MFA so
+  password re-auth is the strongest local equivalent. A stolen session
+  cookie alone must NOT be enough to permanently pivot the account.
+  Wrong-password returns the same 401 shape as `/auth/login` — no
+  enumeration of "session valid but password wrong".
+- **Out-of-band notification to the OLD address at REQUEST time**
+  (`auth.email-change-alert`) plus a second notification at
+  CONFIRM time (`auth.email-changed`). OWASP's defence-in-depth
+  pattern: notify the channel the legitimate owner still controls so
+  unauthorised changes surface immediately, AND leave a final audit
+  trail after the rotation. The alert deliberately contains NO
+  actionable link — doing nothing IS the revert; clicking a link in an
+  alert email is just another phishing vector for the same attacker.
+- **`POST /auth/email-change/request` is enumeration-resistant by
+  contract**: identical 200 for happy path, conflict (new address
+  already in use), and internally-rate-limited (3/hr, 5/day per
+  user). Surfacing a 409 here would let an authenticated attacker
+  probe email registration via this endpoint as readily as via
+  `/auth/login`'s timing channel.
+- **`POST /auth/email-change/verify` invalidates ALL outstanding
+  email-change tokens for the user**, not just the one being consumed.
+  Same parallel-token phishing defence as the password-reset slice —
+  an attacker holding a second valid token must lose access the moment
+  the legitimate user confirms via theirs.
+- **`POST /auth/email-change/verify` drops every session for the
+  user** (NIST SP 800-63B-4 + OWASP). The verify page redirects to
+  `/account/login?email-changed=success` rather than auto-logging in:
+  same threat-model argument as the reset slice.
+- **Late-conflict check on verify**: the destination address might be
+  registered by someone else between request and verify (race
+  window). The consume re-checks that the new address is still
+  available — if not, the token is treated as dead and the original
+  `users.email` is unchanged. Returned to the caller as the same
+  generic 400.
+- **Validate-on-mount verify UX**: `/account/email-change/verify`
+  POSTs to `/auth/email-change/verify/check` on mount to discover
+  dead links before the user clicks. The check endpoint surfaces the
+  destination address on a live token so the page can render "you are
+  about to confirm change to X" — value-neutral disclosure since the
+  recipient already received this link at that address. **Verify is
+  not auto-fired on mount**: email-client scanners (Microsoft
+  Defender for Office 365, antivirus, link-checkers) sometimes
+  prefetch the first link in a message; an auto-consume would let
+  them burn the token before the user sees the page. The explicit
+  "Потвърди смяната" button means scanners see HTML but never POST.
+- **Verify page calls `logout()` before redirecting on success**: the
+  API drops every session, but the cookie still sits in THIS browser.
+  Without a local logout the redirect to login would be bounced by
+  the proxy in the same loop the password-reset slice documents.
+- **Proxy `PUBLIC_ACCOUNT_PATHS` includes
+  `/account/email-change/verify`**: the email link is delivered to
+  the NEW address and may be opened on a device that has never
+  logged in to the shop. Gating it behind a session would defeat the
+  recovery purpose.
 
 ## Status
 
@@ -428,14 +579,24 @@ have to be re-derived when extending the codebase.
   `DUMMY_PASSWORD_HASH`. 16 unit tests.
 - **`@shop/email`** — transactional email. Three transports
   (`createSesTransport`, `createConsoleTransport`, `createStubTransport`)
-  behind a common `EmailTransport` interface, plus three templates:
-  `renderVerificationEmail` (signup), `renderPasswordResetEmail`
-  (forgot-password link), and `renderPasswordChangedEmail` (post-reset
-  security notice). All Bulgarian copy, inline-styled HTML + plain-text
-  fallback. `@aws-sdk/client-sesv2` is the only runtime dep — no
-  Nodemailer, no full SDK. Unit tests cover every template's rendering,
-  the SES `SendEmailCommand` shape (with a mocked client — never hits
-  AWS), and the stub transport's recorder API.
+  behind a common `EmailTransport` interface, plus six Bulgarian
+  templates:
+  - `renderVerificationEmail` (signup)
+  - `renderPasswordResetEmail` (forgot-password link)
+  - `renderPasswordChangedEmail` (post-reset security notice)
+  - `renderEmailChangeVerifyEmail` (email-change verify link, sent to
+    NEW address)
+  - `renderEmailChangeAlertEmail` (out-of-band alert at request time,
+    sent to OLD address with the proposed new value)
+  - `renderEmailChangedEmail` (post-change notice, sent to OLD address
+    with the new value)
+
+  All inline-styled HTML + plain-text fallback. `@aws-sdk/client-sesv2`
+  is the only runtime dep — no Nodemailer, no full SDK. Unit tests
+  cover every template's rendering (including HTML-escape coverage of
+  injection-prone fields like the new email address), the SES
+  `SendEmailCommand` shape (with a mocked client — never hits AWS),
+  and the stub transport's recorder API.
 - **`@shop/api`** — exposes:
   - `/products`, `/categories` (read API, ETag, cursor pagination)
   - `/auth/register`, `/auth/login`, `/auth/logout`, `/auth/me`
@@ -467,6 +628,36 @@ have to be re-derived when extending the codebase.
     After a successful reset, sends a Bulgarian "your password was
     changed" notification (`auth.password-changed` template) —
     best-effort, doesn't roll back on send failure.
+  - `/auth/email-change/request`, `/auth/email-change/verify/check`,
+    `/auth/email-change/verify` — email-change flow. Same crypto shape
+    as verification (32-byte CSPRNG, SHA-256 at rest, 1h validity,
+    single-use). Tokens live on the existing
+    `email_verification_tokens` table with `kind = 'email_change'` and
+    the proposed new address on `new_email`. `users.email` is NOT
+    rotated until the link is clicked.
+    `email-change/request` requires a session AND the current password
+    as re-auth proof (a stolen cookie is not enough to take over the
+    account permanently). Same generic 200 for happy / conflict
+    (new email already in use by another user) / rate-limited
+    (3/hr 5/day per user) — fully enumeration-resistant. 401 for a
+    wrong current password, 400 for "new == current" (no enumeration
+    possible — the user can see their own email).
+    `email-change/verify/check` is the read-only "is this link still
+    good?" probe the verify page fires on mount — returns 200
+    `{ valid: true, newEmail }` for live tokens, 400
+    `/problems/invalid-email-change-token` for any failure state. Does
+    NOT consume the token.
+    `email-change/verify` is unauthenticated (token IS the proof of
+    new-mailbox control), atomically rotates `users.email`, sets
+    `email_verified_at = now()`, invalidates EVERY other outstanding
+    email-change token for the user, and drops EVERY session for the
+    user. Late-conflict check guards against the destination being
+    claimed in the race window. Bad / expired / consumed / conflicting
+    tokens return the SAME generic
+    `400 /problems/invalid-email-change-token`. After a successful
+    rotation, sends a Bulgarian "your email was changed"
+    (`auth.email-changed`) notification to the OLD address —
+    best-effort.
   - `/cart`, `/cart/items`, `/cart/items/:productId`, `/cart/merge`
     (gated by `requireAuth`; live-price hydration; silent-sum merge on
     duplicate; per-line cap of 99; out-of-stock add → 409; soft-deleted
@@ -568,6 +759,42 @@ have to be re-derived when extending the codebase.
     without a session; the email link IS the proof of identity.
   - The login page already linked to `/account/forgot-password`; that
     link is now wired to a real handler.
+- **Email change UI** wired end-to-end:
+  - `lib/auth/client.ts` — added `requestEmailChange({ currentPassword,
+    newEmail })`, `validateEmailChangeToken(token)`, and
+    `confirmEmailChange(token)`. New `invalid_email_change_token`
+    variant on the `AuthError` discriminated union.
+  - `app/(shop)/account/email-change/page.tsx` — authenticated request
+    form. Asks for the new email plus the current password (re-auth).
+    Client-side identity check catches "new == current" before a
+    round-trip; the backend has the canonical rule. On submit success
+    shows the same Bulgarian "Проверете новата си поща" copy on any
+    non-validation/non-credentials/non-network outcome — mirrors the
+    backend's enumeration-resistant contract.
+  - `app/(shop)/account/email-change/verify/page.tsx` — public, handles
+    the `?token=…` link click delivered to the new address. Mount
+    lifecycle: `checking` (validates the token via
+    `/auth/email-change/verify/check`) → `live` (shows a one-click
+    confirm screen with the destination address) or `dead` (shows
+    "invalid/expired" UI with a "Нова заявка" button). React 19
+    strict-mode double-invoke guarded with a useRef. The confirm
+    button POSTs `/auth/email-change/verify`; on success calls
+    `logout()` first to wipe the orphaned local cookie, then redirects
+    to `/account/login?email-changed=success` so the login page
+    renders a green "Имейл адресът на акаунта Ви беше променен
+    успешно" banner. Race-handles a token going dead between mount-
+    check and submit by transitioning to the dead-link UI.
+    Intentionally NOT auto-fired on mount (email-client scanners would
+    burn the token).
+  - `proxy.ts` `PUBLIC_ACCOUNT_PATHS` — added
+    `/account/email-change/verify` to the anonymous-allowed list. The
+    request page (`/account/email-change`) is correctly gated by the
+    proxy as authenticated.
+  - `app/(shop)/account/profile/page.tsx` — the email-row helper text
+    that used to say "За промяна на имейл адреса се свържете с
+    поддръжката" now links to `/account/email-change`.
+  - The login page handles `?email-changed=success` alongside the
+    existing `?reset=success`.
 - **Email verification UI** wired end-to-end:
   - `lib/auth/client.ts` — added `verifyEmail(token)` and
     `resendVerification()`. New `resend_rate_limited` variant on the

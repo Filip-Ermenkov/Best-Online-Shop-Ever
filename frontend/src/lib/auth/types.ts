@@ -37,6 +37,13 @@ export type AuthError =
    * either, to mirror the no-enumeration contract.
    */
   | { kind: "invalid_reset_token"; detail?: string }
+  /**
+   * The email-change verify link was unknown / expired / already consumed /
+   * destination-now-conflicts. Same generic-400 contract as invalid-reset-token
+   * — distinguishing the four would defeat enumeration resistance, and the
+   * UI handles all four with the same "request a new link" copy.
+   */
+  | { kind: "invalid_email_change_token"; detail?: string }
   | { kind: "unauthenticated" }
   | { kind: "network"; cause: unknown }
   | { kind: "unknown"; status: number; detail?: string };

@@ -93,6 +93,12 @@ function classifyError(status: number, problem?: ProblemResponse): AuthError {
   if (status === 400 && problem?.type === "/problems/invalid-reset-token") {
     return { kind: "invalid_reset_token", detail: problem.detail };
   }
+  if (
+    status === 400 &&
+    problem?.type === "/problems/invalid-email-change-token"
+  ) {
+    return { kind: "invalid_email_change_token", detail: problem.detail };
+  }
   return { kind: "unknown", status, detail: problem?.detail };
 }
 
@@ -285,6 +291,105 @@ export async function resetPassword(
     res = await authFetch("/auth/reset-password", {
       method: "POST",
       body: JSON.stringify({ token, newPassword }),
+    });
+  } catch (err) {
+    return { ok: false, error: { kind: "network", cause: err } };
+  }
+  return withErrorMapping(res, async (r) => {
+    return (await r.json()) as { ok: true };
+  });
+}
+
+/**
+ * Request to change the current user's email address.
+ *
+ * Requires authentication AND the current password as re-auth proof. The
+ * backend returns the same `{ ok: true }` regardless of whether the new
+ * address is already in use OR an internal rate-limit was hit
+ * (enumeration-resistance). The UI should always show the same "we sent a
+ * verification link to your new address" copy on any 200.
+ *
+ * Failure branches:
+ *   - kind === "invalid_credentials": current password was wrong. Render
+ *     inline against the password input.
+ *   - kind === "validation": malformed new email OR new email is the same
+ *     as the current address (backend rejects that explicitly because the
+ *     authenticated user can already see their own email).
+ *   - kind === "network": fetch failed.
+ */
+export async function requestEmailChange(input: {
+  currentPassword: string;
+  newEmail: string;
+}): Promise<AuthResult<{ ok: true }>> {
+  let res: Response;
+  try {
+    res = await authFetch("/auth/email-change/request", {
+      method: "POST",
+      body: JSON.stringify(input),
+    });
+  } catch (err) {
+    return { ok: false, error: { kind: "network", cause: err } };
+  }
+  return withErrorMapping(res, async (r) => {
+    return (await r.json()) as { ok: true };
+  });
+}
+
+/**
+ * Probe whether an email-change verify token is still good, WITHOUT
+ * consuming it. Symmetric to validateResetToken — same lifecycle, same
+ * enumeration-resistance contract.
+ *
+ * On 200 the response carries the destination address so the verify page
+ * can render "you are about to confirm change to X" copy. The destination
+ * is the same email the recipient already received this link from, so the
+ * disclosure is value-neutral.
+ *
+ * 400/invalid_email_change_token = dead. Network errors keep the form
+ * usable (caller falls back to the post-submit failure path).
+ */
+export async function validateEmailChangeToken(
+  token: string,
+): Promise<AuthResult<{ valid: true; newEmail: string }>> {
+  let res: Response;
+  try {
+    res = await authFetch("/auth/email-change/verify/check", {
+      method: "POST",
+      body: JSON.stringify({ token }),
+    });
+  } catch (err) {
+    return { ok: false, error: { kind: "network", cause: err } };
+  }
+  return withErrorMapping(res, async (r) => {
+    return (await r.json()) as { valid: true; newEmail: string };
+  });
+}
+
+/**
+ * Confirm an email change. The token comes from the link in the verify
+ * email. On success the backend has:
+ *   - rotated users.email to the new address,
+ *   - marked the new address verified (the click IS the proof),
+ *   - dropped EVERY session for the user, including (if applicable) the
+ *     one belonging to the device that's calling this function.
+ *
+ * The UI must redirect to /account/login afterwards. Like the password-reset
+ * flow, we deliberately do NOT auto-login the user — re-authenticating with
+ * the new email is the contract.
+ *
+ * Errors:
+ *   - kind === "invalid_email_change_token": link is bad/expired/consumed
+ *     OR the destination has been taken by someone else in the meantime.
+ *     Show the generic "request a new link" copy.
+ */
+export async function confirmEmailChange(
+  token: string,
+): Promise<AuthResult<{ ok: true }>> {
+  let res: Response;
+  try {
+    res = await authFetch("/auth/email-change/verify", {
+      method: "POST",
+      body: JSON.stringify({ token }),
     });
   } catch (err) {
     return { ok: false, error: { kind: "network", cause: err } };

@@ -44,6 +44,13 @@ const PUBLIC_ACCOUNT_PATHS = [
   "/account/forgot-password",
   "/account/reset-password",
   "/account/verify-email",
+  // The email-change verify link lands here. The link is delivered to
+  // the NEW address, which may be opened on a device that has never
+  // logged in to the shop (a phone, a work laptop, etc). Gating it
+  // behind a session would force the user to log in first — and they
+  // may not even remember the OLD password if they're mid-recovery.
+  // Token validation happens at the API layer.
+  "/account/email-change/verify",
 ];
 
 function hasSessionCookie(req: NextRequest): boolean {
