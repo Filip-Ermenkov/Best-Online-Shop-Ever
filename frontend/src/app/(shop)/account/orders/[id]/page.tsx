@@ -143,6 +143,12 @@ export default function OrderDetailPage({ params }: Props) {
   // hot.
   useEffect(() => {
     if (!order || order.status !== "accepted") {
+      // Reset on order swap / non-accepted reload. The "proper" fix is a
+      // data-fetching layer (TanStack Query / SWR / Suspense + use()) where
+      // the cache key would handle this automatically; that's a separate
+      // slice already on the deferred list. Until then, this is the same
+      // rationale-commented pattern AuthContext / CartContext use.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setWithdrawal(null);
       return;
     }

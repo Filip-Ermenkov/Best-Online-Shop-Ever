@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { Truck, Store, Clock, RotateCcw, Package } from "lucide-react";
 
 export default function DeliveryPage() {
@@ -61,8 +62,8 @@ export default function DeliveryPage() {
           <h2 className="text-xl font-semibold mb-4 flex items-center gap-2"><RotateCcw className="w-5 h-5 text-primary" /> Право на отказ (14 дни)</h2>
           <div className="rounded-lg border border-border bg-card p-5 space-y-3 text-sm text-muted-foreground leading-relaxed">
             <p>Имате право да се откажете от договора в рамките на <strong className="text-foreground">14 дни</strong> от получаването на стоката без да посочвате причина.</p>
-            <p>За да упражните правото си, отворете поръчката в <a href="/account/orders" className="text-primary underline underline-offset-2">История на поръчките</a> и натиснете <strong className="text-foreground">„Откажете се от договора тук"</strong>. Ще получите потвърждение на екрана и копие по имейл с дата и час на подаване.</p>
-            <p>Подробните условия и стандартният формуляр за отказ са публикувани на <a href="/terms/withdrawal" className="text-primary underline underline-offset-2">страницата за правото на отказ</a>.</p>
+            <p>За да упражните правото си, отворете поръчката в <Link href="/account/orders" className="text-primary underline underline-offset-2">История на поръчките</Link> и натиснете <strong className="text-foreground">„Откажете се от договора тук&rdquo;</strong>. Ще получите потвърждение на екрана и копие по имейл с дата и час на подаване.</p>
+            <p>Подробните условия и стандартният формуляр за отказ са публикувани на <Link href="/terms/withdrawal" className="text-primary underline underline-offset-2">страницата за правото на отказ</Link>.</p>
           </div>
         </section>
 

@@ -68,7 +68,7 @@ export default function WithdrawalTermsPage() {
         </p>
         <ul className="list-disc pl-6 space-y-1">
           <li>
-            <strong>използвате формата „Откажете се от договора тук"</strong>{" "}
+            <strong>използвате формата „Откажете се от договора тук&rdquo;</strong>{" "}
             на страницата с детайли на поръчката (намира се в{" "}
             <Link
               href="/account/orders"
@@ -235,7 +235,7 @@ export default function WithdrawalTermsPage() {
             История на поръчките
           </Link>{" "}
           и отворете поръчката, която желаете да върнете. Натиснете бутона
-          „Откажете се от договора тук" и следвайте указанията.
+          „Откажете се от договора тук&rdquo; и следвайте указанията.
         </p>
       </aside>
     </div>
