@@ -10,7 +10,20 @@ import {
   notFound,
 } from "../lib/errors.js";
 import { buildImageUrl } from "../lib/images.js";
+import { logger as baseLogger } from "../lib/logger.js";
 import { validationHook } from "../lib/validation-hook.js";
+import { parseEnv } from "../lib/env.js";
+import {
+  createOrFetchWithdrawalRecord,
+  deriveSupportEmail,
+  evaluateWithdrawalEligibility,
+  fetchWithdrawalByOrderId,
+  markWithdrawalAcknowledged,
+  sendWithdrawalAcknowledgementEmail,
+  sendWithdrawalAdminNotificationEmail,
+  WITHDRAWAL_WINDOW_DAYS,
+  type WithdrawalRecord,
+} from "../lib/withdrawal.js";
 import { requireAuth, type AuthVariables } from "../middleware/auth.js";
 
 /**
@@ -147,8 +160,67 @@ const OrderSchema = z
     corporateData: CorporateDataSchema.nullable(),
     notes: z.string().nullable(),
     createdAt: z.string(),
+    /**
+     * Timestamp the order moved to `accepted` status. Powers the 14-day
+     * right-of-withdrawal window on the frontend (Directive 2023/2673
+     * Art. 11a, mandatory 19 June 2026). Null while the order is in any
+     * pre-accepted status.
+     */
+    acceptedAt: z.string().nullable(),
   })
   .openapi("Order");
+
+/**
+ * Withdrawal DTOs — surface of the 14-day right-of-withdrawal slice.
+ *
+ * Field naming: the API uses `reason` for the consumer's free-form
+ * explanation; the DB column is `complaints.description`. The translation
+ * happens in the route handlers. We chose `reason` for the API because it
+ * matches the customer-facing wording on the form and in the email; the
+ * DB column is generic across complaint kinds and was named `description`
+ * before the withdrawal slice introduced a domain-specific meaning.
+ */
+const WithdrawalRecordSchema = z
+  .object({
+    id: z.string().uuid(),
+    orderNumber: z.string(),
+    customerEmail: z.string(),
+    customerName: z.string(),
+    customerPhone: z.string(),
+    reason: z.string().nullable(),
+    submittedAt: z.string(),
+    acknowledgedAt: z.string().nullable(),
+  })
+  .openapi("WithdrawalRecord");
+
+const WithdrawalEligibilitySchema = z
+  .discriminatedUnion("eligible", [
+    z.object({
+      eligible: z.literal(true),
+      acceptedAt: z.string(),
+      deadlineAt: z.string(),
+      alreadySubmittedAt: z.string().nullable(),
+      windowDays: z.number().int().positive(),
+    }),
+    z.object({
+      eligible: z.literal(false),
+      reason: z.enum(["not_accepted", "window_expired"]),
+      windowDays: z.number().int().positive(),
+    }),
+  ])
+  .openapi("WithdrawalEligibility");
+
+const WithdrawalRequestBodySchema = z
+  .object({
+    /**
+     * Optional free-form reason. The Consumer Rights Directive explicitly
+     * says the consumer is NOT required to give a reason ("without giving
+     * any reason" — Art. 9(1)). We accept one if offered but never require
+     * it; the form on the FE labels it optional with no nag copy.
+     */
+    reason: z.string().trim().max(2000).optional(),
+  })
+  .openapi("WithdrawalRequest");
 
 const OrdersListSchema = z
   .object({
@@ -293,6 +365,98 @@ const getOrderRoute = createRoute({
     },
     404: {
       description: "Order not found, or does not belong to this user.",
+      content: { "application/problem+json": { schema: ProblemSchema } },
+    },
+  },
+});
+
+// ─── Withdrawal routes (EU 14-day right, Art. 11a, Directive 2023/2673) ───
+
+const getWithdrawalEligibilityRoute = createRoute({
+  method: "get",
+  path: "/{orderNumber}/withdrawal/eligibility",
+  tags: ["orders"],
+  summary:
+    "Check whether the current user can submit a 14-day withdrawal for this order",
+  request: { params: OrderNumberParamSchema },
+  responses: {
+    200: {
+      description:
+        "Eligibility shape. `eligible: true` carries the deadline and (if any) the existing submission timestamp; `eligible: false` carries a machine-readable reason.",
+      content: {
+        "application/json": { schema: WithdrawalEligibilitySchema },
+      },
+    },
+    401: {
+      description: "Not authenticated.",
+      content: { "application/problem+json": { schema: ProblemSchema } },
+    },
+    404: {
+      description: "Order not found, or does not belong to this user.",
+      content: { "application/problem+json": { schema: ProblemSchema } },
+    },
+  },
+});
+
+const getWithdrawalRoute = createRoute({
+  method: "get",
+  path: "/{orderNumber}/withdrawal",
+  tags: ["orders"],
+  summary:
+    "Fetch the withdrawal record for this order, if one has been submitted",
+  request: { params: OrderNumberParamSchema },
+  responses: {
+    200: {
+      description: "The existing withdrawal record.",
+      content: { "application/json": { schema: WithdrawalRecordSchema } },
+    },
+    401: {
+      description: "Not authenticated.",
+      content: { "application/problem+json": { schema: ProblemSchema } },
+    },
+    404: {
+      description:
+        "Order not found, does not belong to this user, OR no withdrawal exists for it.",
+      content: { "application/problem+json": { schema: ProblemSchema } },
+    },
+  },
+});
+
+const postWithdrawalRoute = createRoute({
+  method: "post",
+  path: "/{orderNumber}/withdrawal",
+  tags: ["orders"],
+  summary: "Submit a 14-day right-of-withdrawal request for this order",
+  request: {
+    params: OrderNumberParamSchema,
+    body: {
+      required: false,
+      content: {
+        "application/json": { schema: WithdrawalRequestBodySchema },
+      },
+    },
+  },
+  responses: {
+    201: {
+      description: "Withdrawal recorded; acknowledgement issued.",
+      content: { "application/json": { schema: WithdrawalRecordSchema } },
+    },
+    200: {
+      description:
+        "Idempotent replay — a withdrawal for this order already existed. The original submitted_at is preserved.",
+      content: { "application/json": { schema: WithdrawalRecordSchema } },
+    },
+    401: {
+      description: "Not authenticated.",
+      content: { "application/problem+json": { schema: ProblemSchema } },
+    },
+    404: {
+      description: "Order not found or does not belong to this user.",
+      content: { "application/problem+json": { schema: ProblemSchema } },
+    },
+    422: {
+      description:
+        "Order is not in `accepted` status, or the 14-day window has expired.",
       content: { "application/problem+json": { schema: ProblemSchema } },
     },
   },
@@ -664,6 +828,206 @@ ordersRoutes.openapi(getOrderRoute, async (c) => {
   return c.json(order, 200);
 });
 
+// ─── Withdrawal handlers ───────────────────────────────────────────────────
+
+ordersRoutes.openapi(getWithdrawalEligibilityRoute, async (c) => {
+  const user = c.get("user")!;
+  const { orderNumber } = c.req.valid("param");
+  const db = getDb();
+
+  const e = await evaluateWithdrawalEligibility(db, {
+    userId: user.id,
+    orderNumber,
+  });
+
+  if (!e.eligible) {
+    if (e.reason === "order_not_found") {
+      throw notFound(`Order ${orderNumber} not found.`);
+    }
+    // not_accepted, missing_accepted_at, window_expired → all surface as
+    // structured 200 responses so the FE can render the correct empty/
+    // disabled state. The `missing_accepted_at` invariant violation is
+    // mapped to `not_accepted` for the public API — same outcome from the
+    // user's POV (no button), no leak of internal state.
+    //
+    // `as const` on the reason narrows back to the literal union the route's
+    // response schema declares; without it TS widens the ternary to `string`
+    // and the openapi() handler signature is rejected.
+    const reason: "window_expired" | "not_accepted" =
+      e.reason === "window_expired" ? "window_expired" : "not_accepted";
+    return c.json(
+      {
+        eligible: false as const,
+        reason,
+        windowDays: WITHDRAWAL_WINDOW_DAYS,
+      },
+      200,
+    );
+  }
+
+  return c.json(
+    {
+      eligible: true as const,
+      acceptedAt: e.acceptedAt.toISOString(),
+      deadlineAt: e.deadlineAt.toISOString(),
+      alreadySubmittedAt: e.alreadySubmittedAt
+        ? e.alreadySubmittedAt.toISOString()
+        : null,
+      windowDays: WITHDRAWAL_WINDOW_DAYS,
+    },
+    200,
+  );
+});
+
+ordersRoutes.openapi(getWithdrawalRoute, async (c) => {
+  const user = c.get("user")!;
+  const { orderNumber } = c.req.valid("param");
+  const db = getDb();
+
+  // Look up the order first so we can return 404 with the right semantics —
+  // "order not found OR not yours" is indistinguishable from "no withdrawal
+  // for that order", which is exactly the enumeration-resistant contract.
+  const [order] = await db
+    .select({ id: schema.orders.id, orderNumber: schema.orders.orderNumber })
+    .from(schema.orders)
+    .where(
+      and(
+        eq(schema.orders.orderNumber, orderNumber),
+        eq(schema.orders.customerId, user.id),
+      ),
+    )
+    .limit(1);
+  if (!order) throw notFound(`Order ${orderNumber} not found.`);
+
+  const record = await fetchWithdrawalByOrderId(db, order.id);
+  if (!record) throw notFound("No withdrawal recorded for this order.");
+  return c.json(shapeWithdrawalRecord(record, order.orderNumber), 200);
+});
+
+ordersRoutes.openapi(postWithdrawalRoute, async (c) => {
+  const user = c.get("user")!;
+  const { orderNumber } = c.req.valid("param");
+  // Body is optional. Hono returns an empty object when the request has no
+  // body; the schema's only field is optional so the parse will succeed
+  // either way. We tolerate the missing-body case explicitly because some
+  // HTTP clients (curl, fetch with no body) won't send Content-Type and we
+  // shouldn't require it when there's nothing to send.
+  let body: z.infer<typeof WithdrawalRequestBodySchema>;
+  try {
+    body = c.req.valid("json");
+  } catch {
+    body = {};
+  }
+  const db = getDb();
+  const log = baseLogger;
+
+  // Eligibility check first. The DB partial-unique-index protects against
+  // concurrent submissions, but doing the eligibility check up front means
+  // we can return the correct 422 / 404 shape rather than relying on a
+  // generic insert error.
+  const e = await evaluateWithdrawalEligibility(db, {
+    userId: user.id,
+    orderNumber,
+  });
+  if (!e.eligible) {
+    if (e.reason === "order_not_found") {
+      throw notFound(`Order ${orderNumber} not found.`);
+    }
+    if (e.reason === "window_expired") {
+      throw new ApiError({
+        type: "/problems/withdrawal-window-expired",
+        title: "Withdrawal Window Expired",
+        status: 422,
+        detail: `The 14-day withdrawal window for order ${orderNumber} has expired.`,
+      });
+    }
+    // not_accepted | missing_accepted_at
+    throw new ApiError({
+      type: "/problems/withdrawal-not-accepted",
+      title: "Withdrawal Not Available",
+      status: 422,
+      detail: `Order ${orderNumber} must be in 'accepted' status before a withdrawal can be submitted.`,
+    });
+  }
+
+  // Snapshot the customer's identifying details onto the complaint row.
+  // The order's own customer_email / customer_name / customer_phone are
+  // already a denormalised snapshot from order-placement time; we copy
+  // them again so this row stands alone as a durable medium that does not
+  // depend on the orders row being readable.
+  const [orderRow] = await db
+    .select({
+      customerEmail: schema.orders.customerEmail,
+      customerName: schema.orders.customerName,
+      customerPhone: schema.orders.customerPhone,
+    })
+    .from(schema.orders)
+    .where(eq(schema.orders.id, e.orderId))
+    .limit(1);
+  if (!orderRow) {
+    // Race: order disappeared between eligibility check and insert. Treat
+    // as not-found from the caller's POV.
+    throw notFound(`Order ${orderNumber} not found.`);
+  }
+
+  const description = body.reason && body.reason.length > 0 ? body.reason : null;
+
+  const { record, created } = await createOrFetchWithdrawalRecord(db, {
+    orderId: e.orderId,
+    customerEmail: orderRow.customerEmail,
+    customerName: orderRow.customerName,
+    customerPhone: orderRow.customerPhone,
+    description,
+  });
+
+  // Fire-and-await BOTH emails in parallel — neither failure blocks the
+  // other, neither failure changes the response, and we MUST get the
+  // customer-acknowledgement timestamp from the SES result to update
+  // acknowledgedAt. Idempotent re-submissions skip the emails: the record
+  // already has its acknowledgement (or has a logged failure), and re-
+  // notifying the admin would just be noise.
+  if (created) {
+    const env = parseEnv();
+    const support = deriveSupportEmail(env.EMAIL_FROM);
+    const [customerResult] = await Promise.allSettled([
+      sendWithdrawalAcknowledgementEmail({
+        to: record.customerEmail,
+        customerName: record.customerName,
+        orderNumber: e.orderNumber,
+        submittedAt: record.submittedAt,
+        description: record.description,
+        logger: log,
+      }),
+      sendWithdrawalAdminNotificationEmail({
+        to: support,
+        orderNumber: e.orderNumber,
+        submittedAt: record.submittedAt,
+        customerEmail: record.customerEmail,
+        customerName: record.customerName,
+        customerPhone: record.customerPhone,
+        description: record.description,
+        logger: log,
+      }),
+    ]);
+    if (customerResult.status === "fulfilled" && customerResult.value === true) {
+      const ackAt = await markWithdrawalAcknowledged(db, record.id);
+      if (ackAt) {
+        record.acknowledgedAt = ackAt;
+      }
+    } else {
+      log.warn(
+        { orderNumber: e.orderNumber, withdrawalId: record.id },
+        "withdrawal_customer_ack_email_failed",
+      );
+    }
+  }
+
+  return c.json(
+    shapeWithdrawalRecord(record, e.orderNumber),
+    created ? 201 : 200,
+  );
+});
+
 // ─── Helpers ───────────────────────────────────────────────────────────────
 
 type CustomerSnapshot =
@@ -912,6 +1276,32 @@ function shapeOrderResponse(input: {
     corporateData,
     notes: order.notes ?? null,
     createdAt: order.createdAt.toISOString(),
+    acceptedAt: order.acceptedAt ? order.acceptedAt.toISOString() : null,
+  };
+}
+
+/**
+ * Shape a withdrawal DB row + orderNumber into the public API DTO.
+ *
+ * The `orderNumber` is denormalised onto the response so the FE can render
+ * a complete "thank-you" screen from this object alone, without a second
+ * round-trip back to the order detail. The DB only carries `order_id`.
+ */
+function shapeWithdrawalRecord(
+  record: WithdrawalRecord,
+  orderNumber: string,
+): z.infer<typeof WithdrawalRecordSchema> {
+  return {
+    id: record.id,
+    orderNumber,
+    customerEmail: record.customerEmail,
+    customerName: record.customerName,
+    customerPhone: record.customerPhone,
+    reason: record.description,
+    submittedAt: record.submittedAt.toISOString(),
+    acknowledgedAt: record.acknowledgedAt
+      ? record.acknowledgedAt.toISOString()
+      : null,
   };
 }
 

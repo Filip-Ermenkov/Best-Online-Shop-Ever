@@ -64,3 +64,15 @@ export {
   EMAIL_CHANGED_TEMPLATE_ID,
 } from "./templates/email-changed.js";
 export type { EmailChangedTemplateInput } from "./templates/email-changed.js";
+
+export {
+  renderWithdrawalReceivedEmail,
+  WITHDRAWAL_RECEIVED_TEMPLATE_ID,
+} from "./templates/withdrawal-received.js";
+export type { WithdrawalReceivedTemplateInput } from "./templates/withdrawal-received.js";
+
+export {
+  renderWithdrawalAdminNotificationEmail,
+  WITHDRAWAL_ADMIN_NOTIFICATION_TEMPLATE_ID,
+} from "./templates/withdrawal-admin-notification.js";
+export type { WithdrawalAdminNotificationTemplateInput } from "./templates/withdrawal-admin-notification.js";

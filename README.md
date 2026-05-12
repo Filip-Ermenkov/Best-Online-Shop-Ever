@@ -328,6 +328,111 @@ log in → /account/email-change → enter new address + current password
 смяната" → land on /account/login with the green banner → log in with
 the new address.
 
+## Order withdrawal (14-day right)
+
+`/account/orders/[orderNumber]/withdrawal` is the **digital withdrawal
+function** required by EU Directive 2023/2673 amending Article 11a of
+the Consumer Rights Directive 2011/83/EU — mandatory in every EU member
+state from **19 June 2026**. The legal requirement is concrete: every
+e-commerce site that contracts with EU consumers must (i) offer a
+clearly labelled withdrawal button, (ii) keep it findable and
+continuously available throughout the 14-day window, (iii) let the
+consumer identify the contract being withdrawn from, (iv) accept a
+clear withdrawal statement, and (v) issue an acknowledgement of receipt
+on a durable medium with the **exact date and time of submission**.
+Non-compliance extends the consumer's withdrawal period to **12 months
+and 14 days**.
+
+The slice ships three new routes on the existing `/orders/*` mount:
+
+- **`GET /orders/:n/withdrawal/eligibility`** — read-only. Returns
+  `eligible: true { acceptedAt, deadlineAt, alreadySubmittedAt }` or
+  `eligible: false { reason: "not_accepted" | "window_expired" }`. The
+  frontend uses this on the order detail page to decide whether to
+  render the button at all. 404 for "order not yours / does not exist"
+  (enumeration-resistant, same posture as the rest of `/orders/*`).
+- **`GET /orders/:n/withdrawal`** — auth-gated. Returns the persisted
+  record, or 404 if none. Powers the receipt re-read view.
+- **`POST /orders/:n/withdrawal`** — body `{ reason?: string }`, where
+  `reason` is optional (Art. 9(1) of the Directive: "without giving any
+  reason"). Idempotent at the DB level via a partial unique index on
+  `complaints.order_id WHERE reason = 'withdrawal'`: a second
+  submission for the same order returns 200 with the original record.
+  No `Idempotency-Key` header required — the partial unique index IS
+  the idempotency boundary. RFC 9457 types:
+  `/problems/withdrawal-not-accepted` (422),
+  `/problems/withdrawal-window-expired` (422).
+
+Storage: the existing `complaints` table picks up four columns —
+`customer_email`, `customer_name`, `customer_phone`,
+`acknowledged_at`. The first three are denormalised from the order at
+submission time so the audit trail survives later profile edits and
+the receipt email can be reconstructed from the row alone (durable
+medium); `acknowledged_at` is set when the customer-acknowledgement
+email send succeeds. A new partial unique index
+`complaints_order_withdrawal_unique` enforces one withdrawal per order
+at the DB level. Migration: `0002_complaints_withdrawal.sql`.
+
+The order DTO grows a new `acceptedAt: string | null` field — the
+frontend uses it to know whether to fetch eligibility at all (most
+orders never reach `accepted`, so we skip the round trip).
+
+Two new emails (templates 7 and 8 in `@shop/email`, total now EIGHT):
+
+- **`orders.withdrawal-received`** to the customer. Subject "Получихме
+  отказа Ви от поръчка {orderNumber}". Renders the submission
+  timestamp explicitly in Sofia local time at second precision,
+  satisfying Art. 11a(2)'s "exact date and time" obligation. Mentions
+  the legal basis (чл. 50 ЗЗП). No upsell, no nag, no countdown — per
+  recital 37, the email must not contain dark patterns.
+- **`orders.withdrawal-admin-notification`** to the support inbox
+  (derived from `EMAIL_FROM`). Operations-focused: order number,
+  customer contact, reason. The README §7 design intent is preserved:
+  "the platform RECORDS complaints — actual handling happens via
+  email/phone outside the app."
+
+Both emails are best-effort `Promise.allSettled` in parallel; failure
+of either does not change the API response. Re-submissions skip the
+emails entirely (the record is unchanged; re-notifying the admin would
+just be noise).
+
+The frontend surface:
+
+- **Order detail page** (`/account/orders/[orderNumber]`) renders the
+  "Откажете се от договора тук" card *only* when status is `accepted`
+  AND eligibility comes back `eligible: true`. The exact wording is
+  the Art. 11a(1)(a) "clearly labelled" requirement transposed to
+  Bulgarian. If `alreadySubmittedAt` is set, the card shows "Прегледай
+  отказа" instead.
+- **Withdrawal page** (`/account/orders/[orderNumber]/withdrawal`)
+  carries the order summary, an optional reason textarea (explicitly
+  labelled "по избор" — by choice — with a clarifying note that no
+  reason is required by law), a single CTA "Откажете се от договора",
+  and on success a durable-medium receipt view with the exact
+  submission timestamp.
+- **`/terms/withdrawal`** is a server component carrying the full
+  Bulgarian text of the withdrawal policy + Annex I(B) model
+  withdrawal form (Приложение № 6 към чл. 47 от ЗЗП). Linked from the
+  footer, `/terms`, `/delivery`, the order detail card, and the
+  withdrawal page header.
+
+The withdrawal request endpoint is auth-gated (no guest flow in this
+slice — that needs the guest-tracking-token surface which doesn't
+exist yet; deferred). The eligibility window is computed off
+`orders.accepted_at`, which is populated by the admin "mark accepted"
+transition. Today that transition is admin-only and admin-api isn't
+built yet, so dev testing requires manually flipping a row to
+`status='accepted', accepted_at=now()` via psql.
+
+In **local dev**, `console`-transport prints both emails to `api:dev`'s
+stdout. Smoke flow: register / verify / log in → place an order via
+the regular cart flow → in another terminal,
+`UPDATE orders SET status='accepted', accepted_at=now() WHERE
+order_number=…;` → reload the order detail page → the withdrawal card
+appears → click "Откажете се от договора тук" → submit → on-screen
+receipt with the timestamp, plus the customer email + admin
+notification visible in `api:dev`.
+
 ## Documentation
 
 Read the docs in this order:
@@ -566,20 +671,117 @@ have to be re-derived when extending the codebase.
   logged in to the shop. Gating it behind a session would defeat the
   recovery purpose.
 
+### Order withdrawal slice — decisions baked in
+
+- **Legal driver**: Article 11a of Directive 2011/83/EU as amended by
+  Directive 2023/2673 — mandatory for every EU e-commerce site
+  contracting with consumers from **19 June 2026**. The mandate is
+  specifically a *digital* withdrawal mechanism (the "withdrawal
+  button"), distinct from the long-standing right itself which already
+  existed via the original 2011 Directive. The implementation also
+  satisfies чл. 50 от ЗЗП (Bulgarian Consumer Protection Act).
+- **Single source of truth for the window**: `orders.accepted_at` is
+  the canonical timestamp. The 14-day window runs from that instant.
+  The order_status_history table is NOT consulted for eligibility —
+  the column is the contract. If `status='accepted' AND accepted_at IS
+  NULL` (broken invariant) the order is treated as ineligible.
+- **Authoritative legal label**: the primary CTA on both the order
+  detail card and the withdrawal page reads "Откажете се от договора
+  тук" — the Bulgarian rendering of the unambiguous wording Art.
+  11a(1)(a) requires. No marketing-softening allowed.
+- **No `Idempotency-Key` header**: the partial unique index
+  `complaints_order_withdrawal_unique` (on `complaints.order_id WHERE
+  reason = 'withdrawal'`) makes the operation idempotent at the DB
+  level. A second submission for the same order returns 200 with the
+  original record verbatim. We deliberately do NOT require an
+  Idempotency-Key header here (unlike `POST /orders`) because the
+  operation has a different idempotency boundary — the order itself,
+  not the request.
+- **Customer snapshot is denormalised** onto the complaints row at
+  submit time (`customer_email`, `customer_name`, `customer_phone`).
+  The order already carries the same snapshot from placement; copying
+  again to the complaint row means the audit trail stands alone even
+  if the order is anonymised under a future GDPR retention sweep.
+- **Reason is OPTIONAL**: stored on `complaints.description`. Art.
+  9(1) of the Directive: the consumer is NOT required to justify the
+  withdrawal. The UI labels the field "Причина (по избор)" with a
+  clarifying note. We capture if offered (helps support); we never
+  require.
+- **Durable medium = on-screen + email**: the on-screen receipt
+  rendered immediately after submission IS the primary durable medium
+  per recital 37 (a "durable medium" is anything the consumer can
+  store, reproduce unchanged, and access for an adequate period; the
+  receipt page meets that). The email is defence in depth. Both render
+  the timestamp in Europe/Sofia at second precision so they agree.
+  `acknowledged_at` is set when the email send succeeds; null on
+  failure means the audit trail is still complete (just missing the
+  email-delivery proof).
+- **Best-effort email send**: both customer ack and admin
+  notification go out via `Promise.allSettled` in parallel. Failure of
+  either does not change the API response (200/201 with the record).
+- **Re-submissions do NOT re-send emails**: the second POST returns
+  the existing record but skips the email step. Re-emailing would be
+  pure noise; the customer already has their receipt.
+- **`/orders/:n/withdrawal/eligibility` returns 200 for ineligible-
+  but-existing orders**: structured `{ eligible: false, reason }`
+  body. 404 is reserved for orders the user doesn't own (the existing
+  `/orders/*` enumeration-resistant contract).
+- **POST is auth-gated** (`requireAuth`). No guest-flow in this slice
+  — that needs the guest-tracking-token surface (`/track/:token`),
+  which is itself a deferred slice. The schema does NOT carry any
+  guest-vs-auth assumption; when the guest surface lands it can write
+  to the same `complaints` table.
+- **422 type taxonomy**:
+  `/problems/withdrawal-not-accepted` for orders not yet in
+  `accepted` status, `/problems/withdrawal-window-expired` for orders
+  past the 14-day cutoff. Distinct types because the customer-facing
+  remedy differs: the former is "wait", the latter is "contact us".
+- **Order DTO grows `acceptedAt`**: the FE uses it to decide whether
+  to even ask for eligibility. Most orders are pre-accepted and would
+  always return `not_accepted`; gating on `acceptedAt != null` skips
+  ~95% of pointless requests on the order detail page.
+- **`/terms/withdrawal` is a server component**: pure markup, no JS
+  required. Art. 6(1)(h) requires the disclosure to be clear and
+  comprehensible BEFORE the consumer is bound — a JS-dependent
+  disclosure is harder to defend if a regulator visits with text-mode
+  curl. Linked from the footer (under "Помощ"), the omnibus `/terms`
+  page, the `/delivery` "Returns" section, the order detail card, and
+  the withdrawal page header — four entry points so the disclosure is
+  "easy to find" per Art. 11a(1)(b).
+- **No dark patterns** (recital 37, Art. 16d): no "are you sure?"
+  double confirmation, no countdown timer pressuring the user, no
+  upsell interstitial, no "would you like to keep the goods at half
+  price?" deflection. The button label is the unambiguous legal
+  wording; the optional-reason copy explicitly tells the user a reason
+  is NOT required by law. The post-submit page is celebratory only
+  insofar as it confirms receipt — no negative-emotion copy ("we're
+  sorry to see you go" etc.) which Art. 16d's prohibition against
+  manipulative interfaces would flag.
+- **Schema is generic, app layer enforces invariants**: the four new
+  columns on `complaints` are nullable at the column level (so the
+  table stays usable for the other complaint kinds — `defective`,
+  `wrong_item`, `other` — which don't have the same Art. 11a
+  evidentiary requirements). The app layer enforces NOT NULL for
+  `reason='withdrawal'` at INSERT time.
+
 ## Status
 
 ### Backend
 
 - **`@shop/db`** — schema feature-complete for catalog, auth, cart, and orders.
-  30 tables, 32 FKs, 43 indexes, 10 enums. Idempotent seed.
+  30 tables, 32 FKs, 44 indexes, 10 enums. Idempotent seed.
   `email_verification_tokens` and `password_reset_tokens` were already in
   the schema with `kind` (`signup` / `email_change`), `consumed_at`,
   `expires_at` — the verification slice consumed them without a migration.
+  The withdrawal slice (migration `0002_complaints_withdrawal.sql`) added
+  four columns to `complaints` (`customer_email/name/phone`,
+  `acknowledged_at`) plus a partial unique index
+  `complaints_order_withdrawal_unique`.
 - **`@shop/auth`** — Argon2id helpers, session token generation/hashing,
   `DUMMY_PASSWORD_HASH`. 16 unit tests.
 - **`@shop/email`** — transactional email. Three transports
   (`createSesTransport`, `createConsoleTransport`, `createStubTransport`)
-  behind a common `EmailTransport` interface, plus six Bulgarian
+  behind a common `EmailTransport` interface, plus eight Bulgarian
   templates:
   - `renderVerificationEmail` (signup)
   - `renderPasswordResetEmail` (forgot-password link)
@@ -590,6 +792,11 @@ have to be re-derived when extending the codebase.
     sent to OLD address with the proposed new value)
   - `renderEmailChangedEmail` (post-change notice, sent to OLD address
     with the new value)
+  - `renderWithdrawalReceivedEmail` (14-day withdrawal acknowledgement
+    to the customer; Art. 11a(2) durable medium with Sofia-timezone
+    timestamp at second precision)
+  - `renderWithdrawalAdminNotificationEmail` (operations notice to the
+    support inbox at withdrawal-submission time)
 
   All inline-styled HTML + plain-text fallback. `@aws-sdk/client-sesv2`
   is the only runtime dep — no Nodemailer, no full SDK. Unit tests
@@ -668,11 +875,19 @@ have to be re-derived when extending the codebase.
     on `order_items`; per-customer scoping on list/detail returns generic
     404 for someone else's order — no enumeration; `cash_on_delivery`
     requires `deliveryAddress`, `pay_at_store` does not; corporate accounts
-    snapshot `order_corporate_data`; email-verified gate)
+    snapshot `order_corporate_data`; email-verified gate; `acceptedAt`
+    surfaced on the DTO for the FE withdrawal-button eligibility check)
+  - `/orders/:orderNumber/withdrawal`,
+    `/orders/:orderNumber/withdrawal/eligibility` (auth-gated; 14-day
+    right-of-withdrawal flow per EU Directive 2023/2673 Art. 11a — see
+    "Order withdrawal" section above; idempotent at the DB level via a
+    partial unique index on `complaints`; emails best-effort customer
+    acknowledgement + admin notification in parallel; 422 types
+    `/problems/withdrawal-not-accepted` and
+    `/problems/withdrawal-window-expired`)
   - `/health`, `/openapi.json`
-  - 100+ integration tests (catalog, categories, auth, cart, orders, and
-    the verification slice — register-sends-mail, verify happy/unknown/
-    expired/reused, resend auth-required/already-verified/rate-limit)
+  - 140+ integration tests (catalog, categories, auth, cart, orders,
+    verification, password reset, email change, and withdrawal slices)
     against `shop_test` DB. The vitest config forces
     `EMAIL_TRANSPORT=stub` so tests can assert on what was "sent" without
     hitting AWS; `per-test.ts` resets the recorder before every test.

@@ -208,9 +208,32 @@ export const orderStatusHistory = pgTable(
 );
 
 /**
- * 14-day complaint window per Bulgarian Consumer Protection Act / EU 2011/83/EU.
- * The platform only RECORDS complaints — actual handling happens via email/phone
- * outside the app (README §7).
+ * 14-day complaint window per Bulgarian Consumer Protection Act / EU 2011/83/EU
+ * (as amended by Directive 2023/2673 — the "withdrawal button" amendment that
+ * becomes mandatory on 19 June 2026).
+ *
+ * The platform only RECORDS complaints — actual handling (refund, return
+ * logistics, dispute communication) happens via email/phone outside the app
+ * (README §7). What we MUST do here per Art. 11a is:
+ *   - persist enough info to identify the submission on a durable medium;
+ *   - capture the EXACT moment of submission (`submitted_at`);
+ *   - record the customer's authenticated identity/contact at submit time
+ *     (`customer_email/name/phone`) — these are denormalised from the order
+ *     row so that a future profile edit cannot rewrite the audit trail, and
+ *     so that the acknowledgement-receipt email can be reconstructed from
+ *     the row alone (durable medium);
+ *   - track when (or if) the receipt acknowledgement email was sent
+ *     successfully (`acknowledged_at` non-null = SES accepted it; null =
+ *     the best-effort send failed and a manual notification may be needed).
+ *
+ * The customer contact columns are nullable at the column level to keep the
+ * table generic across complaint kinds (defective / wrong_item / other do not
+ * have the same Art. 11a evidentiary requirements). The app layer enforces
+ * NOT NULL for `reason = 'withdrawal'` at INSERT time.
+ *
+ * The partial unique index `complaints_order_withdrawal_unique` enforces "one
+ * withdrawal per order" — a re-submission returns the existing row idempotently
+ * rather than creating duplicates and re-sending the acknowledgement.
  */
 export const complaints = pgTable(
   "complaints",
@@ -221,9 +244,25 @@ export const complaints = pgTable(
       .references(() => orders.id, { onDelete: "cascade" }),
     reason: complaintReasonEnum("reason").notNull(),
     description: text("description"),
+    // Durable-medium snapshot of the authenticated submitter at the moment
+    // of submission. Required by app layer for `reason = 'withdrawal'`.
+    customerEmail: text("customer_email"),
+    customerName: text("customer_name"),
+    customerPhone: text("customer_phone"),
     submittedAt: timestamp("submitted_at", { withTimezone: true })
       .notNull()
       .default(sql`now()`),
+    // Best-effort receipt-email audit. Non-null = SES accepted; null = send
+    // failed and was logged for a manual follow-up. The withdrawal is still
+    // valid regardless (the on-screen acknowledgement IS already a durable
+    // medium per recital — the email is defence in depth).
+    acknowledgedAt: timestamp("acknowledged_at", { withTimezone: true }),
   },
-  (t) => [index("complaints_order_id_idx").on(t.orderId)],
+  (t) => [
+    index("complaints_order_id_idx").on(t.orderId),
+    // One withdrawal-kind complaint per order. Other reasons can repeat.
+    uniqueIndex("complaints_order_withdrawal_unique")
+      .on(t.orderId)
+      .where(sql`${t.reason} = 'withdrawal'`),
+  ],
 );

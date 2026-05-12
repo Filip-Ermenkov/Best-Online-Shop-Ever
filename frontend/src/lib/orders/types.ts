@@ -73,6 +73,97 @@ export interface OrderDTO {
   corporateData: OrderCorporateData | null;
   notes: string | null;
   createdAt: string;
+  /**
+   * Timestamp the order moved to `accepted` status. Powers the 14-day
+   * right-of-withdrawal window on the frontend (EU Directive 2023/2673
+   * Art. 11a — mandatory 19 June 2026). Null while the order is in any
+   * pre-accepted status.
+   */
+  acceptedAt: string | null;
+}
+
+/**
+ * Withdrawal record DTO — wire shape of GET / POST
+ * /orders/:orderNumber/withdrawal.
+ *
+ * `reason` mirrors the optional free-form text the consumer may provide.
+ * The Consumer Rights Directive Art. 9(1) says the consumer is NOT
+ * required to give a reason; we capture it if offered. The Bulgarian
+ * customer-facing label is "Причина (по избор)".
+ *
+ * `acknowledgedAt` is set when the platform successfully sent the
+ * confirmation email (the secondary durable medium per Art. 11a(2)). The
+ * primary durable medium is the on-screen acknowledgement immediately
+ * after submit — this field exists so the receipt page can show "We
+ * also emailed you a copy" when it's true.
+ */
+export interface WithdrawalRecord {
+  id: string;
+  orderNumber: string;
+  customerEmail: string;
+  customerName: string;
+  customerPhone: string;
+  reason: string | null;
+  submittedAt: string;
+  acknowledgedAt: string | null;
+}
+
+/**
+ * Eligibility shape returned by GET /orders/:orderNumber/withdrawal/eligibility.
+ *
+ * Surfaces all three of the FE's needed decisions:
+ *   - Should we render the "Withdraw" button at all? (`eligible: true`)
+ *   - Has the user already submitted? (`alreadySubmittedAt != null`)
+ *   - When does the window end? (`deadlineAt` — used for the countdown
+ *     copy on the order detail page)
+ *
+ * `windowDays` is surfaced so we don't hard-code 14 in BOTH layers — the
+ * legal constant lives on the backend and the FE renders whatever the
+ * server says it is (still 14 today; this gives us a future-proof escape
+ * hatch should the directive ever change).
+ */
+export type WithdrawalEligibility =
+  | {
+      eligible: true;
+      acceptedAt: string;
+      deadlineAt: string;
+      alreadySubmittedAt: string | null;
+      windowDays: number;
+    }
+  | {
+      eligible: false;
+      reason: "not_accepted" | "window_expired";
+      windowDays: number;
+    };
+
+/**
+ * Discriminated error union for the withdrawal endpoints.
+ *
+ * Extends OrderError with two slice-specific 422 variants. We deliberately
+ * mirror the OrderError pattern (not a separate error type) so a withdrawal
+ * UI that already handles `network` / `unauthenticated` / `not_found`
+ * gets those for free.
+ */
+export type WithdrawalError =
+  | { kind: "unauthenticated"; detail?: string }
+  | { kind: "not_found"; detail?: string }
+  | { kind: "withdrawal_not_accepted"; detail?: string }
+  | { kind: "withdrawal_window_expired"; detail?: string }
+  | {
+      kind: "validation";
+      fields: { path: string; message: string }[];
+      detail?: string;
+    }
+  | { kind: "network"; cause?: unknown }
+  | { kind: "unknown"; status: number; detail?: string };
+
+export type WithdrawalResult<T> =
+  | { ok: true; value: T }
+  | { ok: false; error: WithdrawalError };
+
+export interface SubmitWithdrawalInput {
+  /** Optional free-form reason. Max 2000 chars on the backend. */
+  reason?: string;
 }
 
 export interface PlaceOrderInput {

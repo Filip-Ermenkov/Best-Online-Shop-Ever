@@ -34,6 +34,11 @@ import type {
   OrderError,
   OrderResult,
   PlaceOrderInput,
+  SubmitWithdrawalInput,
+  WithdrawalEligibility,
+  WithdrawalError,
+  WithdrawalRecord,
+  WithdrawalResult,
 } from "./types";
 
 const baseUrl =
@@ -206,5 +211,136 @@ export async function fetchOrder(
 ): Promise<OrderResult<OrderDTO>> {
   return callJson<OrderDTO>(
     ordersFetch(`/orders/${encodeURIComponent(orderNumber)}`),
+  );
+}
+
+// ─── Withdrawal client ────────────────────────────────────────────────────
+//
+// Three endpoints powering the 14-day right of withdrawal (EU Directive
+// 2023/2673 Art. 11a — mandatory 19 June 2026):
+//
+//   - GET  /orders/:n/withdrawal/eligibility  → render-or-hide the button
+//   - GET  /orders/:n/withdrawal              → re-fetch a prior submission
+//                                               for the "already done" UI
+//   - POST /orders/:n/withdrawal              → submit; ack screen renders
+//                                               server-side timestamp
+//
+// All three are auth-gated. The withdrawal endpoints have their own typed
+// error union (WithdrawalError) because two of the failure modes —
+// `withdrawal_window_expired` and `withdrawal_not_accepted` — only apply
+// here. The remaining variants (network / unauthenticated / not_found /
+// validation / unknown) are the same shape as OrderError.
+
+function classifyWithdrawalError(
+  status: number,
+  problem?: ProblemResponse,
+): WithdrawalError {
+  if (status === 400) {
+    return {
+      kind: "validation",
+      fields: problem?.errors ?? [],
+      detail: problem?.detail,
+    };
+  }
+  if (status === 401) {
+    return { kind: "unauthenticated", detail: problem?.detail };
+  }
+  if (status === 404) {
+    return { kind: "not_found", detail: problem?.detail };
+  }
+  if (
+    status === 422 &&
+    problem?.type === "/problems/withdrawal-window-expired"
+  ) {
+    return { kind: "withdrawal_window_expired", detail: problem.detail };
+  }
+  if (
+    status === 422 &&
+    problem?.type === "/problems/withdrawal-not-accepted"
+  ) {
+    return { kind: "withdrawal_not_accepted", detail: problem.detail };
+  }
+  return { kind: "unknown", status, detail: problem?.detail };
+}
+
+async function callWithdrawalJson<T>(
+  promise: Promise<Response>,
+): Promise<WithdrawalResult<T>> {
+  let res: Response;
+  try {
+    res = await promise;
+  } catch (err) {
+    return { ok: false, error: { kind: "network", cause: err } };
+  }
+  if (!res.ok) {
+    const problem = await readProblem(res);
+    return { ok: false, error: classifyWithdrawalError(res.status, problem) };
+  }
+  try {
+    const value = (await res.json()) as T;
+    return { ok: true, value };
+  } catch (err) {
+    return { ok: false, error: { kind: "network", cause: err } };
+  }
+}
+
+/**
+ * GET /orders/:n/withdrawal/eligibility — drives the conditional rendering
+ * of the withdrawal button on the order detail page.
+ *
+ * The backend returns 200 for both eligible and ineligible-but-existing
+ * orders. 404 is reserved for orders that don't exist or belong to
+ * someone else (the existing enumeration-resistant contract).
+ */
+export async function fetchWithdrawalEligibility(
+  orderNumber: string,
+): Promise<WithdrawalResult<WithdrawalEligibility>> {
+  return callWithdrawalJson<WithdrawalEligibility>(
+    ordersFetch(
+      `/orders/${encodeURIComponent(orderNumber)}/withdrawal/eligibility`,
+    ),
+  );
+}
+
+/**
+ * GET /orders/:n/withdrawal — fetch a previously-submitted withdrawal
+ * record so the user can re-read their durable-medium receipt.
+ *
+ * 404 is the conventional "no record exists" response. The withdrawal
+ * page handler treats it as "no submission yet, show the form".
+ */
+export async function fetchWithdrawal(
+  orderNumber: string,
+): Promise<WithdrawalResult<WithdrawalRecord>> {
+  return callWithdrawalJson<WithdrawalRecord>(
+    ordersFetch(`/orders/${encodeURIComponent(orderNumber)}/withdrawal`),
+  );
+}
+
+/**
+ * POST /orders/:n/withdrawal — submit the consumer's withdrawal.
+ *
+ * The endpoint is idempotent at the DB level — a second submission for
+ * the same order returns 200 with the original record. The FE doesn't
+ * need to distinguish 201 from 200; both mean "you have a valid
+ * submission, here it is". The UI uses the returned `submittedAt` /
+ * `acknowledgedAt` to render the durable-medium receipt.
+ */
+export async function submitWithdrawal(
+  orderNumber: string,
+  input: SubmitWithdrawalInput = {},
+): Promise<WithdrawalResult<WithdrawalRecord>> {
+  return callWithdrawalJson<WithdrawalRecord>(
+    ordersFetch(
+      `/orders/${encodeURIComponent(orderNumber)}/withdrawal`,
+      {
+        method: "POST",
+        body: JSON.stringify(
+          input.reason && input.reason.trim().length > 0
+            ? { reason: input.reason.trim() }
+            : {},
+        ),
+      },
+    ),
   );
 }

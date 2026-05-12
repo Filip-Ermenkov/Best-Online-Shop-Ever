@@ -4,8 +4,15 @@ import { use, useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useAuth } from "@/contexts/AuthContext";
-import { fetchOrder } from "@/lib/orders/client";
-import type { OrderDTO, OrderStatus } from "@/lib/orders/types";
+import {
+  fetchOrder,
+  fetchWithdrawalEligibility,
+} from "@/lib/orders/client";
+import type {
+  OrderDTO,
+  OrderStatus,
+  WithdrawalEligibility,
+} from "@/lib/orders/types";
 import { Button } from "@/components/ui/button";
 import { ButtonLink } from "@/components/ui/button-link";
 import { Separator } from "@/components/ui/separator";
@@ -13,7 +20,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { formatCents, formatDate } from "@/lib/utils";
 import {
   ArrowLeft, Truck, Store, Package,
-  CheckCircle, Clock, XCircle, Banknote,
+  CheckCircle, Clock, XCircle, Banknote, ShieldX,
 } from "lucide-react";
 import {
   Breadcrumb, BreadcrumbItem, BreadcrumbLink,
@@ -78,6 +85,16 @@ export default function OrderDetailPage({ params }: Props) {
     "none" | "not_found" | "network" | "unknown"
   >("none");
 
+  // Withdrawal-button surface (EU Directive 2023/2673 Art. 11a, mandatory
+  // 19 June 2026). We only fetch eligibility once the order is loaded AND
+  // the order is in `accepted` status — saves a round trip for the
+  // overwhelming majority of order detail views (most orders never reach
+  // accepted, and most that do never need a withdrawal). The button is
+  // rendered iff eligibility comes back `eligible: true`.
+  const [withdrawal, setWithdrawal] = useState<WithdrawalEligibility | null>(
+    null,
+  );
+
   // Auth gate. Anonymous users can't see anyone's orders — bounce them to
   // login with a return-to so the post-login redirect lands them back here.
   useEffect(() => {
@@ -118,6 +135,31 @@ export default function OrderDetailPage({ params }: Props) {
       cancelled = true;
     };
   }, [isLoggedIn, orderNumber, router]);
+
+  // Fetch withdrawal eligibility ONLY for orders that have reached
+  // `accepted`. The backend will respond with `eligible: false reason=
+  // not_accepted` for anything else anyway — but pre-filtering on the FE
+  // side avoids ~95% of pointless requests, and the order detail page is
+  // hot.
+  useEffect(() => {
+    if (!order || order.status !== "accepted") {
+      setWithdrawal(null);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      const res = await fetchWithdrawalEligibility(order.orderNumber);
+      if (cancelled) return;
+      if (res.ok) {
+        setWithdrawal(res.value);
+      } else {
+        setWithdrawal(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [order]);
 
   // Loading skeleton.
   if (authStatus === "loading" || (isLoggedIn && order === null && errorState === "none")) {
@@ -342,6 +384,61 @@ export default function OrderDetailPage({ params }: Props) {
             <p className="text-sm text-muted-foreground whitespace-pre-wrap">
               {order.notes}
             </p>
+          </div>
+        )}
+
+        {/* Withdrawal button surface — required by EU Directive 2023/2673
+            (Art. 11a of 2011/83/EU), mandatory 19 June 2026. The button MUST
+            be (i) clearly labelled with unambiguous wording, (ii) easy to
+            find, (iii) continuously available throughout the 14-day window.
+            We render it as a dedicated card sitting above the standard
+            navigation actions so it's the first thing the user sees if
+            they're looking for it, but we do NOT render it as a destructive-
+            looking warning either — recital 37 prohibits dark patterns in
+            BOTH directions. */}
+        {withdrawal && withdrawal.eligible && (
+          <div className="rounded-lg border border-border p-4">
+            <h2 className="font-semibold mb-2 flex items-center gap-2">
+              <ShieldX className="w-4 h-4" />
+              14-дневно право на отказ
+            </h2>
+            {withdrawal.alreadySubmittedAt ? (
+              <>
+                <p className="text-sm text-muted-foreground mb-3">
+                  Вече сте подали отказ за тази поръчка. Прегледайте
+                  потвърждението си по всяко време.
+                </p>
+                <ButtonLink
+                  variant="outline"
+                  href={`/account/orders/${order.orderNumber}/withdrawal`}
+                  className="w-full sm:w-auto"
+                >
+                  Прегледай отказа
+                </ButtonLink>
+              </>
+            ) : (
+              <>
+                <p className="text-sm text-muted-foreground mb-3">
+                  По чл. 50 от Закона за защита на потребителите имате право да
+                  се откажете от тази поръчка в рамките на 14 дни от датата на
+                  получаване, без да посочвате причина.{" "}
+                  <Link
+                    href="/terms/withdrawal"
+                    className="underline underline-offset-2 hover:text-foreground"
+                  >
+                    Прочетете пълните условия
+                  </Link>
+                  .
+                </p>
+                <ButtonLink
+                  href={`/account/orders/${order.orderNumber}/withdrawal`}
+                  className="w-full sm:w-auto"
+                  aria-label="Откажете се от договора тук"
+                >
+                  Откажете се от договора тук
+                </ButtonLink>
+              </>
+            )}
           </div>
         )}
 

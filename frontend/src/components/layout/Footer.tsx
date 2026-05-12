@@ -71,6 +71,7 @@ export default function Footer() {
             <ul className="space-y-2.5 text-sm text-[oklch(0.60_0.02_270)]">
               <li><Link href="/faq" className="hover:text-[oklch(0.73_0.10_75)] transition-colors">Често задавани въпроси</Link></li>
               <li><Link href="/delivery" className="hover:text-[oklch(0.73_0.10_75)] transition-colors">Доставка и връщане</Link></li>
+              <li><Link href="/terms/withdrawal" className="hover:text-[oklch(0.73_0.10_75)] transition-colors">Право на отказ (14 дни)</Link></li>
               <li><Link href="/account/orders" className="hover:text-[oklch(0.73_0.10_75)] transition-colors">Проследяване на поръчка</Link></li>
               <li><Link href="/terms" className="hover:text-[oklch(0.73_0.10_75)] transition-colors">Условия за ползване</Link></li>
               <li><Link href="/privacy" className="hover:text-[oklch(0.73_0.10_75)] transition-colors">Поверителност</Link></li>
