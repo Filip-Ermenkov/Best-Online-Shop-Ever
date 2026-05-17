@@ -168,29 +168,29 @@ export default function SecurityPolicyPage() {
         <li>
           Reproduction steps (URL, payload, screenshot, or proof-of-concept).
         </li>
-        <li>Your contact details, if you'd like a reply.</li>
+        <li>Your contact details, if you’d like a reply.</li>
       </ul>
       <p>
         Anonymous reports are welcome. Encryption is optional — write in and
-        we'll exchange a PGP public key out-of-band if you prefer.
+        we’ll exchange a PGP public key out-of-band if you prefer.
       </p>
 
-      <h2>What we'll do</h2>
+      <h2>What we’ll do</h2>
       <ul>
         <li>
-          <strong>Within 72 hours</strong> — we'll acknowledge receipt.
+          <strong>Within 72 hours</strong> — we’ll acknowledge receipt.
         </li>
         <li>
-          <strong>Within 14 days</strong> — we'll triage (valid /
+          <strong>Within 14 days</strong> — we’ll triage (valid /
           invalid / duplicate) and give you a remediation timeline.
         </li>
         <li>
-          <strong>Within 90 days</strong> — we'll ship a fix for valid
-          vulnerabilities. More complex cases may take longer; we'll keep
+          <strong>Within 90 days</strong> — we’ll ship a fix for valid
+          vulnerabilities. More complex cases may take longer; we’ll keep
           you informed.
         </li>
         <li>
-          With your consent, we'll credit you as the reporter in our public
+          With your consent, we’ll credit you as the reporter in our public
           changelog.
         </li>
       </ul>
@@ -205,7 +205,7 @@ export default function SecurityPolicyPage() {
       <ul>
         <li>Test only against accounts you own.</li>
         <li>
-          Don't download, copy, or store customer data (names, phone
+          Don’t download, copy, or store customer data (names, phone
           numbers, addresses, orders). If you accidentally access it — stop
           immediately and tell us.
         </li>
@@ -214,7 +214,7 @@ export default function SecurityPolicyPage() {
           or customers.
         </li>
         <li>
-          Don't publish the vulnerability before we've shipped a fix or
+          Don’t publish the vulnerability before we’ve shipped a fix or
           before 90 days have elapsed, whichever comes first.
         </li>
       </ul>
@@ -227,9 +227,9 @@ export default function SecurityPolicyPage() {
         launch, and email infrastructure (SPF, DKIM, DMARC).
       </p>
       <p>
-        <strong>Out of scope:</strong> attacks against our suppliers'
+        <strong>Out of scope:</strong> attacks against our suppliers’
         infrastructure (AWS, Neon, Cloudflare); rate-limit bypasses without
-        material impact; self-styled "best-practice" recommendations
+        material impact; self-styled “best-practice” recommendations
         without a working exploit; clickjacking on pages without sensitive
         actions; missing HTTP security headers without a demonstrated
         exploit.

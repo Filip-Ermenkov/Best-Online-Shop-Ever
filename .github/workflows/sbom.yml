@@ -143,28 +143,36 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # `name` is the npm workspace name (what `npm --workspace <name>`
-        # expects). `slug` is the filename-safe identifier used for the
-        # output artifact. `manifest` is the literal path to the
-        # workspace's package.json — cyclonedx-npm wants a path, not a
-        # workspace alias, because the alias resolution happens at the
-        # root and the tool needs to anchor on a specific manifest.
+        # `name` is the npm workspace name (what cyclonedx-npm's
+        # --workspace flag expects, matching the `"name"` field in
+        # each workspace's package.json). `slug` is the filename-safe
+        # identifier used for the output artifact.
+        #
+        # Why no `manifest:` field anymore — first iteration of this
+        # workflow passed `./backend/<ws>/package.json` to cyclonedx-npm
+        # as the positional manifest argument, which made the tool
+        # look for a lockfile next to that file. In an npm workspaces
+        # monorepo the only `package-lock.json` lives at the repo root,
+        # so three of the five jobs failed with "no package lock file
+        # nor npm shrinkwrap file". Per the official cyclonedx-npm 4.x
+        # CLI docs (--help output), the right pattern for monorepos is:
+        # invoke from the repo root (the manifest argument defaults to
+        # ./package.json in cwd), and scope to one workspace via
+        # `-w <workspace-name>`. With `--workspace` set, the workspace
+        # root's own dependencies are excluded by default — exactly
+        # what we want for a deployed-artifact SBOM (the root only has
+        # tooling like drizzle-kit that doesn't ship to Lambda).
         workspace:
           - name: 'shop'
             slug: 'frontend'
-            manifest: './frontend/package.json'
           - name: '@shop/db'
             slug: 'backend-db'
-            manifest: './backend/db/package.json'
           - name: '@shop/auth'
             slug: 'backend-auth'
-            manifest: './backend/auth/package.json'
           - name: '@shop/email'
             slug: 'backend-email'
-            manifest: './backend/email/package.json'
           - name: '@shop/api'
             slug: 'backend-api'
-            manifest: './backend/shop-api/package.json'
 
     steps:
       - name: Checkout
@@ -188,33 +196,45 @@ jobs:
       - name: Install CycloneDX npm SBOM tool
         # Install globally so the binary is on PATH for the next
         # step. `cyclonedx-npm` is the official CycloneDX-org tool.
-        # Pinning to a known-good major; minor bumps are safe.
-        # 2.x supports workspace filtering correctly (1.x did not).
-        run: npm install --global @cyclonedx/cyclonedx-npm@^2.0.0
+        # ^4.0.0 pins to the current major (latest v4.2.1 — 09 Mar 2026)
+        # which is where workspace filtering matured. v2.x had
+        # incomplete workspace support that prompted the first
+        # iteration's failures.
+        run: npm install --global @cyclonedx/cyclonedx-npm@^4.0.0
 
       - name: Generate SBOM for ${{ matrix.workspace.name }}
-        # Flags:
+        # Flags (per cyclonedx-npm 4.x --help):
         #   --package-lock-only — use the lockfile rather than
         #     re-resolving via the registry. Deterministic and
         #     offline-friendly.
         #   --omit dev — exclude devDependencies. The production
         #     Lambda bundle doesn't ship them, so they don't belong
-        #     in the deployed-artifact SBOM. A separate audit-SBOM
-        #     including devDeps could be added later.
+        #     in the deployed-artifact SBOM.
+        #   --workspace <name> — scope the dependency tree to a
+        #     single workspace. The workspace root's deps are
+        #     excluded by default when --workspace is set (this is
+        #     `--no-include-workspace-root` behaviour, which is the
+        #     4.x default whenever --workspace is explicit).
         #   --spec-version — pin CycloneDX schema for reproducibility.
         #   --output-format JSON — JSON is what attestation tooling
         #     (gh attestation, cosign) expects.
-        #   <manifest> — positional argument; the package.json of the
-        #     workspace being analysed.
+        #   (no positional <package-manifest>) — defaults to
+        #     ./package.json in cwd, which IS the repo root and
+        #     IS adjacent to the only package-lock.json that exists
+        #     in this monorepo. This was the bug in the first
+        #     iteration: passing the per-workspace package.json
+        #     made the tool hunt for a lockfile next to it, but
+        #     workspace packages don't have their own lockfiles in
+        #     an npm-workspaces setup.
         run: |
           mkdir -p ./sbom-output
           cyclonedx-npm \
             --package-lock-only \
             --omit dev \
+            --workspace ${{ matrix.workspace.name }} \
             --spec-version ${{ env.CDX_SPEC_VERSION }} \
             --output-format JSON \
-            --output-file ./sbom-output/sbom-${{ matrix.workspace.slug }}.cdx.json \
-            ${{ matrix.workspace.manifest }}
+            --output-file ./sbom-output/sbom-${{ matrix.workspace.slug }}.cdx.json
 
       - name: Validate SBOM is well-formed JSON
         # Sanity check: if cyclonedx-npm silently produced garbage
