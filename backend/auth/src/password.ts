@@ -12,7 +12,7 @@ import argon2 from "argon2";
  *     B) m=19456 (19 MiB), t=2, p=1   — low-mem,  high-cpu  ← we use this
  *
  *   Pairing B is the right pick for AWS Lambda. We size functions at 512 MiB
- *   (per TECHSPEC) and 19 MiB of transient hashing memory keeps headroom
+ *   (per docs/ARCHITECTURE.md §3.4) and 19 MiB of transient hashing memory keeps headroom
  *   comfortable. Pairing A would need ~50 MiB of stack-resident allocation
  *   on every login and pushes us toward 1 GiB Lambda sizing for safety.
  *

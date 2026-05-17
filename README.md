@@ -19,9 +19,9 @@ Online shop project — Bulgarian-language e-commerce platform on AWS.
 ├── .github/
 │   └── workflows/    CI: typecheck, lint, auth tests, API tests w/ Postgres
 └── docs/
-    ├── README.md                     Functional / product specification
-    ├── TECHSPEC.md                   AWS infrastructure architecture
-    └── AWS_PRICING_RESEARCH_2026.md  Verified rate sheet for cost calculations
+    ├── README.md         Functional / product specification (Bulgarian)
+    ├── ARCHITECTURE.md   System design, operations, costs, A+ roadmap
+    └── COMPLIANCE.md     2026 standards matrix (NIST CSF, OWASP, ASVS, SLSA, GDPR…)
 ```
 
 This is an **npm workspaces** monorepo. One `npm install` at the root
@@ -438,8 +438,8 @@ notification visible in `api:dev`.
 Read the docs in this order:
 
 1. `docs/README.md` — what the shop does (product spec, in Bulgarian)
-2. `docs/TECHSPEC.md` — how it's hosted on AWS (English, with Bulgarian sections)
-3. `docs/AWS_PRICING_RESEARCH_2026.md` — verified AWS rates underpinning the cost tables
+2. `docs/ARCHITECTURE.md` — how it's built and run, plus the roadmap to A+ across every 2026 standard
+3. `docs/COMPLIANCE.md` — auditor-facing standards-by-standards matrix (NIST CSF 2.0, OWASP Top 10 2025, OWASP ASVS 6.0, NIST SP 800-63B-4, SLSA, CIS Controls v8.1, GDPR, EU CRA, WCAG 2.2)
 
 ## Architecture decisions in force
 

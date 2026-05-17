@@ -33,7 +33,7 @@ import type { EmailTransport, OutgoingEmail, SendResult } from "../types.js";
 export interface SesTransportOptions {
   /**
    * AWS region. eu-central-1 (Frankfurt) is the default for this project —
-   * matches the EU-data-residency posture documented in TECHSPEC.md.
+   * matches the EU-data-residency posture documented in docs/ARCHITECTURE.md §1.
    * Override per-deployment via env if a different region is preferred.
    */
   region: string;
