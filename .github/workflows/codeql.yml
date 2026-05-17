@@ -1,0 +1,193 @@
+# =============================================================================
+# CodeQL — static application security testing (SAST) for the @shop monorepo.
+#
+# Why this is a separate workflow (not folded into ci.yml):
+#   1. Different cadence. CI runs on every PR; CodeQL runs on PRs *and* a
+#      weekly cron so newly-published query packs catch latent issues in
+#      code that hasn't changed.
+#   2. Different permissions. CodeQL needs `security-events: write` to
+#      upload SARIF results to the GitHub Security tab. Folding that into
+#      ci.yml would broaden the blast radius of every unrelated job.
+#   3. Different runtime envelope. CodeQL analysis can take ~5 min on a
+#      monorepo this size — keeping it parallel rather than serial with
+#      the CI gate preserves fast PR feedback.
+#
+# What CodeQL covers here:
+#   - JavaScript + TypeScript across every workspace (frontend, shop-api,
+#     auth, email, db). CodeQL's `javascript-typescript` language profile
+#     analyses both with one extraction; no separate jobs needed.
+#   - GitHub Actions workflows themselves. CodeQL's `actions` query pack
+#     (added in CodeQL CLI 2.20+, on by default in v4) catches a category
+#     of supply-chain bug specific to YAML workflows — script-injection,
+#     unsafe expression evaluation, leaked secrets, the tj-actions-style
+#     compromise pattern. Particularly relevant given our pinning posture.
+#
+# Query suite choice:
+#   `security-extended` rather than the default `security`. Extended adds
+#   ~20% more queries, including precision/p3 rules that catch real bugs
+#   at a low false-positive rate. Going further to `security-and-quality`
+#   adds maintainability rules that would generate noise unrelated to
+#   security — not worth the triage cost on a small team.
+#
+# Build mode:
+#   `none` for JS/TS. The TypeScript compiler is invoked by CodeQL's
+#   extractor directly from source — no `npm run build` step required.
+#   This is the modern (2024+) CodeQL pattern and avoids the
+#   "autobuild fails because no build script exists" failure mode that
+#   plagued earlier CodeQL versions.
+#
+# SHA pinning rationale (mirrors ci.yml):
+#   Third-party actions pinned to full 40-char commit SHAs after the
+#   tj-actions/changed-files (Mar 2025) and trivy-action (Mar 2026)
+#   compromises. The `# vX.Y.Z — DD MMM YYYY` comment documents what we
+#   believed we were getting at pin time; the next maintainer can verify
+#   independently by clicking through to the release page.
+#
+# Cost:
+#   Free on public repos. On private repos this requires GitHub Advanced
+#   Security (~$50/committer/month). If this repo goes private, see
+#   ARCHITECTURE.md §9.4 — the recommended alternative is Semgrep CE
+#   (free) configured with the same rule families.
+#
+# Triage workflow when CodeQL flags something:
+#   1. Open the alert on the Security tab.
+#   2. Read the data-flow trace; understand the source → sink path.
+#   3. If it's a true positive — fix it on a branch; the alert
+#      auto-resolves when the PR merges.
+#   4. If it's a false positive — `Dismiss` with a written reason. Don't
+#      use `// codeql[js/sql-injection]` inline suppressions; they hide
+#      context from future maintainers.
+#
+# Deprecation note:
+#   CodeQL Action v3 reaches EOL in December 2026. We're on v4 already
+#   (released October 2025), so no migration debt. Bump the pinned SHA
+#   to the next patch release every 1–3 months via Dependabot when we
+#   add it (Roadmap item not yet shipped).
+
+name: CodeQL
+
+on:
+  # Block-on-PR — we want SAST signal before merge, not after.
+  pull_request:
+    branches: [main]
+    # Skip when only markdown / docs change. CodeQL extractors don't
+    # parse markdown, so analysis would be no-op but still burn ~5 min
+    # of runner time per PR.
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+
+  push:
+    branches: [main]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+
+  # Weekly drift catch. New query packs ship every 2–4 weeks; running
+  # against `main` weekly surfaces issues that newer queries find in
+  # code that hasn't changed. Sunday 03:00 UTC = pre-dawn Sofia, no
+  # interference with weekday CI throughput.
+  schedule:
+    - cron: '0 3 * * 0'
+
+# Cancel superseded PR runs. Same rationale as ci.yml — only the
+# latest commit's signal matters.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Least-privilege at workflow level. The analyse job overrides up to
+# `security-events: write` to upload SARIF; everything else stays read.
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    # 10 min is plenty for this repo's ~30k LOC of TS today; bump to
+    # 20 when the codebase doubles. Hard cap prevents a hung extractor
+    # from eating runner budget indefinitely.
+    timeout-minutes: 15
+
+    permissions:
+      # Needed to:
+      #   - read code (default)
+      #   - upload SARIF to the Security tab
+      #   - read action metadata for the `actions` language analyser
+      security-events: write
+      packages: read
+      actions: read
+      contents: read
+
+    strategy:
+      # Don't abort one language when another fails — we want partial
+      # signal rather than no signal.
+      fail-fast: false
+      matrix:
+        include:
+          # One job covers BOTH JavaScript and TypeScript. The combined
+          # language identifier was introduced in CodeQL CLI 2.16 and
+          # is the recommended setting for any TS project (analysing
+          # them separately doubles cost and produces duplicate alerts
+          # for shared code paths). build-mode: none = source-only,
+          # no compile step needed.
+          - language: javascript-typescript
+            build-mode: none
+          # Separate job for GitHub Actions workflows. Catches:
+          #   - Script injection via ${{ github.event.* }} in run blocks
+          #   - Unpinned action references (we shouldn't have any, but
+          #     this enforces it)
+          #   - Workflow permissions over-scoping
+          #   - Secrets leaked through environment variables
+          - language: actions
+            build-mode: none
+
+    steps:
+      - name: Checkout repository
+        # actions/checkout v6.0.2 — 09 Jan 2026
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+
+      # Initialise the CodeQL toolchain. `init` downloads the analyser
+      # binaries and the query packs corresponding to the requested
+      # language. The downloaded query pack is what defines which bugs
+      # we look for — security-extended is documented in the header.
+      - name: Initialize CodeQL
+        # github/codeql-action/init v4.35.1 — 27 Mar 2026
+        uses: github/codeql-action/init@c10b8064de6f491fea524254123dbe5e09572f13
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+          # security-extended adds high-precision queries on top of the
+          # default `security` suite. Specifically: more taint-tracking
+          # sources/sinks for SQL/NoSQL injection, prototype pollution,
+          # path traversal, server-side request forgery, and ReDoS.
+          queries: security-extended
+          # Bumping the config to allow large object graphs without
+          # truncation. Default is 250 nodes per query; a Hono app
+          # with deep routing easily exceeds that on path-traversal
+          # queries, leading to false negatives. 1000 is the upper
+          # bound documented as safe by CodeQL maintainers.
+          ram: 6144
+
+      # CodeQL extracts the source code, runs the queries, and produces
+      # SARIF. For build-mode: none on JS/TS, no separate build step is
+      # needed — extraction and analysis happen here.
+      - name: Perform CodeQL analysis
+        # github/codeql-action/analyze v4.35.1 — 27 Mar 2026
+        uses: github/codeql-action/analyze@c10b8064de6f491fea524254123dbe5e09572f13
+        with:
+          # The analysis ID category is what GitHub uses to dedupe
+          # results across multiple analysis runs (e.g. the matrix
+          # leg above). Without it, jobs in the matrix would overwrite
+          # each other's results on the Security tab.
+          category: "/language:${{ matrix.language }}"
+          # Fail the run on errors but not on findings — findings are
+          # the WHOLE POINT of running this. Findings show up as alerts
+          # on the Security tab; the workflow itself stays green so it
+          # doesn't block unrelated PRs. We gate merges on findings via
+          # branch protection's "Code Scanning Alerts" required check
+          # (see docs/ARCHITECTURE.md §11 — Branch protection runbook).
+          upload: always

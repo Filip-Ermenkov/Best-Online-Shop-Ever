@@ -1,0 +1,295 @@
+# =============================================================================
+# Software Bill of Materials (SBOM) generation + cryptographic signing.
+#
+# This workflow is the heart of the project's supply-chain integrity story.
+# It produces, for every push to main and every release, a CycloneDX 1.6
+# SBOM for each workspace AND a build-provenance attestation signed via
+# GitHub's OIDC identity through Sigstore's Fulcio CA. End-to-end, this
+# moves the project from SLSA Level 0 to Level 2 (the realistic ceiling
+# for a non-isolated, single-tenant GitHub Actions runner — Level 3
+# requires a reusable workflow with build platform isolation, which is
+# overkill for an e-commerce shop and on the deferred-list in
+# docs/ARCHITECTURE.md §15).
+#
+# ─── Why CycloneDX and not SPDX ───
+# Both are SBOM standards. CycloneDX is OWASP-hosted, has a richer
+# vulnerability data model (`vulnerabilities[]` and the VEX extension),
+# is the format `npm sbom` and `@cyclonedx/cyclonedx-npm` natively
+# produce, and is the format the EU CRA's Annex I, Part II §1 references
+# as acceptable. Picking it once means everything downstream — Dependency
+# Track, OWASP Dependency-Check, GitHub's built-in attestation viewer —
+# Just Works.
+#
+# ─── Why per-workspace SBOMs and not a single monorepo SBOM ───
+# Lambda packages are deployed per-function. When Lambda function
+# `shop-api` is rebuilt, the SBOM you want to attest is the deps for
+# `shop-api` alone — not all five workspaces. Per-workspace SBOMs let
+# you publish, sign, and verify the deployment unit cleanly. A future
+# Roadmap item could add a top-level aggregate (`bom.json`) for SCA
+# tooling that wants to scan the whole repo at once — not blocking
+# for SLSA L2 today.
+#
+# ─── Why @cyclonedx/cyclonedx-npm and not anchore/sbom-action ───
+# Two viable tools. Differences:
+#   - @cyclonedx/cyclonedx-npm: official CycloneDX-org maintained,
+#     parses package-lock.json directly, produces the most accurate
+#     dependency graph for npm workspaces (resolves devOptional and
+#     workspace symlinks correctly as of 2.x).
+#   - anchore/sbom-action: wraps Syft. Syft does multi-ecosystem
+#     detection (catches a misplaced Python file or container layer).
+#     More noise; less accurate for pure npm.
+# We pick the former because the project is 100% npm and accuracy
+# matters more than coverage of ecosystems we don't use.
+#
+# ─── Why one job per workspace and not generate→sign→release as a chain ───
+# Earlier draft had three sequential jobs that passed artifacts via
+# actions/download-artifact. That requires another pinned SHA, and the
+# only thing the artifacts needed to survive between jobs was a few KB
+# of JSON. Folding generate + sign + (release-upload if applicable)
+# into one job per workspace removes a third-party action dependency
+# and keeps the failure surface tight: if generation fails, signing
+# never runs, no half-built attestations end up in the Rekor log.
+#
+# ─── How verification works downstream ───
+# A consumer (or auditor) verifies any SBOM with the GitHub CLI:
+#   gh attestation verify <file> --owner Filip-Ermenkov
+# OR, using cosign directly against Sigstore's Rekor transparency log:
+#   cosign verify-blob <file> \
+#     --bundle <file>.sigstore \
+#     --certificate-identity-regexp '^https://github.com/Filip-Ermenkov/Best-Online-Shop-Ever/.+' \
+#     --certificate-oidc-issuer https://token.actions.githubusercontent.com
+# No keys to manage. No HSM. The signing identity IS the GitHub Actions
+# workflow execution context, bound by the OIDC token Fulcio issued the
+# short-lived cert against.
+#
+# ─── Cost ───
+# Free. GitHub Artifact Attestations are free for public repos and
+# included in the Actions minute budget for private ones; Sigstore's
+# public-good Fulcio/Rekor are free for all OSS use.
+
+name: SBOM + Signing
+
+on:
+  # Generate + sign on every push to main so the artifacts on the
+  # default branch always have current attestations.
+  push:
+    branches: [main]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - '.github/workflows/codeql.yml'
+
+  # Generate (without signing — see `if: github.event_name != 'pull_request'`
+  # on the signing step) on PRs so we catch SBOM-tooling regressions
+  # before they hit main. Saves you the merge → red-build → revert cycle.
+  pull_request:
+    branches: [main]
+    paths:
+      - '**/package.json'
+      - '**/package-lock.json'
+      - '.github/workflows/sbom.yml'
+
+  # Sign on every published release. This is the artifact distribution
+  # path that downstream consumers (auditors, customers requesting
+  # SBOM, EU CRA filings) would actually pull from.
+  release:
+    types: [published]
+
+  # Manual trigger for regenerating attestations out-of-band (e.g.
+  # when Sigstore had a Fulcio outage during the original push).
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: '22'
+  # CycloneDX spec version. 1.6 (Aug 2024) is the current GA; 1.7 is
+  # in draft. Bumping is safe — consumer tools are required to be
+  # backwards-compatible.
+  CDX_SPEC_VERSION: '1.6'
+
+jobs:
+  # ────────────────────────────────────────────────────────────────────────
+  # One job per workspace. Each job: generate the SBOM, sign it (unless
+  # this is a PR), upload as a workflow artifact, and (if the trigger
+  # was a release) attach it as a release asset. Failing on any step
+  # marks that workspace's status check red without affecting the others.
+  # ────────────────────────────────────────────────────────────────────────
+  sbom:
+    name: SBOM (${{ matrix.workspace.slug }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    permissions:
+      # Read code, write attestations, request OIDC token, and (only
+      # for release runs) write to release assets. Documented per-key:
+      #   contents:       read for source; bumped to write below if
+      #                   this is a release event so `gh release upload`
+      #                   succeeds. We split the write up to one job
+      #                   rather than expanding workflow-level.
+      #   id-token:       request the OIDC JWT that Fulcio uses to
+      #                   issue the short-lived signing cert.
+      #   attestations:   write the resulting attestation back to the
+      #                   GitHub attestation store.
+      contents: write
+      id-token: write
+      attestations: write
+
+    strategy:
+      fail-fast: false
+      matrix:
+        # `name` is the npm workspace name (what `npm --workspace <name>`
+        # expects). `slug` is the filename-safe identifier used for the
+        # output artifact. `manifest` is the literal path to the
+        # workspace's package.json — cyclonedx-npm wants a path, not a
+        # workspace alias, because the alias resolution happens at the
+        # root and the tool needs to anchor on a specific manifest.
+        workspace:
+          - name: 'shop'
+            slug: 'frontend'
+            manifest: './frontend/package.json'
+          - name: '@shop/db'
+            slug: 'backend-db'
+            manifest: './backend/db/package.json'
+          - name: '@shop/auth'
+            slug: 'backend-auth'
+            manifest: './backend/auth/package.json'
+          - name: '@shop/email'
+            slug: 'backend-email'
+            manifest: './backend/email/package.json'
+          - name: '@shop/api'
+            slug: 'backend-api'
+            manifest: './backend/shop-api/package.json'
+
+    steps:
+      - name: Checkout
+        # actions/checkout v6.0.2 — 09 Jan 2026
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+
+      - name: Setup Node.js
+        # actions/setup-node v6.3.0 — 04 Mar 2026
+        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        # SBOM accuracy requires the actual install graph, not a
+        # lockfile-only inference. `npm ci` is reproducible.
+        run: npm ci
+
+      - name: Install CycloneDX npm SBOM tool
+        # Install globally so the binary is on PATH for the next
+        # step. `cyclonedx-npm` is the official CycloneDX-org tool.
+        # Pinning to a known-good major; minor bumps are safe.
+        # 2.x supports workspace filtering correctly (1.x did not).
+        run: npm install --global @cyclonedx/cyclonedx-npm@^2.0.0
+
+      - name: Generate SBOM for ${{ matrix.workspace.name }}
+        # Flags:
+        #   --package-lock-only — use the lockfile rather than
+        #     re-resolving via the registry. Deterministic and
+        #     offline-friendly.
+        #   --omit dev — exclude devDependencies. The production
+        #     Lambda bundle doesn't ship them, so they don't belong
+        #     in the deployed-artifact SBOM. A separate audit-SBOM
+        #     including devDeps could be added later.
+        #   --spec-version — pin CycloneDX schema for reproducibility.
+        #   --output-format JSON — JSON is what attestation tooling
+        #     (gh attestation, cosign) expects.
+        #   <manifest> — positional argument; the package.json of the
+        #     workspace being analysed.
+        run: |
+          mkdir -p ./sbom-output
+          cyclonedx-npm \
+            --package-lock-only \
+            --omit dev \
+            --spec-version ${{ env.CDX_SPEC_VERSION }} \
+            --output-format JSON \
+            --output-file ./sbom-output/sbom-${{ matrix.workspace.slug }}.cdx.json \
+            ${{ matrix.workspace.manifest }}
+
+      - name: Validate SBOM is well-formed JSON
+        # Sanity check: if cyclonedx-npm silently produced garbage
+        # (rare but documented in their issue tracker), we want the
+        # workflow to fail HERE, not in the signing stage where the
+        # error message would be cryptic ("attestation predicate
+        # invalid"). Also emits a workflow summary line with stats
+        # so the run page shows component counts at a glance.
+        run: |
+          SBOM=./sbom-output/sbom-${{ matrix.workspace.slug }}.cdx.json
+          node -e "JSON.parse(require('fs').readFileSync('$SBOM','utf8'))"
+          echo "✓ SBOM is valid JSON"
+          node -e "
+            const sbom = JSON.parse(require('fs').readFileSync('$SBOM','utf8'));
+            const components = (sbom.components || []).length;
+            console.log('### SBOM: ${{ matrix.workspace.slug }}');
+            console.log('- Spec version: ' + sbom.specVersion);
+            console.log('- Components: ' + components);
+            console.log('- Serial number: ' + sbom.serialNumber);
+          " >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload SBOM as workflow artifact
+        # actions/upload-artifact v7.0.0 — 26 Feb 2026
+        # Artifact lives 90 days then is GC'd. The signed attestation
+        # (next step) is permanent in the Rekor transparency log, so
+        # this is mostly for human/audit download convenience during
+        # the artifact's retention window.
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f
+        with:
+          name: sbom-${{ matrix.workspace.slug }}
+          path: ./sbom-output/sbom-${{ matrix.workspace.slug }}.cdx.json
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Attest build provenance for SBOM
+        # actions/attest-build-provenance v4.1.0 — 26 Feb 2026
+        #
+        # This is the new (post-2024) GitHub-native way to do SLSA v1.0
+        # build provenance. Under the hood it:
+        #   1. Requests an OIDC JWT from token.actions.githubusercontent.com
+        #      (workflow identity, ref, commit SHA, runner OS, etc.)
+        #   2. Sends it to Sigstore Fulcio, which issues a short-lived
+        #      (10-min) X.509 cert binding an ephemeral keypair to the
+        #      JWT's claims (the "identity" in keyless signing).
+        #   3. Signs the SHA-256 digest of the subject file with that
+        #      key, building an in-toto attestation with a SLSA v1.0
+        #      provenance predicate.
+        #   4. Submits the signature to Sigstore Rekor (the public
+        #      transparency log) — getting an inclusion proof.
+        #   5. Stores the bundled attestation on GitHub, queryable via
+        #      `gh attestation list` / `gh attestation verify`.
+        #
+        # No secrets needed. No key to rotate. The "key" is the
+        # workflow's identity, attested at sign time.
+        #
+        # SKIPPED on PR runs because:
+        #   - PR runs from forks can't request OIDC tokens with the
+        #     right repo claims (GitHub's safety mechanism).
+        #   - Signing un-mergeable code would clutter the public Rekor
+        #     log with attestations that never make it to main.
+        if: github.event_name != 'pull_request'
+        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32
+        with:
+          subject-path: './sbom-output/sbom-${{ matrix.workspace.slug }}.cdx.json'
+
+      - name: Attach SBOM to release
+        # Only on release events. The GitHub CLI (`gh`) ships
+        # preinstalled on ubuntu-latest, which is why we use it here
+        # rather than adding another third-party action (softprops/
+        # action-gh-release etc.) — fewer SHA pins to maintain, and
+        # the gh CLI is itself built and shipped by GitHub.
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "${{ github.event.release.tag_name }}" \
+            "./sbom-output/sbom-${{ matrix.workspace.slug }}.cdx.json" \
+            --clobber

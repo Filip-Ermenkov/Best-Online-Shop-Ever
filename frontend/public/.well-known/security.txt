@@ -1,0 +1,37 @@
+# ─────────────────────────────────────────────────────────────────────
+# security.txt — vulnerability-disclosure metadata for duda1.bg
+# Format: RFC 9116 (April 2022). Validator: https://securitytxt.org
+#
+# Why this file exists:
+#   - Gives security researchers a single, machine-parseable contact
+#     point so they don't have to guess at info@/abuse@/webmaster@.
+#   - Satisfies the OWASP Top 10 2025 A03 / NIST CSF 2.0 "Govern"
+#     vulnerability-disclosure expectation.
+#   - Anticipates the EU Cyber Resilience Act's Sept 11, 2026
+#     coordinated-disclosure requirements: any reasonably-skilled
+#     researcher should be able to reach us in under 60 seconds.
+#
+# Maintenance discipline:
+#   - The "Expires" field below is a HARD calendar reminder. Bump it
+#     (and the file's expiry, not the year-only) at least 30 days
+#     before the date listed. Past-expiry files are treated as
+#     invalid by automated scanners (Shodan, securitytxt.org, etc.).
+#   - Annual renewal lives in docs/ARCHITECTURE.md §11 (Yearly ops).
+#   - If you rotate the security@duda1.bg alias, update Contact
+#     immediately — do not leave a dead mailbox listed here.
+#
+# What's deliberately NOT here:
+#   - Encryption (PGP). Modern guidance (responsibledisclosure.io,
+#     2024+) is that PGP signature maintenance for a single-person /
+#     small-team operation creates more failure modes (expired keys,
+#     unverifiable signatures, key-rotation breakage) than it
+#     prevents harm. Researchers who insist on encrypted reports can
+#     request a key out-of-band via the email contact.
+#   - PGP cleartext signature on this file itself — same rationale.
+# ─────────────────────────────────────────────────────────────────────
+
+Contact: mailto:security@duda1.bg
+Expires: 2027-05-16T23:59:59.000Z
+Preferred-Languages: bg, en
+Canonical: https://duda1.bg/.well-known/security.txt
+Policy: https://duda1.bg/security

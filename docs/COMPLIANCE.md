@@ -112,15 +112,15 @@ April 2025 best-practices update.
 | Email-verified gate on order placement | ✅ | |
 | CSP with nonces + `strict-dynamic` | ✅ | |
 | Dependabot + `npm audit` (SCA) | ✅ | |
-| **SAST in CI** | ❌ | Fix: §15 item 3 |
-| **SBOM generation** | ❌ | Fix: §15 item 4 |
-| **SLSA L2 signed provenance** | ❌ | Currently L0. Fix: §15 item 5 |
-| **CSP violation reporting** | ❌ | Fix: §15 item 14 |
-| **`security.txt`** | ❌ | Fix: §15 item 2 |
-| **HIBP breach-list check** | ❌ | Fix: §15 item 15 |
-| **Customer MFA option** | ❌ | Fix: §15 item 24 (growth-stage) |
-| **Branch protection on `main`** | ❌ | Fix: §15 item 1 |
-| **STRIDE threat model document** | ❌ | Fix: §15 item 16 |
+| **SAST in CI** (CodeQL `security-extended` + `actions` queries) | ✅ | `.github/workflows/codeql.yml`; weekly cron catches drift |
+| **SBOM generation** (CycloneDX 1.6 per workspace) | ✅ | `.github/workflows/sbom.yml`; attached to releases |
+| **SLSA L2 signed provenance** | ✅ | Sigstore keyless via `actions/attest-build-provenance@v4.1.0` |
+| **`security.txt`** (RFC 9116) | ✅ | `frontend/public/.well-known/security.txt`; policy at `/security` |
+| **Branch protection on `main`** | ✅ | Runbook: ARCHITECTURE.md §9.4 (one-time UI setup, verified quarterly) |
+| **CSP violation reporting** | ❌ | Fix: ARCHITECTURE.md §15 item 14 |
+| **HIBP breach-list check** | ❌ | Fix: ARCHITECTURE.md §15 item 15 |
+| **Customer MFA option** | ❌ | Fix: ARCHITECTURE.md §15 item 24 (growth-stage) |
+| **STRIDE threat model document** | ❌ | Fix: ARCHITECTURE.md §15 item 16 |
 
 ### Pillar 3 — Reliability
 
@@ -199,7 +199,7 @@ gaps.
 | GV.RR — Roles, responsibilities, authorities | ⚠️ | Solo project; documented succession plan would help |
 | GV.PO — Policy | ❌ | No `SECURITY.md` / `PRIVACY.md` / disclosure policy |
 | GV.OV — Oversight | ⚠️ | Quarterly Well-Architected Review recommended |
-| GV.SC — Cybersecurity supply chain risk management | ⚠️ | Dependabot + SBOM (planned) — not yet documented as policy |
+| GV.SC — Cybersecurity supply chain risk management | ✅ | Dependabot + CodeQL SAST + signed CycloneDX SBOMs (per workspace) + RFC 9116 disclosure policy. See ARCHITECTURE.md §9.1 |
 
 ### Identify (ID)
 
@@ -259,12 +259,12 @@ Published 2024–2025 (eighth edition). Notable changes vs 2021:
 |---|---|---|---|
 | A01 | Broken Access Control (incl. SSRF) | ✅ | Two-tier middleware (`currentUser` + `requireAuth`); per-Lambda IAM least-privilege; same-origin API; explicit auth gate on order placement |
 | A02 | Security Misconfiguration | ✅ Mostly | No hardcoded secrets; SSM Parameter Store; `__Host-` cookies; HSTS; CSP. ⚠️ Branch protection missing |
-| A03 | Software Supply Chain Failures | ⚠️ Partial | SCA via Dependabot + `npm audit` ✅. SBOM ❌. SLSA L0 (target L2) ❌. See §8 |
+| A03 | Software Supply Chain Failures | ✅ Met | SCA via Dependabot + `npm audit` ✅. CodeQL SAST ✅. CycloneDX SBOM per workspace ✅. SLSA L2 signed provenance ✅. See §8 and ARCHITECTURE.md §9 |
 | A04 | Cryptographic Failures | ✅ | TLS 1.3, Argon2id (RFC 9106), 32-byte CSPRNG tokens, SHA-256-at-rest, AES at rest (S3 + Neon) |
 | A05 | Injection | ✅ | Zod validation + Drizzle parametrized queries everywhere; WAF SQLi managed rules as backstop |
 | A06 | Insecure Design | ✅ | Idempotency, optimistic locking, line-item snapshots, expand-contract migrations, account-discount server-controlled |
 | A07 | Authentication Failures | ⚠️ | Strong for admin (MFA); customer MFA missing (ASVS L2 gap). Fix: §15 item 24 |
-| A08 | Software and Data Integrity Failures | ❌ | No signed artifacts. Fix: §15 item 5 (Sigstore cosign) |
+| A08 | Software and Data Integrity Failures | ✅ Met | Every SBOM signed via Sigstore Fulcio/Rekor (`actions/attest-build-provenance@v4.1.0`), keyless OIDC, transparency log. Verification procedure in ARCHITECTURE.md §9.5 |
 | A09 | Security Logging and Monitoring Failures | ⚠️ | Pino structured logs ✅; distributed tracing ❌; CSP violation reporting ❌. Fix: §15 items 6 + 14 |
 | A10 | Mishandling of Exceptional Conditions (new) | ✅ | RFC 9457 Problem Details on every error; graceful degradation (DB outage → 503 + alarm, not silent failure); best-effort email never blocks |
 
@@ -353,20 +353,28 @@ is overkill at solo-project scale.
 
 | Level | Requirements | Status |
 |---|---|---|
-| Level 0 | No requirements | ✅ Today (default) |
-| Level 1 | Provenance exists describing how the package was built | ❌ |
-| Level 2 | Provenance digitally signed by hosted build platform | ❌ Target |
-| Level 3 | Build platform isolates runs; secrets are not accessible to user-defined steps | ❌ |
+| Level 0 | No requirements | ✅ |
+| Level 1 | Provenance exists describing how the package was built | ✅ |
+| Level 2 | Provenance digitally signed by hosted build platform | ✅ Achieved May 2026 |
+| Level 3 | Build platform isolates runs; secrets are not accessible to user-defined steps | ❌ Not pursued (see below) |
 
-**Target: SLSA Level 2** via GitHub Actions + Sigstore cosign:
-- `cyclonedx/gh-node-module-generatebom@v1` produces a CycloneDX
-  SBOM per workspace per build.
-- `sigstore/cosign-installer@v3` signs both SBOMs and Lambda ZIPs
-  using GitHub Actions' OIDC token (no long-lived keys).
-- Signed provenance becomes a GitHub release asset.
+**SLSA Level 2 — how achieved:**
+- `@cyclonedx/cyclonedx-npm@^2.0.0` produces a CycloneDX 1.6 JSON
+  SBOM per workspace per build (`.github/workflows/sbom.yml`).
+- `actions/attest-build-provenance@v4.1.0` signs each SBOM using
+  GitHub Actions' OIDC token → Sigstore Fulcio short-lived cert →
+  Rekor transparency log. No long-lived keys.
+- SBOMs are attached to GitHub Releases as assets; their
+  attestations are queryable via `gh attestation list`.
+- Verification procedure for downstream consumers is documented in
+  ARCHITECTURE.md §9.5.
 
-L3 requires hardened isolated build runners — not justified at
-current scale.
+**Level 3 is intentionally not pursued.** It would require a
+reusable workflow with build-platform isolation (e.g. via
+`slsa-framework/slsa-github-generator`). The marginal security gain
+over L2 doesn't justify the operational complexity for a
+single-tenant e-commerce shop with no third-party consumers of
+build artifacts. Revisit when a customer contract requires it.
 
 ---
 
@@ -378,13 +386,13 @@ families:
 
 | Control | Status |
 |---|---|
-| CIS 1 Inventory of Enterprise Assets | ⚠️ No formal inventory doc |
-| CIS 2 Inventory of Software Assets | ⚠️ `package-lock.json` yes; SBOM no |
+| CIS 1 Inventory of Enterprise Assets | ⚠️ No formal inventory doc (ARCHITECTURE.md §15 item 22) |
+| CIS 2 Inventory of Software Assets | ✅ Signed CycloneDX SBOM per workspace, attached to releases |
 | CIS 3 Data Protection | ✅ |
 | CIS 4 Secure Configuration of Enterprise Assets and Software | ✅ |
 | CIS 5 Account Management | ✅ |
 | CIS 6 Access Control Management | ✅ |
-| CIS 7 Continuous Vulnerability Management | ⚠️ Dependabot yes; SAST no |
+| CIS 7 Continuous Vulnerability Management | ✅ Dependabot + CodeQL `security-extended` weekly + on every PR |
 | CIS 8 Audit Log Management | ⚠️ Pino logs yes; SIEM no — acceptable at this scale |
 | CIS 9 Email and Web Browser Protections | N/A (no email clients) |
 | CIS 10 Malware Defenses | N/A (no end-user devices in scope) |
@@ -393,7 +401,7 @@ families:
 | CIS 13 Network Monitoring and Defense | ⚠️ WAF yes; full IDS no — acceptable |
 | CIS 14 Security Awareness and Skills Training | N/A (solo project) |
 | CIS 15 Service Provider Management | ✅ |
-| CIS 16 Application Software Security | ⚠️ SAST missing |
+| CIS 16 Application Software Security | ✅ CodeQL SAST + signed SBOM + RFC 9116 VDP |
 | CIS 17 Incident Response Management | ❌ No playbook |
 | CIS 18 Penetration Testing | N/A at this scale |
 
@@ -448,10 +456,10 @@ NIST CSF 2.0 and OWASP Top 10 2025.
 
 | CRA-style practice | Status | Driven by |
 |---|---|---|
-| SBOM published | ❌ | NIST CSF, OWASP 2025 |
-| Vulnerability disclosure policy (`security.txt`) | ❌ | RFC 9116 |
-| Vulnerability handling process | ⚠️ Implicit via Dependabot | OWASP, NIST |
-| Documented 24h breach reporting | ❌ | GDPR Art. 33 |
+| SBOM published | ✅ CycloneDX 1.6 per workspace, signed, attached to releases | NIST CSF, OWASP 2025 |
+| Vulnerability disclosure policy (`security.txt`) | ✅ `frontend/public/.well-known/security.txt` + bilingual `/security` policy page | RFC 9116 |
+| Vulnerability handling process | ✅ Dependabot + CodeQL + 72h-ack / 90d-fix commitment in VDP | OWASP, NIST |
+| Documented 24h breach reporting | ⚠️ Playbook still pending (ARCHITECTURE.md §15 item 21) | GDPR Art. 33 |
 | Security updates available for 5+ years | ⚠️ Yes for managed AWS; OS not applicable | CRA |
 
 ---

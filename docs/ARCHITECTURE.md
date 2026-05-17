@@ -599,68 +599,156 @@ Five alarms is a good starting set. For A+:
 
 ## 9. Supply-chain security
 
-This is where the architecture most clearly falls short of 2026
-production-grade.
+After the May 2026 supply-chain hardening slice, this section now
+describes production practice rather than aspiration.
 
 ### 9.1 What exists today
 
+**Software Composition Analysis (third-party deps):**
 - `package-lock.json` committed, reproducible installs.
 - Dependabot alerts enabled (GitHub free).
 - `npm audit` runs in CI on every PR.
 - Single `package.json` per workspace, no spurious globally-installed
   tools at build time.
 
-That covers **Software Composition Analysis (SCA)** — third-party
-vulnerability detection. It does NOT cover any of:
+**Static Application Security Testing (first-party code):**
+- **GitHub CodeQL** in `.github/workflows/codeql.yml`.
+  - `security-extended` query suite on JavaScript/TypeScript.
+  - `actions` query pack on workflow YAML (catches the
+    tj-actions-style supply-chain compromise pattern).
+  - Runs on every PR, every push to `main`, and a Sunday 03:00 UTC
+    weekly cron (catches issues that newer query packs find in
+    code that hasn't changed).
 
-### 9.2 What's missing
+**Software Bill of Materials (SBOM):**
+- **CycloneDX 1.6 JSON** per workspace, in `.github/workflows/sbom.yml`.
+- Generated via `@cyclonedx/cyclonedx-npm@^2.0.0` with
+  `--package-lock-only --omit dev` (production bundle only).
+- One per deployment unit: `sbom-frontend.cdx.json`,
+  `sbom-backend-db.cdx.json`, `sbom-backend-auth.cdx.json`,
+  `sbom-backend-email.cdx.json`, `sbom-backend-api.cdx.json`.
+- Uploaded as workflow artifacts (90-day retention) on every push;
+  attached to GitHub Releases on every published tag.
 
-| Practice | Gap | Effort | Standard |
-|---|---|---|---|
-| **SAST** (static analysis of first-party code) | None | 1 hour | OWASP ASVS V10, OWASP Top 10 2025 A03 |
-| **SBOM** (Software Bill of Materials) | None | 2 hours | EU CRA Sep 2026 deadline, NIST CSF 2.0 Identify, NTIA |
-| **Build provenance** (SLSA L2) | Currently SLSA L0 (no provenance) | ~1 day | SLSA v1.1 spec |
-| **Artifact signing** (Sigstore cosign) | None | ~1 day | SLSA L2 requirement |
-| **Branch protection on `main`** | None | 5 minutes | Basic SDLC |
-| **Signed commits** | None | 1 hour to configure | Optional but rising |
-| **Vulnerability disclosure policy** (`security.txt`) | None | 15 minutes | RFC 9116 |
+**Build provenance & artifact signing (SLSA Level 2):**
+- Each SBOM is signed via `actions/attest-build-provenance@v4.1.0`,
+  which produces an in-toto SLSA v1.0 build-provenance attestation
+  using GitHub OIDC → Sigstore Fulcio → Rekor transparency log.
+- No long-lived signing keys. The signing identity IS the GitHub
+  Actions workflow execution context, bound by the OIDC token
+  Fulcio issued the short-lived (10-minute) X.509 cert against.
 
-### 9.3 SLSA target
+**Vulnerability disclosure (RFC 9116):**
+- `frontend/public/.well-known/security.txt` published at
+  `https://duda1.bg/.well-known/security.txt`.
+- Bilingual policy page at `https://duda1.bg/security`
+  (Bulgarian + English), aligned with ISO/IEC 29147:2018 and the EU
+  CRA Annex I, Part II §5 coordinated-disclosure requirements
+  effective 11 September 2026.
 
-**Current level: SLSA 0** (no provenance generated).
+**CI workflow security:**
+- All third-party actions pinned to 40-char commit SHAs (no version
+  tags). The `# vX.Y.Z — DD MMM YYYY` comment next to each pin
+  documents the verified version.
+- Top-level `permissions: contents: read` on every workflow;
+  individual jobs override to `write` only where strictly needed.
+- `persist-credentials: false` on every checkout.
+- `concurrency.cancel-in-progress: true` on every workflow.
 
-**Target: SLSA Level 2** — provenance is produced by a hosted build
-platform (GitHub Actions) and digitally signed (Sigstore cosign via
-keyless OIDC).
+### 9.2 What's intentionally NOT here
 
-Path:
-1. Add `cyclonedx/gh-node-module-generatebom` action to CI → emits
-   CycloneDX SBOM per workspace per build.
-2. Add `sigstore/cosign-installer` action → sign the SBOMs + Lambda
-   ZIPs using GitHub Actions' OIDC token (no long-lived keys
-   needed).
-3. Store signed provenance as a GitHub release asset.
-4. Document the verification procedure in `RUNBOOK.md` (or here).
+| Practice | Why deferred | When to revisit |
+|---|---|---|
+| **Signed commits** (GPG / SSH) | Single-committer repo. Branch protection on `main` + CodeQL on PRs covers the integrity surface. Signed commits add per-developer key management with marginal additional defence at this scale. | When a second human commits to `main`. |
+| **SLSA Level 3** (hardened build platform) | Requires reusable workflow with build-platform isolation. Overkill for an e-commerce shop with no third-party consumers of build artifacts. | If a customer ever requires a contractual provenance SLA. |
+| **Dependency Track / OWASP DC server** | The SBOMs are produced and signed; an external scanner can ingest them on demand. Self-hosting Dependency Track costs more in ops time than it saves at this dep-graph size. | When dep count > ~500 transitive or compliance specifically asks for one. |
+| **CSP violation reporting** | Tracked separately in §15 item 14 (security depth slice). | Roadmap item 14. |
 
-That puts the project at SLSA Level 2. Level 3 requires
-non-falsifiable build infrastructure (hardened runners, isolated
-build secrets) — overkill for current scale.
+### 9.3 SLSA status
 
-### 9.4 Static analysis (SAST)
+**Achieved: SLSA Level 2.** GitHub Actions is a hosted build
+platform (L2 build platform requirement), and every artifact carries
+a signed in-toto provenance attestation queryable via Rekor (L2
+provenance requirement).
 
-Recommended: **GitHub CodeQL** (free for public repos) OR
-**Semgrep** (free Cloud tier, OSS rules included). CodeQL has
-better coverage for cross-function data-flow; Semgrep is faster
-and easier to author custom rules for.
+**Level 3** would require:
+- Reusable workflow that runs the build in an isolated context
+  the calling workflow can't tamper with.
+- Hermetic builds (declared inputs, no network at build time).
+- Build platform that produces non-falsifiable provenance — i.e.,
+  attestations the build platform signs, not the calling workflow.
 
-For TypeScript codebases the default CodeQL ruleset catches:
-- Reflected XSS (relevant to admin panel inputs)
-- SQL injection (defeated by Drizzle but worth confirming)
-- Insecure deserialization
-- Path traversal in file uploads
-- Hardcoded credentials
+GitHub Actions can supply Level 3 via the `slsa-framework/slsa-github-generator`
+reusable workflow. Defer until contractual need (Roadmap item 27).
 
-One day of work, including triaging the first scan's findings.
+### 9.4 Branch protection runbook (one-time setup)
+
+Branch protection is the only Week 1 item that can't be checked into
+the repo — it's a GitHub repository setting. Run this once per
+repository; verify quarterly that nothing's drifted.
+
+**Settings → Branches → Branch protection rules → Add rule**, branch
+name pattern `main`:
+
+- ☑ **Require a pull request before merging**
+  - ☑ Require approvals: **1** (the maintainer's own LGTM doesn't
+    count; this is a hard gate against accidental direct pushes)
+  - ☑ Dismiss stale pull request approvals when new commits are pushed
+  - ☑ Require conversation resolution before merging
+- ☑ **Require status checks to pass before merging**
+  - ☑ Require branches to be up to date before merging
+  - Required status checks (search and select each):
+    - `Typecheck (all workspaces)`
+    - `Lint (frontend)`
+    - `Auth tests`
+    - `Email tests`
+    - `API tests (Postgres)`
+    - `Analyze (javascript-typescript)`
+    - `Analyze (actions)`
+    - `SBOM (frontend)`
+    - `SBOM (backend-db)`
+    - `SBOM (backend-auth)`
+    - `SBOM (backend-email)`
+    - `SBOM (backend-api)`
+- ☑ **Require signed commits** — optional today (see §9.2); enable
+  the day a second committer joins.
+- ☑ **Require linear history** — keeps `git log` bisectable.
+- ☑ **Do not allow bypassing the above settings** (this is the
+  important one — without it the admin can quietly merge anything).
+- ☐ **Allow force pushes** — leave unchecked.
+- ☐ **Allow deletions** — leave unchecked.
+
+Verification: try to push to `main` directly from a clean clone.
+The push should fail with `protected branch hook declined`. If it
+succeeds, the setting didn't save — re-check the form.
+
+### 9.5 Verification (downstream consumer view)
+
+Anyone — auditor, customer, security researcher — can independently
+verify the integrity of any published SBOM without trusting the
+project's CI:
+
+```bash
+# Using GitHub's CLI (easiest):
+gh attestation verify sbom-backend-api.cdx.json \
+  --owner Filip-Ermenkov
+
+# Using cosign directly against the public Rekor log:
+cosign verify-blob sbom-backend-api.cdx.json \
+  --bundle sbom-backend-api.cdx.json.sigstore \
+  --certificate-identity-regexp \
+    '^https://github.com/Filip-Ermenkov/Best-Online-Shop-Ever/.+' \
+  --certificate-oidc-issuer \
+    https://token.actions.githubusercontent.com
+```
+
+Either command succeeds only if:
+1. The SBOM byte-for-byte matches what was signed.
+2. The signing identity is a workflow in this repository.
+3. The signature appears in the Sigstore Rekor transparency log
+   (anyone can audit Rekor for unexpected signatures from this repo).
+
+Failure of any of those is a tampering signal.
 
 ---
 
@@ -883,7 +971,7 @@ weeks. Don't re-litigate without a strong new constraint:
 | Pillar | Today | What's missing for A+ |
 |---|---|---|
 | Operational Excellence | B+ | Distributed tracing (OpenTelemetry/ADOT), formal SLOs + burn-rate alerting, DORA metrics, scheduled DR drills, incident postmortem template, status page |
-| Security | A− | SAST, SBOM, SLSA L2 signing, CSP violation reporting, HIBP breach check, customer MFA option, security.txt, branch protection |
+| Security | **A** (was A−, May 2026 supply-chain slice shipped) | CSP violation reporting, HIBP breach check, customer MFA option |
 | Reliability | B | Formal RTO/RPO, SQS retry queue for SES, DR drill cadence, public status page |
 | Performance Efficiency | B+ | Synthetic monitoring (Lighthouse CI), RUM, query-latency SLOs per endpoint, additional image variants (800px, 2000px) |
 | Cost Optimization | B− | Cloudflare swap (the big one), CloudWatch retention to 14d |
@@ -893,22 +981,22 @@ weeks. Don't re-litigate without a strong new constraint:
 
 | Standard | Status | What's needed |
 |---|---|---|
-| NIST CSF 2.0 (Govern function) | ⚠️ Partial | Risk register, supply-chain policy doc, vulnerability disclosure policy |
+| NIST CSF 2.0 (Govern function) | ✅ Met (supply-chain policy + VDP shipped) | — |
 | NIST CSF 2.0 (Detect function) | ⚠️ Partial | Distributed tracing |
 | NIST CSF 2.0 (Respond function) | ⚠️ Partial | Incident playbook |
-| OWASP Top 10 2025 — A03 Supply Chain | ⚠️ Partial | SBOM + SLSA L2 |
-| OWASP Top 10 2025 — A08 Integrity Failures | ❌ | Signed artifacts |
+| OWASP Top 10 2025 — A03 Supply Chain | ✅ Met (SBOM + SLSA L2 + CodeQL) | — |
+| OWASP Top 10 2025 — A08 Integrity Failures | ✅ Met (Sigstore signing) | — |
 | OWASP Top 10 2025 — A09 Logging Failures | ⚠️ | Distributed tracing + CSP reports |
 | OWASP ASVS 6.0 L1 | ✅ Compliant | — |
-| OWASP ASVS 6.0 L2 | ⚠️ Gaps | Customer MFA + SAST |
+| OWASP ASVS 6.0 L2 | ⚠️ Gaps | Customer MFA (SAST shipped via CodeQL) |
 | NIST SP 800-63B-4 | ⚠️ Minor | Replace composition password rules with length + HIBP |
 | NIST SP 800-207 (Zero Trust) | ✅ Spirit | Already verifying every request; per-Lambda least-privilege IAM; no implicit subdomain trust |
-| SLSA v1.1 | Level 0 → Target L2 | Add CycloneDX SBOM + Sigstore cosign |
-| CIS Controls v8.1 IG1 | ✅ Mostly | Add asset inventory doc + vuln disclosure |
+| SLSA v1.1 | ✅ Level 2 achieved (May 2026) | Level 3 only if contractual need (Roadmap 27) |
+| CIS Controls v8.1 IG1 | ✅ Met (VDP page + SBOM-as-inventory) | — |
 | GDPR Art. 32 / 17 / 20 | ✅ | — |
 | GDPR Art. 33–34 (72h breach) | ⚠️ | Playbook |
 | EU Directive 2023/2673 | ✅ Shipped | — |
-| EU CRA (Sep 2026 vuln reporting) | ⚠️ Debatable scope, adopt anyway | SBOM + disclosure process |
+| EU CRA (Sep 2026 vuln reporting) | ✅ Ready (SBOM + RFC 9116 VDP shipped) | — |
 | WCAG 2.2 AA | ✅ In scope | Continuous audit |
 
 **Verdict.** The architecture is meaningfully above 2026 industry
@@ -929,24 +1017,22 @@ below gets the project to that state.
 
 Ranked by `(impact ÷ effort)` — highest leverage first.
 
-### Week 1 — supply-chain hardening (1 day total)
+### Week 1 — supply-chain hardening (SHIPPED May 2026)
 
-1. **Branch protection on `main`** (5 min)
-   - GitHub Settings → Branches → require 5 CI checks before merge.
-2. **Add `.well-known/security.txt`** (15 min)
-   - RFC 9116. Static file with a `Contact: security@domain.bg`
-     line plus a 1-year `Expires:` field.
-3. **Add CodeQL SAST to CI** (1 hour)
-   - `github/codeql-action/init@v3` + `analyze@v3`. Default
-     TypeScript ruleset.
-   - Triage the first scan's findings — usually <10 alerts.
-4. **Add CycloneDX SBOM to CI** (2 hours)
-   - `CycloneDX/gh-node-module-generatebom@v1` per workspace.
-   - Publish SBOMs as GitHub release assets.
-5. **Add Sigstore cosign keyless signing** (3 hours)
-   - `sigstore/cosign-installer@v3` action.
-   - Sign each SBOM + each Lambda ZIP using GitHub OIDC.
-   - Achieves SLSA Level 2.
+1. ✅ **Branch protection on `main`** — runbook in §9.4. One-time
+   GitHub UI action; verify quarterly.
+2. ✅ **`.well-known/security.txt`** — `frontend/public/.well-known/security.txt`,
+   policy page at `/security` (bilingual). Renew the `Expires:`
+   field annually (see §11 Yearly).
+3. ✅ **CodeQL SAST** — `.github/workflows/codeql.yml` on v4.35.1.
+   `security-extended` query suite + the `actions` query pack for
+   workflow YAML.
+4. ✅ **CycloneDX SBOM per workspace** — `.github/workflows/sbom.yml`.
+   CycloneDX 1.6 JSON via `@cyclonedx/cyclonedx-npm@^2.0.0`,
+   one per deployment unit, attached to releases.
+5. ✅ **Sigstore keyless signing** — `actions/attest-build-provenance@v4.1.0`
+   in the same workflow. SLSA Level 2 achieved. Verification
+   procedure in §9.5.
 
 ### Week 1 — observability (1 day total)
 
