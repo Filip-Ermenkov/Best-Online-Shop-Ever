@@ -43,6 +43,42 @@ const BG_TO_LATIN: Record<string, string> = {
   Ш: "Sh", Щ: "Sht", Ъ: "A", Ь: "Y", Ю: "Yu", Я: "Ya",
 };
 
+/**
+ * Return true only if `url` is a string the browser will treat as a
+ * plain HTTP(S) image URL — safe to bind to <img src> without risk of
+ * `javascript:`, `data:`, `vbscript:`, or `file:` scheme abuse.
+ *
+ * Why this exists: CodeQL flags any path from user input (an <Input>'s
+ * value) to a JSX `src` attribute as a potential XSS sink, on the basis
+ * that some schemes (historically) execute script in the page context.
+ * Modern browsers DO block `javascript:` in <img src> in practice, but
+ * defence-in-depth is cheaper than relying on every future browser
+ * keeping that mitigation. Validating the scheme is a textbook fix
+ * (CWE-79 / CWE-601 — open-redirect-style mitigation) and is the
+ * pattern CodeQL's data-flow tracker recognises as a sanitizer,
+ * which is what closes the alert.
+ *
+ * Returns false on:
+ *   - empty string, null, undefined, non-string input
+ *   - malformed URL (URL constructor throws)
+ *   - any protocol other than http: or https:
+ *     (notably: javascript:, data:, vbscript:, file:, blob:,
+ *     about:, view-source:)
+ *
+ * Note: this does NOT validate that the URL actually serves an image.
+ * That's a different concern (handled by the browser falling back to
+ * the alt text, or by an onError handler at the call site).
+ */
+export function isSafeImageUrl(url: string | undefined | null): boolean {
+  if (!url || typeof url !== "string") return false;
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === "http:" || parsed.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
 /** Convert Bulgarian text to a URL-friendly lowercase slug */
 export function slugify(text: string): string {
   return text

@@ -687,12 +687,22 @@ Branch protection is the only Week 1 item that can't be checked into
 the repo — it's a GitHub repository setting. Run this once per
 repository; verify quarterly that nothing's drifted.
 
+**Two rule sets** are documented below. Use the **solo-committer**
+set today; switch to the **multi-committer** set the first day a
+second human (or bot) gains push access.
+
+#### Solo-committer rules (current)
+
 **Settings → Branches → Branch protection rules → Add rule**, branch
 name pattern `main`:
 
 - ☑ **Require a pull request before merging**
-  - ☑ Require approvals: **1** (the maintainer's own LGTM doesn't
-    count; this is a hard gate against accidental direct pushes)
+  - **Require approvals: 0** ← critical. GitHub forbids approving
+    your own PR, so any non-zero value deadlocks a solo-committer
+    repo (every change blocked, with no way to unblock from the UI
+    short of disabling protection). The PR requirement itself still
+    gives you the diff view, CI signal, and a record of intent —
+    that's the actual gate, not the LGTM number.
   - ☑ Dismiss stale pull request approvals when new commits are pushed
   - ☑ Require conversation resolution before merging
 - ☑ **Require status checks to pass before merging**
@@ -710,17 +720,59 @@ name pattern `main`:
     - `SBOM (backend-auth)`
     - `SBOM (backend-email)`
     - `SBOM (backend-api)`
-- ☑ **Require signed commits** — optional today (see §9.2); enable
-  the day a second committer joins.
+- ☐ **Require signed commits** — defer (see §9.2).
 - ☑ **Require linear history** — keeps `git log` bisectable.
-- ☑ **Do not allow bypassing the above settings** (this is the
-  important one — without it the admin can quietly merge anything).
+- ☐ **Do not allow bypassing the above settings** ← leave UNCHECKED
+  in solo mode. The repository admin (you) retains an emergency
+  override for the rare "production is down, revert NOW" case. This
+  is a deliberate trade — slightly weaker integrity guarantee in
+  exchange for a working escape hatch when no second human exists
+  to unblock you.
 - ☐ **Allow force pushes** — leave unchecked.
 - ☐ **Allow deletions** — leave unchecked.
 
-Verification: try to push to `main` directly from a clean clone.
-The push should fail with `protected branch hook declined`. If it
-succeeds, the setting didn't save — re-check the form.
+**Workflow this creates (works in GitHub Desktop):**
+
+1. In GitHub Desktop: **Current Branch** dropdown → **New Branch** →
+   name it (e.g. `fix/sbom-workspace-flag`).
+2. Make changes, commit, **Push origin**.
+3. GitHub Desktop shows a "Create Pull Request" button — click it
+   (opens github.com). Or: `gh pr create --fill`.
+4. Wait for the 12 status checks to go green.
+5. Click **Merge pull request** on github.com (the merge button is
+   enabled once checks pass).
+6. Back in GitHub Desktop: **Fetch origin**, then switch back to
+   `main`.
+
+The "you can no longer push directly to `main`" surprise the first
+time is the point — every change now goes through the diff +
+CI gate.
+
+#### Multi-committer rules (when you add a second human)
+
+Switch all of the above on the day someone else commits:
+
+- ☑ **Require approvals: 1** (now the second-pair-of-eyes gate works).
+- ☑ **Require signed commits** (now key management has someone
+  to coordinate with).
+- ☑ **Do not allow bypassing the above settings** (no more
+  emergency-override carve-out; the second admin can unblock you).
+- ☑ **Require review from Code Owners** if you add a `CODEOWNERS`
+  file.
+
+#### Verification
+
+Try to push to `main` directly from a clean clone (any branch):
+
+```bash
+git checkout main
+git commit --allow-empty -m "test: branch protection should block this"
+git push
+# Expect: ! [remote rejected]   main -> main (protected branch hook declined)
+```
+
+If the push succeeds, the rule didn't save — go back to Settings
+and re-check the "Require a pull request before merging" box.
 
 ### 9.5 Verification (downstream consumer view)
 

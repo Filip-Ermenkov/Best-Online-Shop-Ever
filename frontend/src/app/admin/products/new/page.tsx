@@ -10,7 +10,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Separator } from "@/components/ui/separator";
-import { cn } from "@/lib/utils";
+import { cn, isSafeImageUrl } from "@/lib/utils";
 
 interface VariantOption { label: string; available: boolean; imageUrl: string; }
 interface Variant { name: string; options: VariantOption[]; }
@@ -185,7 +185,14 @@ export default function AdminNewProductPage() {
                     value={url}
                     onChange={(e) => updateImageUrl(i, e.target.value)}
                   />
-                  {url && (
+                  {/* Render the preview ONLY when the URL passes a
+                     scheme allowlist (http/https). This blocks the
+                     javascript:/data: URL XSS sink that CodeQL flags
+                     for `<img src={user-input}>`. Admin-only context
+                     today, but defence-in-depth — the validation is
+                     also a recognised CodeQL sanitizer pattern, so
+                     the alert closes cleanly. */}
+                  {isSafeImageUrl(url) && (
                     <div className="w-16 h-16 rounded border border-border overflow-hidden bg-muted">
                       {/* eslint-disable-next-line @next/next/no-img-element */}
                       <img src={url} alt={`Снимка ${i + 1}`} className="w-full h-full object-cover" />
@@ -232,7 +239,9 @@ export default function AdminNewProductPage() {
                       onChange={(e) => updateOptionImage(vi, oi, e.target.value)}
                       className="flex-1 min-w-[140px] h-7 text-xs"
                     />
-                    {opt.imageUrl && (
+                    {/* Same scheme-allowlist guard as the main
+                       product image preview above. */}
+                    {isSafeImageUrl(opt.imageUrl) && (
                       <div className="w-7 h-7 rounded border border-border overflow-hidden bg-muted flex-shrink-0">
                         {/* eslint-disable-next-line @next/next/no-img-element */}
                         <img src={opt.imageUrl} alt={opt.label} className="w-full h-full object-cover" />
