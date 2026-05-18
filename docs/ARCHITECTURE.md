@@ -760,6 +760,35 @@ Switch all of the above on the day someone else commits:
 - ☑ **Require review from Code Owners** if you add a `CODEOWNERS`
   file.
 
+#### Required-status-check deadlock — the "skipped check" gotcha
+
+**Do not add a `paths:` or `paths-ignore:` filter to the
+`pull_request:` trigger of any workflow whose status checks are
+marked as required in branch protection.** If such a workflow
+doesn't fire on a given PR (because no path matches the filter),
+the required checks never report, and the PR will sit forever in
+"Expected — Waiting for status to be reported" with no way to merge
+short of admin override or temporarily un-requiring the check.
+
+We hit this once when `sbom.yml` had a paths filter restricting it
+to PRs that touched `package.json` / `package-lock.json` / the
+workflow itself. A PR that only changed React components and Markdown
+deadlocked all 5 `SBOM (...)` required checks. Filter removed —
+SBOM now runs on every PR unconditionally. The cost is ~10
+minute-runners per PR; free tier absorbs it.
+
+If you genuinely need conditional execution to save runner minutes
+(only relevant at high PR volume), the correct pattern is the
+**skippable-required-check sentinel**: a downstream job that
+`needs:` the matrix, runs with `if: always()`, reports success when
+the matrix was skipped, and is the ONLY name marked as required.
+Then the matrix jobs can have all the conditional `if:` they want.
+Not implemented today — not worth the complexity at this scale.
+
+The same constraint applies to `codeql.yml` — note its `paths-ignore`
+only applies to `**.md` / `docs/**`, files that fundamentally can't
+contain executable code CodeQL would analyse. Safe.
+
 #### Verification
 
 Try to push to `main` directly from a clean clone (any branch):
