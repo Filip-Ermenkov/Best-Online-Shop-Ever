@@ -80,14 +80,30 @@ on:
       - '.github/workflows/codeql.yml'
 
   # Generate (without signing — see `if: github.event_name != 'pull_request'`
-  # on the signing step) on PRs so we catch SBOM-tooling regressions
-  # before they hit main. Saves you the merge → red-build → revert cycle.
+  # on the signing step) on EVERY PR.
+  #
+  # CRITICAL: no paths filter here. Branch protection on `main`
+  # marks the five `SBOM (...)` status checks as required. If a
+  # PR doesn't trigger this workflow at all (e.g. because it
+  # only touched .md files), the required checks never report
+  # and GitHub waits forever — the PR cannot merge. This is the
+  # well-known GitHub "skipped required check" deadlock.
+  #
+  # The cost of running unconditionally is small (~5 jobs ×
+  # ~2 min each = 10 minute-runners per PR; free public tier
+  # is unlimited, free private tier is 2000 min/month). The
+  # cost of the deadlock is much worse (manual admin override
+  # to unblock every doc-only PR). So: no paths filter on PRs.
+  #
+  # If this ever becomes a real cost issue at scale, the right
+  # fix is NOT to re-add the filter — it's the "skippable
+  # required check" sentinel pattern (a downstream job that
+  # `needs:` the matrix, runs with `if: always()`, and reports
+  # success on skipped). That requires marking only the
+  # sentinel as required (not the matrix legs). Park it as a
+  # roadmap item if/when CI minutes become a concern.
   pull_request:
     branches: [main]
-    paths:
-      - '**/package.json'
-      - '**/package-lock.json'
-      - '.github/workflows/sbom.yml'
 
   # Sign on every published release. This is the artifact distribution
   # path that downstream consumers (auditors, customers requesting
