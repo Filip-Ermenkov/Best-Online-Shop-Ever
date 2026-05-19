@@ -13,7 +13,7 @@
 > specification. Read that to learn *what* the shop does; this doc
 > covers *how* it's built.
 >
-> Last updated: 2026-05-16.
+> Last updated: 2026-05-19.
 
 ---
 
@@ -407,7 +407,7 @@ In-scope threats and primary defences:
 | Threat | Primary defence | Backstop |
 |---|---|---|
 | SQL injection | Drizzle parametrized queries everywhere | AWS WAF SQLi managed rules |
-| Stored XSS | Next.js auto-escape + CSP nonces + `strict-dynamic` | AWS WAF Common managed rules |
+| Stored XSS | Next.js auto-escape + uniform strict CSP (`'nonce-X' 'strict-dynamic'`, see §5.2) + Hono `secureHeaders` on the API | AWS WAF Common managed rules |
 | CSRF | `SameSite=Lax` + `__Host-` cookie prefix + same-origin API | None needed |
 | Session hijack | `HttpOnly` + `Secure` + 32-byte CSPRNG + SHA-256-at-rest | TLS 1.3 + HSTS preload |
 | Credential stuffing | Per-email 5-fail / 15-min lockout + Argon2id timing wall | WAF rate-limit rules on `/auth/login` |
@@ -423,23 +423,236 @@ In-scope threats and primary defences:
 | Supply-chain (malicious npm dep) | `package-lock.json` + Dependabot + `npm audit` in CI | None today — gap |
 | Business logic abuse (price manipulation, discount escalation — OWASP 2025) | Server-side recalculation on every order | Account-discount is server-controlled, not client-supplied |
 
-### 5.2 What this maps onto
+### 5.2 Content Security Policy
+
+The May 2026 CSP slice shipped *twice* before landing on the right
+design. The first attempt missed a subtle property of single-page
+applications; the second attempt corrects it. This section
+documents the corrected design and notes the rejected approach so
+the reasoning isn't relearned the hard way.
+
+**Two-and-a-half facts about CSP in Next.js 16.**
+
+1. A document's `Content-Security-Policy` is **fixed at HTML
+   document load**. There is no specified way to change it on a
+   running document. Soft navigation in an SPA reuses the
+   document, so the CSP that applied at first load applies to
+   every subsequent route the user navigates to via `<Link>`.
+2. Next.js 16's official guide is explicit that **nonce-based CSP
+   requires dynamic rendering**. Static / ISR / PPR pages are
+   generated at build time when there is no request, so no nonce
+   can be injected — a nonce-based CSP would block the page's own
+   framework scripts.
+3. The shop's root layout reads cookies via `getServerUser()` to
+   bootstrap auth identity without flicker. Reading cookies forces
+   dynamic rendering. **Every route in this app is therefore
+   already dynamic.** The "ISR for catalog pages" claim in earlier
+   revisions of this doc was technically inaccurate.
+
+**The rejected hybrid design (May 16, 2026).** The first shipped
+revision applied a strict nonce-based CSP only to `/account/*` and
+`/admin/*` via the proxy, and a permissive `'unsafe-inline'`
+baseline to the catalog via `next.config.ts`. This works correctly
+on hard navigations — both `curl` and direct URL entry show the
+intended policy per route. But because the catalog uses `<Link>`
+to route into the account section, a typical user wanders
+`/ → /products/123 → /account/login` via soft navigation. The
+document's CSP never changes after that first load on `/`, so
+inline-script protection on `/account/login` was silently bypassed
+in the most common traffic pattern. A `document.createElement('script')`
+test from the DevTools console confirmed this — the script
+executed on `/account/login` because the document still carried
+`/`'s permissive CSP.
+
+**The shipped design (May 19, 2026).** A single uniform strict
+CSP applied to every HTML document via `frontend/src/proxy.ts`.
+The proxy now matches every route (excluding only Next.js
+internals, `/api`, `/.well-known/`, and prefetch requests, per
+the matcher in the file), and on every request:
+
+1. Generates a 128-bit random nonce via
+   `Buffer.from(crypto.randomUUID()).toString('base64')` — the
+   pattern from the Next.js 16 official CSP guide.
+2. Sets a forwarded `x-nonce` request header so any Server
+   Component that needs to attach a nonce to `<Script>` can read
+   it via `await headers()`.
+3. Sets a response `Content-Security-Policy` header:
+
+   ```
+   default-src 'self';
+   script-src 'self' 'nonce-XXX' 'strict-dynamic';
+   style-src 'self' 'nonce-XXX';
+   img-src 'self' blob: data: https://cdn.duda1.bg;
+   font-src 'self' data:;
+   connect-src 'self' https://shop-api.duda1.bg;
+   object-src 'none';
+   base-uri 'self';
+   form-action 'self';
+   frame-ancestors 'none';
+   upgrade-insecure-requests;
+   ```
+
+`'strict-dynamic'` means: a script that carries the matching nonce
+is trusted to load further scripts; nothing else loads, period.
+`'self'`, `'unsafe-inline'`, and `https:` allow-list entries are
+all ignored in its presence per CSP3 — that's the point. Next.js
+auto-attaches the nonce to framework and page-bundle scripts when
+it sees the CSP header on the request (see Next.js CSP guide §"How
+nonces work in Next.js"). In `NODE_ENV=development`, the policy
+adds `'unsafe-eval'` to script-src and `'unsafe-inline'` to
+style-src because React debugging and HMR depend on both — these
+are gated on dev only and never emitted in production.
+
+**Why uniform-strict isn't expensive here.** Because every route
+is already dynamic (point 3 above), there is no ISR / PPR cache
+benefit being thrown away. Every render goes through Lambda SSR
+regardless. The proxy adds a UUID generation, three header
+operations, and ~1 ms per request. At Tier 5 (2M PV/mo) the
+cumulative cost is roughly $0.10 of Lambda time per month. Free.
+
+**The soft-navigation trap that motivated the rewrite is now
+neutralised.** Every document the user can land on (catalog or
+account) ships with the same strict policy. Clicking a `<Link>`
+between them doesn't cross a security boundary because both sides
+*are* the boundary.
+
+#### 5.2.1 Baseline security headers on every response
+
+`frontend/next.config.ts` continues to set the rest of the
+security-header set via `headers()`. CSP is intentionally **not**
+set here — that would re-create the hybrid pattern this section
+rejects. The headers `next.config.ts` does set:
+
+- `X-Content-Type-Options: nosniff`
+- `Referrer-Policy: strict-origin-when-cross-origin`
+- `Permissions-Policy:` — empty allow-list for every browser
+  feature the shop doesn't use (camera, mic, geolocation, payment,
+  browsing-topics, interest-cohort, USB, sensors, ...)
+- `X-Frame-Options: DENY` (redundant with `frame-ancestors 'none'`
+  but covers ancient browsers that don't honour CSP3)
+- `Cross-Origin-Opener-Policy: same-origin`
+- `Cross-Origin-Resource-Policy: same-site`
+- `Strict-Transport-Security: max-age=63072000; includeSubDomains; preload`
+  (production builds only — pinning HSTS on http://localhost
+  forces the browser to refuse plain HTTP to localhost for
+  max-age seconds, a nasty dev footgun)
+
+#### 5.2.2 The Hono API gets its own (stricter) CSP
+
+`backend/shop-api/src/app.ts` wires `hono/secure-headers` with the
+strictest possible policy for a JSON-only endpoint:
+
+```
+default-src 'none';
+frame-ancestors 'none';
+base-uri 'none';
+form-action 'none';
+```
+
+Plus `X-Content-Type-Options: nosniff`,
+`Referrer-Policy: no-referrer`, `Cross-Origin-Resource-Policy:
+same-site` (allows the legitimate `shop.duda1.bg → shop-api.duda1.bg`
+cross-subdomain fetch but blocks unrelated origins from `<img src>`
+or `<script src>` of an API response),
+`Strict-Transport-Security: max-age=63072000; includeSubDomains; preload`,
+and `X-Frame-Options: DENY`. CORS allow-listing in the `cors()`
+middleware remains the authoritative gate for the fetch path.
+
+This is pure defence-in-depth: CSP on a JSON response is meaningful
+only if a browser ever evaluates the response as HTML (content-type
+confusion, MIME sniffing on a legacy browser, etc.).
+`default-src 'none'` ensures that in that scenario nothing inline
+runs and no resource is fetched.
+
+#### 5.2.3 What's intentionally NOT here yet
+
+| Practice | Why deferred | When to revisit |
+|---|---|---|
+| **CSP violation reporting** (`report-to` directive + `/api/csp-report` endpoint) | Adding the directive without an endpoint generates 404 noise; building the endpoint is the right scope for the security-depth slice (Roadmap item 14). Today the browser **blocks** violating loads — only the *visibility* of attempts is deferred. | Roadmap item 14. |
+| **Trusted Types** (`require-trusted-types-for 'script'`) | MDN-Baseline as of 2026 on the latest browsers; meaningful XSS-sink hardening *after* CSP is in place. Not blocking today; modest implementation effort. | Roadmap item 14 follow-on. |
+| **`https://` / public-suffix `connect-src` entries** | The current `connect-src` only allows the configured `shop-api.duda1.bg` origin (or `localhost:3001` in dev). If new backend services are added the origin allow-list needs widening; treat that as part of the architecture review for any new service. | Per-service basis. |
+
+#### 5.2.4 Verifying the policy is live
+
+Every test below is identical on every route — that's the
+property we wanted.
+
+```bash
+# Catalog homepage
+curl -sI http://localhost:3000/ | grep -iE "content-security-policy|nonce|permissions-policy"
+
+# Account login (soft-nav-safe: same strict policy as the catalog)
+curl -sI http://localhost:3000/account/login | grep -iE "content-security-policy|nonce"
+
+# API
+curl -sI http://localhost:3001/health | grep -iE "content-security-policy|cross-origin|strict-transport"
+
+# Production (replace with your domain)
+curl -sI https://duda1.bg/ | grep -iE "content-security-policy|nonce"
+curl -sI https://shop-api.duda1.bg/health | grep -i "content-security-policy"
+```
+
+Every shop response (whether `/`, `/products/...`, or
+`/account/...`) should contain `'nonce-X' 'strict-dynamic'`. Each
+request gets a different nonce — run twice and diff to confirm.
+The API's CSP should be `default-src 'none'`. Drift between this
+section and the live headers is a fix-now issue.
+
+In the browser:
+
+1. Open a fresh tab, type `http://localhost:3000/csp-test.html`,
+   hit Enter. (This is a permanent diagnostic page in
+   `frontend/public/csp-test.html`.) The page contains three
+   intentionally-bad CSP inputs (a parser-inserted inline script,
+   an `onclick=` attribute, a `javascript:` URL). All three
+   should be blocked by the strict policy. The page text describes
+   the expected outcome inline so anyone running the test can
+   verify it without re-reading this doc.
+2. Open DevTools → Network → click the document request for any
+   page → Headers. The `Content-Security-Policy` header should
+   contain `'nonce-...' 'strict-dynamic'` and **no**
+   `'unsafe-inline'` except on `style-src` in dev.
+
+**Why the DevTools console isn't a valid test surface.** The
+classic "paste `document.createElement('script')` + `appendChild`
+into the console" test gives a false negative under
+`'strict-dynamic'`. The console is treated as a trusted script
+source by Chrome, so anything it dynamically inserts into the DOM
+inherits trust via strict-dynamic — that's exactly the case the
+directive is meant to allow (so framework bundles can lazy-load
+chunks). To actually exercise CSP blocking, you need parser-
+inserted inline scripts in the served HTML, which is what
+`/csp-test.html` provides and what real stored-XSS payloads look
+like.
+
+### 5.3 What this maps onto
 
 OWASP Top 10 2025, full coverage matrix, lives in `COMPLIANCE.md`.
-Quick summary:
+Quick summary (now reflecting the May 2026 supply-chain + CSP
+slices):
 
 - A01 Broken Access Control — ✅ (two-tier middleware)
-- A02 Security Misconfiguration (newly #2) — ✅ mostly
-- A03 Software Supply Chain Failures (expanded) — ⚠️ SCA yes, SBOM/SLSA no
+- A02 Security Misconfiguration (newly #2) — ✅ (hybrid CSP +
+  baseline security headers shipped; branch protection runbook
+  documented in §9.4)
+- A03 Software Supply Chain Failures (expanded) — ✅ (SCA via
+  Dependabot + `npm audit`; SAST via CodeQL `security-extended`;
+  SBOM CycloneDX 1.6 per workspace; SLSA L2 signed provenance)
 - A04 Cryptographic Failures — ✅
 - A05 Injection — ✅
 - A06 Insecure Design — ✅ (idempotency, snapshots)
-- A07 Authentication Failures — ✅ for admin, partial for customers (no MFA)
-- A08 Software & Data Integrity Failures — ⚠️ no signed artifacts
-- A09 Security Logging Failures — ⚠️ no distributed tracing, no CSP report
-- A10 Mishandling Exceptional Conditions (new) — ✅ (RFC 9457 + graceful degradation)
+- A07 Authentication Failures — ✅ for admin, partial for customers
+  (no MFA — Roadmap item 24)
+- A08 Software & Data Integrity Failures — ✅ (Sigstore keyless
+  signing on every SBOM)
+- A09 Security Logging Failures — ⚠️ no distributed tracing
+  (Roadmap item 6), no CSP violation reporting endpoint yet
+  (Roadmap item 14 — blocking *does* happen today, only the
+  *reporting* is deferred)
+- A10 Mishandling Exceptional Conditions (new) — ✅ (RFC 9457 +
+  graceful degradation)
 
-### 5.3 Compliance touchpoints
+### 5.4 Compliance touchpoints
 
 Brief; full mapping in `COMPLIANCE.md`:
 
@@ -1001,6 +1214,164 @@ discover that step 4 takes 20 minutes longer than you expected.
 Tested every time a backup is taken (the system runs a checksum
 verification on the JSON immediately after upload).
 
+### 12.4 Procedure (admin MFA seed lost)
+
+The shop has exactly one administrator account, gated by mandatory
+TOTP MFA on a separate subdomain. **Losing the TOTP seed without a
+documented recovery path is the single most likely catastrophic
+failure mode of this entire system** — more likely than a Neon
+outage or an AWS regional incident, and harder to recover from.
+This runbook makes that scenario boring.
+
+#### 12.4.1 Where the seed is stored (set up once)
+
+These three things must be true the day the admin account is
+provisioned. Verify them quarterly along with the DR drill (§11
+quarterly).
+
+1. **Primary copy: password manager vault.** The TOTP seed
+   (otpauth:// URI) is stored as a secure note in the admin's
+   personal password manager (1Password / Bitwarden / iCloud
+   Keychain — any vault with a strong master password and
+   cloud sync). Title the entry `Best-Online-Shop admin TOTP
+   seed`.
+2. **Off-vault backup: paper recovery codes.** When TOTP is first
+   provisioned, the authenticator app emits one-time recovery
+   codes (or, equivalently, you generate them yourself by
+   running TOTP against the seed at known counter offsets).
+   Print the codes on paper. Seal the paper in a tamper-evident
+   envelope and store it in a physical safe (home safe, bank
+   safety-deposit box, or in-laws' fireproof cabinet — the
+   point is "location distinct from where the password manager
+   lives").
+3. **Off-site copy of the cloud backup.** Confirm the password
+   manager itself has 2FA enabled, AND that you have its
+   recovery kit printed alongside the TOTP envelope above. If
+   the password manager goes down the same day the TOTP seed
+   does, you want both recovery paths.
+
+The seed file is **never** stored in: this repository, any
+unencrypted document, any chat history, any email, AWS Systems
+Manager Parameter Store, or any cloud service the admin account
+itself controls. Losing the AWS root means losing the shop; the
+TOTP recovery path must not also be lost in that scenario.
+
+#### 12.4.2 Recovery — Scenario A: TOTP device lost, seed preserved
+
+This is the easy case. You forgot the device but the seed is
+intact.
+
+```
+1. Open the password manager → copy the otpauth:// URI from the
+   "Best-Online-Shop admin TOTP seed" entry.
+2. Provision the seed into a fresh authenticator app on a new
+   device. Most authenticators accept the URI directly via the
+   "add account → paste setup URI" flow.
+3. Open the new authenticator, generate a code, log into
+   admin.duda1.bg.
+4. Optional but recommended: rotate the seed. Admin panel →
+   Security → "Rotate TOTP seed" → the system displays a new
+   QR code and otpauth:// URI. Save the new one into the
+   password manager (replacing the old). Print fresh paper
+   recovery codes and replace the envelope contents.
+```
+
+Wall-clock time: 5–15 minutes. No downtime to the shop —
+customer-facing routes are unaffected.
+
+#### 12.4.3 Recovery — Scenario B: TOTP device lost AND password manager unreachable
+
+You'd reach for the paper envelope.
+
+```
+1. Retrieve the sealed paper envelope from the safe.
+2. Enter any one unused recovery code at the TOTP prompt on
+   admin.duda1.bg. Recovery codes are single-use; the system
+   marks the code consumed.
+3. Once logged in: Admin → Security → "Rotate TOTP seed". Save
+   the new seed into the password manager (recover that
+   separately if needed), generate fresh recovery codes, print
+   them, replace the envelope contents.
+4. Cross every used recovery code off the printed list before
+   re-sealing.
+```
+
+Wall-clock time: 15–30 minutes plus whatever it takes to physically
+reach the envelope.
+
+#### 12.4.4 Recovery — Scenario C: everything is lost
+
+TOTP device gone, password manager unreachable, paper recovery
+envelope destroyed (fire, flood, lost in a move). This is the
+"break glass" path; the shop is admin-locked until it completes.
+
+```
+1. SSH into AWS (root credentials are stored in their own
+   hardware-MFA-protected channel — see the asset inventory
+   document, Roadmap item 22).
+2. Connect to the production Neon branch via the SSM-stored
+   read/write connection string:
+     aws ssm get-parameter \
+       --name /shop/prod/NEON_DATABASE_URL \
+       --with-decryption \
+       --region eu-central-1
+3. Open psql against that URL.
+4. Either:
+     a. Disable MFA for the admin user:
+        UPDATE users
+          SET totp_secret = NULL,
+              totp_verified_at = NULL
+          WHERE email = '<admin-email>';
+        (One transaction. Confirm exactly one row affected.)
+     b. Or: rotate the seed to a known value by running the
+        provisioning helper from @shop/auth offline, then
+        UPDATE users SET totp_secret = '<new-encrypted-seed>'.
+5. Log in to admin.duda1.bg using only the password (MFA now
+   disabled).
+6. Re-enrol TOTP via Admin → Security → "Enable TOTP". Save
+   the new seed into a fresh password manager entry. Print
+   recovery codes. Reseal.
+7. Audit-log the recovery action manually — there's no
+   automated event for "admin recovered MFA from psql." Write
+   it in this doc (or in RUNBOOK.md once it exists), date-
+   stamped, with the reason.
+```
+
+Wall-clock time: 1–2 hours including the audit-log write-up. The
+shop's customer-facing functionality is unaffected throughout —
+only admin operations are blocked. This is the path that requires
+the AWS root credential, which is why the AWS root MFA is itself
+stored in a separate secure channel from the application MFA.
+
+#### 12.4.5 What this runbook depends on
+
+- The admin account remains a single user with exactly one TOTP
+  factor. If we add WebAuthn (Roadmap item 24 / customer MFA
+  expansion), revisit this with a second-factor-quorum approach.
+- The AWS root credential and the application TOTP seed are
+  stored in **physically and logically distinct** locations.
+  Storing both in the same password manager is a single-point-
+  of-failure; storing them in the same physical safe is also
+  one. The cost of this hygiene is a few minutes per
+  provisioning event.
+- The asset inventory document (Roadmap item 22) records
+  *where* the AWS root MFA seed lives and how to retrieve it.
+  This runbook assumes that document exists when Scenario C
+  fires.
+
+#### 12.4.6 Drill cadence
+
+Run Scenario A annually as part of the yearly checklist (§11) —
+specifically the "Rotate admin AWS user's hardware MFA" item.
+Confirm the password manager entry opens, the paper envelope is
+intact and legible, the recovery codes haven't been marked all-
+consumed in some forgotten incident, and the rotation flow on
+admin.duda1.bg still works. The whole drill is ~30 minutes.
+
+Do not run Scenario C as a drill against production — practice it
+against a Neon PITR branch instead so a typo in the UPDATE
+statement doesn't accidentally lock you out from a working shop.
+
 ---
 
 ## 13. Architecture decisions locked in
@@ -1052,7 +1423,7 @@ weeks. Don't re-litigate without a strong new constraint:
 | Pillar | Today | What's missing for A+ |
 |---|---|---|
 | Operational Excellence | B+ | Distributed tracing (OpenTelemetry/ADOT), formal SLOs + burn-rate alerting, DORA metrics, scheduled DR drills, incident postmortem template, status page |
-| Security | **A** (was A−, May 2026 supply-chain slice shipped) | CSP violation reporting, HIBP breach check, customer MFA option |
+| Security | **A** (May 2026 supply-chain + CSP slices shipped) | CSP violation reporting endpoint, HIBP breach check, customer MFA option |
 | Reliability | B | Formal RTO/RPO, SQS retry queue for SES, DR drill cadence, public status page |
 | Performance Efficiency | B+ | Synthetic monitoring (Lighthouse CI), RUM, query-latency SLOs per endpoint, additional image variants (800px, 2000px) |
 | Cost Optimization | B− | Cloudflare swap (the big one), CloudWatch retention to 14d |
@@ -1067,7 +1438,8 @@ weeks. Don't re-litigate without a strong new constraint:
 | NIST CSF 2.0 (Respond function) | ⚠️ Partial | Incident playbook |
 | OWASP Top 10 2025 — A03 Supply Chain | ✅ Met (SBOM + SLSA L2 + CodeQL) | — |
 | OWASP Top 10 2025 — A08 Integrity Failures | ✅ Met (Sigstore signing) | — |
-| OWASP Top 10 2025 — A09 Logging Failures | ⚠️ | Distributed tracing + CSP reports |
+| OWASP Top 10 2025 — A02 Security Misconfiguration | ✅ Met | Uniform strict CSP shipped May 2026 (§5.2) |
+| OWASP Top 10 2025 — A09 Logging Failures | ⚠️ | Distributed tracing + CSP-report endpoint (blocking already works; only reporting visibility is deferred) |
 | OWASP ASVS 6.0 L1 | ✅ Compliant | — |
 | OWASP ASVS 6.0 L2 | ⚠️ Gaps | Customer MFA (SAST shipped via CodeQL) |
 | NIST SP 800-63B-4 | ⚠️ Minor | Replace composition password rules with length + HIBP |
@@ -1115,6 +1487,20 @@ Ranked by `(impact ÷ effort)` — highest leverage first.
    in the same workflow. SLSA Level 2 achieved. Verification
    procedure in §9.5.
 
+### Week 1 — Content Security Policy (SHIPPED May 2026)
+
+5a. ✅ **Uniform strict CSP rollout.** A single `'nonce-X' 'strict-dynamic'`
+    policy applied to every HTML document via `frontend/src/proxy.ts`
+    (every route except Next.js internals, `/api`, `/.well-known`, and
+    prefetch requests). The earlier hybrid attempt was found to be silently
+    bypassed by SPA soft navigation; the uniform model closes that gap.
+    Reasoning + rejected design recorded in §5.2. On the Hono JSON API,
+    the strictest possible `default-src 'none'` via `hono/secure-headers`
+    in `backend/shop-api/src/app.ts`. Plus baseline headers
+    (`X-Content-Type-Options`, `Referrer-Policy`, `Permissions-Policy`,
+    `X-Frame-Options`, `COOP`, `CORP`, `HSTS`) on every frontend response
+    via `frontend/next.config.ts`. Verification recipe in §5.2.4.
+
 ### Week 1 — observability (1 day total)
 
 6. **Add AWS Distro for OpenTelemetry to the three Lambdas** (1 day)
@@ -1150,7 +1536,12 @@ Ranked by `(impact ÷ effort)` — highest leverage first.
 
 14. **Add CSP violation report endpoint** (2 hours)
     - `POST /api/csp-report` that writes the report into CloudWatch.
-    - Add `report-to` directive to the CSP header.
+    - Add `report-to` directive to **both** CSP profiles (proxy.ts
+      strict policy + next.config.ts baseline). Without the endpoint
+      ready, the directives generate 404 noise — so build the endpoint
+      first, then ship the directive in the same PR.
+    - Blocking behaviour is **already live** as of the May 2026 CSP
+      slice (§5.2); this item adds the *visibility* loop.
 15. **Add HIBP k-anonymity check on registration / password reset**
     (2 hours)
     - One HTTP call to `api.pwnedpasswords.com`. Block top-100K

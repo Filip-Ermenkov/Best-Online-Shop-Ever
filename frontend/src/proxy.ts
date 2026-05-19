@@ -3,21 +3,44 @@ import { NextResponse, type NextRequest } from "next/server";
 /**
  * Next.js 16 proxy (formerly middleware.ts).
  *
- * The 2026 Next.js best practice is the "thin proxy" pattern:
+ * Two responsibilities here, both intentionally kept thin:
  *
- *   - Optimistic, cookie-presence-only check. Never call the API or DB
- *     here — proxies run on every navigation including prefetches, so
- *     even a fast call adds latency to every page transition.
- *   - Real authorisation lives in the page (or the data fetch the page
- *     awaits). The proxy just stops obviously-anonymous traffic from
- *     reaching protected pages, saving a server-component fetch + a
- *     client-side flicker.
+ *   1. Auth-aware routing. The 2026 Next.js best practice is the "thin
+ *      proxy" pattern — optimistic cookie-presence check only. Never call
+ *      the API or DB here — proxies run on every navigation including
+ *      prefetches, so even a fast call adds latency to every transition.
+ *      Real authorisation lives in the page (or the data fetch the page
+ *      awaits). The proxy just stops obviously-anonymous traffic from
+ *      reaching protected pages, saving a server-component fetch + a
+ *      client-side flicker. This is the same pattern Better Auth,
+ *      Auth.js, and Clerk all converged on for Next.js 15+. The cookie
+ *      value is opaque to us (it's a base64url SHA-256-hashed session
+ *      token whose only authority is the sessions table at the API).
  *
- * This is the same pattern Better Auth, Auth.js, and Clerk all converged
- * on for Next.js 15+. We label the cookie-presence check "NOT secure on
- * its own" and rely on the API to actually validate the token: the
- * cookie value here is opaque to us anyway (it's a base64url SHA-256-hashed
- * session token whose only authority is the sessions table).
+ *   2. Strict per-request Content Security Policy for EVERY route. We
+ *      generate a fresh base64-encoded 128-bit nonce on every request
+ *      and set both `Content-Security-Policy` (with `'nonce-X' 'strict-
+ *      dynamic'`) and a forwarded `x-nonce` header so Server Components
+ *      can read it via `headers()` and pass it to `<Script>` if they
+ *      ever load a third-party tag. Next.js 16 auto-attaches the nonce
+ *      to framework and page-bundle scripts when it sees the CSP header
+ *      in the request (see Next.js CSP guide).
+ *
+ *      **Why uniform and not hybrid.** An earlier May 2026 revision
+ *      shipped a Profile-A/Profile-B hybrid: strict CSP on /account
+ *      + /admin via this proxy, lax baseline (`'unsafe-inline'`) on
+ *      catalog routes via next.config.ts. That model has a SPA soft-
+ *      navigation hole: a document's CSP is fixed at load, so a user
+ *      landing on / and then `<Link>`-navigating to /account/login
+ *      keeps `/`'s relaxed CSP. The cross-boundary security guarantee
+ *      simply doesn't exist for that traffic pattern. The fix is to
+ *      use one uniform strict policy everywhere; clicking between
+ *      catalog and account then never crosses a boundary because both
+ *      sides are equally locked down. The Next.js root layout already
+ *      reads cookies via getServerUser(), which forces dynamic
+ *      rendering, so we weren't actually getting ISR on catalog pages
+ *      anyway — uniform CSP just makes that fact honest. ARCHITECTURE.md
+ *      §5.2 carries the full reasoning.
  */
 
 // Names match what the backend sets — see backend/shop-api/src/lib/cookies.ts.
@@ -63,6 +86,124 @@ function isPublicAccountPath(path: string): boolean {
   );
 }
 
+// Origins this CSP needs to allow. Same source-of-truth as next.config.ts —
+// repeated here on purpose: next.config.ts runs in the build/server bundle,
+// proxy.ts in the runtime proxy bundle, and they don't share modules without
+// awkward import paths. Drift between them is caught by the curl-headers
+// verification in ARCHITECTURE.md §5.2.4.
+const isProd = process.env.NODE_ENV === "production";
+const API_ORIGIN = isProd
+  ? "https://shop-api.duda1.bg"
+  : "http://localhost:3001";
+const IMG_ORIGIN = "https://cdn.duda1.bg";
+
+// Dev-only image origins. The seed data and the dev banner component pull
+// placeholder images from `placehold.co`. In production those slots are
+// filled by the admin pointing at real images on `cdn.duda1.bg`, so the
+// placeholder origin is intentionally NOT allowed in prod — leaking
+// `placehold.co` references into production HTML would be a content bug
+// the strict CSP correctly catches. Add new dev-only image hosts here.
+const DEV_IMG_ORIGINS = isProd ? "" : " https://placehold.co";
+
+/**
+ * Generate a per-request nonce. Per Next.js 16 official guide
+ * (https://nextjs.org/docs/app/guides/content-security-policy), the
+ * recommended pattern is `Buffer.from(crypto.randomUUID()).toString('base64')`
+ * which produces a 36-char base64 over the 16-byte UUID. We use the same.
+ *
+ * Why this is enough entropy: 122 random bits exceeds the 96-bit threshold
+ * the W3C CSP3 spec recommends as the floor for `nonce-source`. An attacker
+ * with 2^61 guesses-per-second would need >10^15 years on average to forge
+ * a single matching value within the request lifetime.
+ */
+function generateNonce(): string {
+  return Buffer.from(crypto.randomUUID()).toString("base64");
+}
+
+/**
+ * Build the strict CSP applied to /account/* and /admin/*. Uses
+ * `'strict-dynamic'`: any script the page loads (or that one of those
+ * scripts dynamically inserts) must carry the matching nonce, period.
+ * `'self'`, `https:`, etc. are ignored in the presence of strict-dynamic
+ * per CSP3 spec — that's the whole point. This is the defence model
+ * OWASP recommends for stored-XSS-resistant applications.
+ *
+ * `'unsafe-eval'` is conditionally added in development because React's
+ * dev-mode debugging uses `eval` to reconstruct server-component stack
+ * traces. Next.js's own docs flag this trade-off; it is NOT included in
+ * production.
+ */
+function buildStrictCsp(nonce: string): string {
+  const directives = [
+    "default-src 'self'",
+    `script-src 'self' 'nonce-${nonce}' 'strict-dynamic'${isProd ? "" : " 'unsafe-eval'"}`,
+    // Style nonce in prod; dev needs 'unsafe-inline' because some HMR
+    // injection paths can't reach the proxy's nonce.
+    isProd
+      ? `style-src 'self' 'nonce-${nonce}'`
+      : "style-src 'self' 'unsafe-inline'",
+    `img-src 'self' blob: data: ${IMG_ORIGIN}${DEV_IMG_ORIGINS}`,
+    "font-src 'self' data:",
+    `connect-src 'self' ${API_ORIGIN}`,
+    "object-src 'none'",
+    "base-uri 'self'",
+    "form-action 'self'",
+    "frame-ancestors 'none'",
+    "upgrade-insecure-requests",
+  ];
+  return directives.join("; ");
+}
+
+/**
+ * Attach the strict CSP and forwarded `x-nonce` to a response. Works for
+ * both passthrough (NextResponse.next()) and redirect responses — every
+ * path the proxy returns goes through this helper so the response header
+ * set is consistent. (Redirects don't render a body, so the CSP on them
+ * is purely belt-and-braces — but it also means tooling that fetches with
+ * `redirect: 'manual'` sees the policy and doesn't report a false miss.)
+ *
+ * Two distinct things happen here:
+ *
+ *   1. The nonce is stamped onto the REQUEST headers (`x-nonce` and a
+ *      mirror of `content-security-policy`). Next.js reads this when
+ *      rendering Server Components and auto-attaches the nonce to its
+ *      framework scripts — that's why pages don't break on first load
+ *      under strict-dynamic. The mirror of the CSP header itself is what
+ *      Next.js parses for the `'nonce-X'` token.
+ *
+ *   2. The CSP is stamped onto the RESPONSE headers. This is what the
+ *      browser enforces.
+ *
+ * The two are not the same header in different places — they happen to
+ * share a name but serve different ends of the request lifecycle.
+ */
+function withStrictCsp(req: NextRequest, response: NextResponse): NextResponse {
+  const nonce = generateNonce();
+  const csp = buildStrictCsp(nonce);
+
+  // Forwarded request headers — see (1) above. NextResponse.next() is the
+  // one place these can be set in Next.js 16; on a redirect response we
+  // can't forward request headers (there are no Server Components to read
+  // them downstream), so the redirect branch only sets the response CSP.
+  if (response.headers.has("location")) {
+    // It's a redirect — only response CSP applies.
+    response.headers.set("Content-Security-Policy", csp);
+    return response;
+  }
+
+  const requestHeaders = new Headers(req.headers);
+  requestHeaders.set("x-nonce", nonce);
+  requestHeaders.set("content-security-policy", csp);
+
+  const out = NextResponse.next({
+    request: { headers: requestHeaders },
+    status: response.status,
+    headers: response.headers,
+  });
+  out.headers.set("Content-Security-Policy", csp);
+  return out;
+}
+
 export function proxy(req: NextRequest) {
   const { pathname, search } = req.nextUrl;
   const loggedIn = hasSessionCookie(req);
@@ -73,7 +214,7 @@ export function proxy(req: NextRequest) {
     const url = req.nextUrl.clone();
     url.pathname = "/account/profile";
     url.search = "";
-    return NextResponse.redirect(url);
+    return withStrictCsp(req, NextResponse.redirect(url));
   }
 
   // Anonymous users hitting any /account/* page (other than the public auth
@@ -83,7 +224,7 @@ export function proxy(req: NextRequest) {
     const url = req.nextUrl.clone();
     url.pathname = "/account/login";
     url.search = `?next=${encodeURIComponent(pathname + search)}`;
-    return NextResponse.redirect(url);
+    return withStrictCsp(req, NextResponse.redirect(url));
   }
 
   // /admin/* requires SOME session. The proxy can't tell admin from customer
@@ -91,29 +232,48 @@ export function proxy(req: NextRequest) {
   // a customer with a session lands on /admin, hits the layout's role check,
   // and gets a 403 there. Keeping role enforcement at the data layer means
   // the cookie remains opaque and we don't have to decode session state in
-  // the edge runtime.
+  // the proxy runtime.
   if (!loggedIn && pathname.startsWith("/admin")) {
     const url = req.nextUrl.clone();
     url.pathname = "/account/login";
     url.search = `?next=${encodeURIComponent(pathname + search)}`;
-    return NextResponse.redirect(url);
+    return withStrictCsp(req, NextResponse.redirect(url));
   }
 
-  return NextResponse.next();
+  // Passthrough — full strict-CSP application including forwarded x-nonce.
+  return withStrictCsp(req, NextResponse.next());
 }
 
 /**
- * Limit the proxy to paths that actually need auth-aware routing. Without
- * a matcher, the proxy runs on every static asset request too, which is
- * wasted work (and Next 16 made the proxy default to Node runtime, which
- * is slower than the old edge default).
+ * Matcher rationale. The proxy now runs on every HTML-document request so
+ * the strict CSP applies uniformly. We exclude:
  *
- * Order: most specific first. The negative lookahead at the end skips
- * Next's internal paths and any file with an extension (assets).
+ *   - `_next/static`, `_next/image`, `favicon.ico` — Next.js internal
+ *     paths that serve compiled JS / images / icons. They never render
+ *     HTML, so CSP has nothing to apply to.
+ *   - `api/*` — Next.js API routes (none today; reserved for the future
+ *     `/api/csp-report` endpoint per ARCHITECTURE.md §15 item 14).
+ *     They return JSON, not HTML, and shouldn't carry a document CSP.
+ *   - Prefetch requests — `<Link>` prefetches RSC payloads, not full
+ *     documents. The `missing` clauses filter those out so we don't
+ *     generate nonces (and incur Node-runtime startup cost) for traffic
+ *     that has no visible CSP application. The two header names cover
+ *     both the App Router prefetch path (`next-router-prefetch`) and
+ *     the underlying fetch API hint (`purpose: prefetch`).
+ *
+ * The Node-runtime cost of ~1 ms per request is negligible at every
+ * traffic tier the architecture is designed for; see ARCHITECTURE.md
+ * §10 for the cost analysis.
  */
 export const config = {
   matcher: [
-    "/account/:path*",
-    "/admin/:path*",
+    {
+      source:
+        "/((?!api|_next/static|_next/image|favicon.ico|.well-known).*)",
+      missing: [
+        { type: "header", key: "next-router-prefetch" },
+        { type: "header", key: "purpose", value: "prefetch" },
+      ],
+    },
   ],
 };

@@ -11,7 +11,7 @@
 >   `ARCHITECTURE.md` §15
 > - N/A — out of scope for this product (justified below the table)
 >
-> Last updated: 2026-05-16.
+> Last updated: 2026-05-19.
 
 ---
 
@@ -110,7 +110,8 @@ April 2025 best-practices update.
 | Encryption at rest | ✅ | Neon + S3 SSE |
 | Idempotency on orders | ✅ | `Idempotency-Key` UNIQUE |
 | Email-verified gate on order placement | ✅ | |
-| CSP with nonces + `strict-dynamic` | ✅ | |
+| **Content Security Policy — uniform strict** | ✅ | Single `'nonce-X' 'strict-dynamic'` policy on every HTML document via `frontend/src/proxy.ts`; strictest possible (`default-src 'none'`) on the Hono JSON API via `hono/secure-headers`. (Previous hybrid attempt was bypassed by SPA soft navigation — rejected design recorded in `ARCHITECTURE.md` §5.2.) |
+| **Baseline security headers** (`X-Content-Type-Options`, `Referrer-Policy`, `Permissions-Policy`, `X-Frame-Options`, `COOP`, `CORP`, `HSTS`) | ✅ | `frontend/next.config.ts` + `backend/shop-api/src/app.ts` |
 | Dependabot + `npm audit` (SCA) | ✅ | |
 | **SAST in CI** (CodeQL `security-extended` + `actions` queries) | ✅ | `.github/workflows/codeql.yml`; weekly cron catches drift |
 | **SBOM generation** (CycloneDX 1.6 per workspace) | ✅ | `.github/workflows/sbom.yml`; attached to releases |
@@ -258,7 +259,7 @@ Published 2024–2025 (eighth edition). Notable changes vs 2021:
 | # | Category | Status | Where it's defended |
 |---|---|---|---|
 | A01 | Broken Access Control (incl. SSRF) | ✅ | Two-tier middleware (`currentUser` + `requireAuth`); per-Lambda IAM least-privilege; same-origin API; explicit auth gate on order placement |
-| A02 | Security Misconfiguration | ✅ Mostly | No hardcoded secrets; SSM Parameter Store; `__Host-` cookies; HSTS; CSP. ⚠️ Branch protection missing |
+| A02 | Security Misconfiguration | ✅ | No hardcoded secrets; SSM Parameter Store; `__Host-` cookies; HSTS; uniform strict CSP (`'nonce-X' 'strict-dynamic'` on every HTML document, `default-src 'none'` on the Hono API — see ARCHITECTURE.md §5.2); branch protection ruleset on `main` (§9.4) |
 | A03 | Software Supply Chain Failures | ✅ Met | SCA via Dependabot + `npm audit` ✅. CodeQL SAST ✅. CycloneDX SBOM per workspace ✅. SLSA L2 signed provenance ✅. See §8 and ARCHITECTURE.md §9 |
 | A04 | Cryptographic Failures | ✅ | TLS 1.3, Argon2id (RFC 9106), 32-byte CSPRNG tokens, SHA-256-at-rest, AES at rest (S3 + Neon) |
 | A05 | Injection | ✅ | Zod validation + Drizzle parametrized queries everywhere; WAF SQLi managed rules as backstop |
@@ -295,7 +296,7 @@ L3 (high-assurance / critical systems).
 | V6 Stored Cryptography | ✅ | ✅ | Argon2id, AES, encrypted-at-rest |
 | V7 Error Handling and Logging | ✅ | ✅ | RFC 9457 + Pino + PII redaction |
 | V8 Data Protection | ✅ | ✅ | GDPR-aligned (Art. 32) |
-| V9 Communications Security | ✅ | ✅ | TLS 1.3, HSTS preload, CSP |
+| V9 Communications Security | ✅ | ✅ | TLS 1.3, HSTS preload, uniform strict CSP per ARCHITECTURE.md §5.2 |
 | V10 Malicious Code | ⚠️ | ❌ | SCA yes; SAST no |
 | V11 Business Logic | ✅ | ✅ | Idempotency, expand-contract, snapshots |
 | V12 Files and Resources | ✅ | ✅ | S3 presigned URLs, MIME validation, size caps |
