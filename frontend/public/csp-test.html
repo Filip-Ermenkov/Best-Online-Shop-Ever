@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>CSP validation page</title>
+  <meta name="robots" content="noindex, nofollow" />
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 720px; margin: 2rem auto; padding: 0 1rem; line-height: 1.55; }
+    code { background: #f3f4f6; padding: 0.1rem 0.35rem; border-radius: 0.2rem; }
+    .ok { color: #15803d; font-weight: 600; }
+    .fail { color: #b91c1c; font-weight: 600; }
+    .row { margin: 0.75rem 0; }
+    h1 { font-size: 1.4rem; }
+    h2 { font-size: 1.1rem; margin-top: 1.75rem; }
+  </style>
+</head>
+<body>
+
+<h1>CSP validation page</h1>
+
+<p>
+  This is a permanent diagnostic page for verifying the project's
+  strict Content Security Policy is actually blocking parser-inserted
+  inline scripts that don't carry the per-request nonce. The page is
+  static HTML served from <code>frontend/public/csp-test.html</code>
+  and is therefore <strong>not</strong> rendered by Next.js — Next.js
+  cannot auto-attach a nonce to the script tags below, so the only
+  way they can execute is if the CSP allows them, i.e. if the CSP is
+  misconfigured.
+</p>
+
+<p>
+  Open the browser DevTools Console <strong>before</strong> loading this
+  page so you see the CSP violation messages as the browser blocks each
+  test. Then read off the results.
+</p>
+
+<h2>Why the DevTools console can't be used for this test</h2>
+
+<p>
+  The standard "paste a <code>document.createElement('script')</code> +
+  <code>appendChild</code> into the console" test produces a false
+  positive under <code>'strict-dynamic'</code>: the console is treated
+  as a trusted script source, so anything it inserts inherits trust via
+  strict-dynamic. That's by design. The test below uses
+  parser-inserted inline scripts in the served HTML, which is the
+  actual attack surface CSP is meant to block (stored XSS in product
+  descriptions, comments, etc.).
+</p>
+
+<h2>Tests</h2>
+
+<div class="row" id="t1">
+  Test 1 — parser-inserted inline <code>&lt;script&gt;</code>:
+  <span class="pending">pending</span>
+</div>
+<script>
+  // No nonce attribute. If CSP is enforced correctly, this script never
+  // runs and the marker stays "pending". The browser will log a CSP
+  // violation in the console.
+  document.getElementById('t1').querySelector('.pending').textContent = 'BYPASSED';
+  document.getElementById('t1').querySelector('.pending').className = 'fail';
+</script>
+
+<div class="row" id="t2">
+  Test 2 — inline event handler (<code>onclick</code> attribute):
+  <span id="t2-result">click the button →</span>
+  <button id="t2-btn" onclick="document.getElementById('t2-result').textContent = 'BYPASSED'; document.getElementById('t2-result').className = 'fail';">click me</button>
+</div>
+
+<div class="row" id="t3">
+  Test 3 — <code>javascript:</code> URL:
+  <a id="t3-link" href="javascript:document.getElementById('t3-result').textContent='BYPASSED';document.getElementById('t3-result').className='fail';void(0)">click here</a>
+  <span id="t3-result">click the link →</span>
+</div>
+
+<h2>What you should see</h2>
+
+<p>
+  If CSP is configured correctly:
+</p>
+
+<ul>
+  <li>Test 1 stays <em>pending</em> (the inline script can't update the marker).</li>
+  <li>Test 2's button click does nothing visible; clicking still leaves "click the button →".</li>
+  <li>Test 3's link click does nothing visible; clicking leaves "click the link →".</li>
+  <li>The DevTools Console shows three red <em>"Refused to execute inline script"</em> / <em>"Refused to execute inline event handler"</em> messages.</li>
+</ul>
+
+<p>
+  If any test changes to "BYPASSED" in red, the CSP isn't enforcing what
+  this project's <code>ARCHITECTURE.md</code> §5.2 says it does — fix it
+  before merging.
+</p>
+
+<h2>Run it</h2>
+
+<p>
+  Visit
+  <code>http://localhost:3000/csp-test.html</code>
+  in dev, or
+  <code>https://duda1.bg/csp-test.html</code>
+  in production. Same expected output in both. (The proxy still applies
+  the strict CSP to this static-file path because it's not in the
+  matcher's exclusion list.)
+</p>
+
+</body>
+</html>

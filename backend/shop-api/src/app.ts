@@ -2,6 +2,7 @@ import { OpenAPIHono } from "@hono/zod-openapi";
 import { cors } from "hono/cors";
 import { etag } from "hono/etag";
 import { requestId } from "hono/request-id";
+import { secureHeaders } from "hono/secure-headers";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import type { Logger } from "pino";
 import { ZodError } from "zod";
@@ -37,6 +38,69 @@ export function buildApp() {
   });
 
   app.use("*", requestId());
+
+  /**
+   * Security headers for every API response. This Hono middleware is a JSON-
+   * API counterpart to the strict CSP shipped on the Next.js frontend.
+   *
+   * The CSP here is the strictest possible: `default-src 'none'` — nothing
+   * loads, no frames, no scripts, no images. That's correct for a JSON
+   * endpoint, which has no business rendering HTML. The header is
+   * defence-in-depth: if a content-type-confusion attack ever fooled a
+   * browser into rendering a Problem+JSON response as HTML, this policy
+   * blocks everything inline.
+   *
+   * `crossOriginResourcePolicy: same-site` allows the legitimate cross-
+   * subdomain fetch from shop.duda1.bg → shop-api.duda1.bg (same
+   * registrable domain) but blocks attempts by unrelated origins to
+   * `<img src>` or `<script src>` an API response. CORS allow-listing in
+   * the cors() middleware below remains the authoritative gate for the
+   * actual fetch path; CORP is defence-in-depth against embed-style loads.
+   *
+   * `xFrameOptions` and `frameAncestors` both forbid embedding — again
+   * meaningless for JSON, useful only if a browser somehow renders the
+   * response as HTML.
+   *
+   * Hono docs: https://hono.dev/docs/middleware/builtin/secure-headers
+   */
+  app.use(
+    "*",
+    secureHeaders({
+      contentSecurityPolicy: {
+        defaultSrc: ["'none'"],
+        frameAncestors: ["'none'"],
+        baseUri: ["'none'"],
+        formAction: ["'none'"],
+      },
+      crossOriginEmbedderPolicy: false,
+      crossOriginOpenerPolicy: "same-origin",
+      crossOriginResourcePolicy: "same-site",
+      referrerPolicy: "no-referrer",
+      strictTransportSecurity:
+        "max-age=63072000; includeSubDomains; preload",
+      xContentTypeOptions: "nosniff",
+      xFrameOptions: "DENY",
+      // The API serves no user-controlled HTML, so xXssProtection (a legacy
+      // header anyway) and xDnsPrefetchControl don't earn their bytes. We
+      // explicitly turn them off so Hono doesn't ship surprising defaults.
+      xDnsPrefetchControl: false,
+      xXssProtection: false,
+      // Permissions-Policy on a JSON API is mostly aspirational, but it's
+      // free defence-in-depth — if a browser ever evaluated this response
+      // as HTML, none of these features could be enabled.
+      permissionsPolicy: {
+        camera: [],
+        microphone: [],
+        geolocation: [],
+        payment: [],
+        usb: [],
+        accelerometer: [],
+        gyroscope: [],
+        magnetometer: [],
+        fullscreen: [],
+      },
+    }),
+  );
 
   app.use("*", async (c, next) => {
     const id = c.get("requestId");
