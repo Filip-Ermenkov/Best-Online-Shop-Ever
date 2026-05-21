@@ -199,6 +199,15 @@ Authentication lives in `@shop/auth`:
   `sessions.id_hash`
 - Constant-time login (`argon2.verify` against `DUMMY_PASSWORD_HASH`
   for unknown emails)
+- **NIST SP 800-63B Rev. 4** password policy (shipped May 2026):
+  ≥12 chars, ≤1024 chars, no composition rules, screened against
+  the Have I Been Pwned breach corpus at registration and password
+  reset via the k-anonymity API. HIBP failure-mode is open (a
+  warning log, not a hard block) — we don't couple signup
+  availability to a single-vendor free service. Login is NOT
+  gated by the HIBP check, so existing customers cannot be locked
+  out retroactively if their once-acceptable password later turns
+  up in a breach. See §5.2 below.
 
 Errors follow **RFC 9457 Problem Details**. Logs use **Pino with PII
 redaction**, structured JSON, per-request child logger keyed on
@@ -641,16 +650,13 @@ slices):
 - A04 Cryptographic Failures — ✅
 - A05 Injection — ✅
 - A06 Insecure Design — ✅ (idempotency, snapshots)
-- A07 Authentication Failures — ✅ for admin, partial for customers
-  (no MFA — Roadmap item 24)
-- A08 Software & Data Integrity Failures — ✅ (Sigstore keyless
-  signing on every SBOM)
-- A09 Security Logging Failures — ⚠️ no distributed tracing
-  (Roadmap item 6), no CSP violation reporting endpoint yet
-  (Roadmap item 14 — blocking *does* happen today, only the
-  *reporting* is deferred)
-- A10 Mishandling Exceptional Conditions (new) — ✅ (RFC 9457 +
-  graceful degradation)
+- A07 Authentication Failures — ✅ for admin, ✅ for customers on
+  password hygiene (NIST 800-63B-4 length-only + HIBP breach
+  screening shipped May 2026). Customer MFA is the only remaining
+  gap (Roadmap 24, growth-stage)
+- A08 Software & Data Integrity Failures — ⚠️ no signed artifacts
+- A09 Security Logging Failures — ⚠️ no distributed tracing, no CSP report
+- A10 Mishandling Exceptional Conditions (new) — ✅ (RFC 9457 + graceful degradation)
 
 ### 5.4 Compliance touchpoints
 
@@ -1423,7 +1429,7 @@ weeks. Don't re-litigate without a strong new constraint:
 | Pillar | Today | What's missing for A+ |
 |---|---|---|
 | Operational Excellence | B+ | Distributed tracing (OpenTelemetry/ADOT), formal SLOs + burn-rate alerting, DORA metrics, scheduled DR drills, incident postmortem template, status page |
-| Security | **A** (May 2026 supply-chain + CSP slices shipped) | CSP violation reporting endpoint, HIBP breach check, customer MFA option |
+| Security | **A** (was A−, May 2026 supply-chain + auth-modernization slices shipped) | CSP violation reporting, customer MFA option |
 | Reliability | B | Formal RTO/RPO, SQS retry queue for SES, DR drill cadence, public status page |
 | Performance Efficiency | B+ | Synthetic monitoring (Lighthouse CI), RUM, query-latency SLOs per endpoint, additional image variants (800px, 2000px) |
 | Cost Optimization | B− | Cloudflare swap (the big one), CloudWatch retention to 14d |
@@ -1442,7 +1448,7 @@ weeks. Don't re-litigate without a strong new constraint:
 | OWASP Top 10 2025 — A09 Logging Failures | ⚠️ | Distributed tracing + CSP-report endpoint (blocking already works; only reporting visibility is deferred) |
 | OWASP ASVS 6.0 L1 | ✅ Compliant | — |
 | OWASP ASVS 6.0 L2 | ⚠️ Gaps | Customer MFA (SAST shipped via CodeQL) |
-| NIST SP 800-63B-4 | ⚠️ Minor | Replace composition password rules with length + HIBP |
+| NIST SP 800-63B-4 | ✅ Met (May 2026) | Length-only ≥12 + HIBP screening shipped; composition rules removed |
 | NIST SP 800-207 (Zero Trust) | ✅ Spirit | Already verifying every request; per-Lambda least-privilege IAM; no implicit subdomain trust |
 | SLSA v1.1 | ✅ Level 2 achieved (May 2026) | Level 3 only if contractual need (Roadmap 27) |
 | CIS Controls v8.1 IG1 | ✅ Met (VDP page + SBOM-as-inventory) | — |
@@ -1532,25 +1538,33 @@ Ranked by `(impact ÷ effort)` — highest leverage first.
     proxy now (saves money) OR Cloudflare Pro proxy (stronger
     security, slight cost increase that pays back at Tier 5).
 
-### Week 3 — security depth (1 day total)
+### Week 3 — auth modernization (SHIPPED May 2026)
+
+15. ✅ **HIBP k-anonymity check on registration / password reset** —
+    `backend/auth/src/breached-password.ts`. SHA-1 the password,
+    transmit only the first 5 hex chars (k-anonymity), reject on
+    `count ≥ 1`. Fail-open on HIBP unavailability with a structured
+    `breached_password_check_unavailable` warning log so we can alert
+    on a rate spike. Threshold and fail-mode rationale documented in
+    the module header. Wired into `POST /auth/register` (before the
+    existing-email check, to keep response-shape enumeration-resistant)
+    and into `POST /auth/reset-password` (before token consumption, so
+    a breached-password retry doesn't burn the reset token).
+17. ✅ **Customer password rules: composition → length-only** — server
+    `PasswordSchema` is now `min 12`, `max 1024`, no upper/lower/digit
+    refinements. Frontend register + reset-password pages updated in
+    lockstep. Rejection of breached passwords carries a dedicated
+    `type: "/problems/breached-password"` problem URL so the client
+    can render a Bulgarian message instead of surfacing English from
+    the API.
+
+### Week 3 — security depth (remaining)
 
 14. **Add CSP violation report endpoint** (2 hours)
     - `POST /api/csp-report` that writes the report into CloudWatch.
-    - Add `report-to` directive to **both** CSP profiles (proxy.ts
-      strict policy + next.config.ts baseline). Without the endpoint
-      ready, the directives generate 404 noise — so build the endpoint
-      first, then ship the directive in the same PR.
-    - Blocking behaviour is **already live** as of the May 2026 CSP
-      slice (§5.2); this item adds the *visibility* loop.
-15. **Add HIBP k-anonymity check on registration / password reset**
-    (2 hours)
-    - One HTTP call to `api.pwnedpasswords.com`. Block top-100K
-      breached passwords.
+    - Add `report-to` directive to the CSP header.
 16. **Add a `THREAT_MODEL.md`** (2 hours)
     - STRIDE pass over each major data flow. Document mitigations.
-17. **Move customer password rules from composition to length-only**
-    (2 hours, requires UX coordination)
-    - NIST SP 800-63B-4 deprecates composition rules.
 
 ### Month 2 — performance + governance (3 days total)
 

@@ -68,6 +68,24 @@ const EnvSchema = z.object({
     .string()
     .default("http://localhost:3000")
     .transform((s) => s.replace(/\/+$/, "")),
+
+  // ─── Breached-password screening ─────────────────────────────────────────
+  /**
+   * Toggle the HIBP k-anonymity check on registration and password-reset.
+   * Default ON. Two operational uses:
+   *
+   *   - Tests set this to `false` so they don't hit api.pwnedpasswords.com
+   *     on every register-route exercise. The dedicated HIBP test flips it
+   *     back on for itself with a stubbed fetch.
+   *   - Incident response: if HIBP becomes structurally unavailable for an
+   *     extended period and the warn-log volume becomes a problem (per-call
+   *     fail-open is the default behaviour anyway), set this to `false` to
+   *     silence the noise. Re-enable when upstream recovers.
+   */
+  BREACHED_PASSWORD_CHECK_ENABLED: z
+    .enum(["true", "false"])
+    .default("true")
+    .transform((s) => s === "true"),
 });
 
 export type Env = z.infer<typeof EnvSchema>;

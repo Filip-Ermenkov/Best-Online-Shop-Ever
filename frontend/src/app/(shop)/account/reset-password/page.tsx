@@ -48,7 +48,7 @@ import { useAuth } from "@/contexts/AuthContext";
  */
 
 const PASSWORD_HELP =
-  "Минимум 8 символа, поне една главна буква, поне една малка буква и поне една цифра.";
+  "Минимум 12 символа. Дълга фраза с няколко думи е по-сигурна от къса парола със знаци.";
 
 type TokenStatus =
   | { kind: "no-token" }
@@ -146,13 +146,14 @@ export default function ResetPasswordPage() {
       setError("Паролите не съвпадат.");
       return;
     }
-    if (newPassword.length < 8) {
-      setError("Паролата трябва да е поне 8 символа.");
+    if (newPassword.length < 12) {
+      setError("Паролата трябва да е поне 12 символа.");
       return;
     }
-    // Upper/lower/digit could be checked on the client too, but the API has
-    // the canonical rules and we want one source of truth. Let the server
-    // reject and surface its message instead — keeps the rules in lockstep.
+    // No client-side composition checks — the server enforces only length
+    // and breached-password screening (NIST SP 800-63B Rev. 4). A breached
+    // password is rejected by the API with a field-level "data breach"
+    // message which we surface as-is in the validation switch below.
 
     setPending(true);
     try {
@@ -164,6 +165,11 @@ export default function ResetPasswordPage() {
             // and this submit, OR the 1h window elapsed while the user was
             // typing. Same dead-link UI as the on-mount path.
             setStatus({ kind: "dead" });
+            return;
+          case "breached_password":
+            setError(
+              "Тази парола е била включена в известен пробив в данни и не може да бъде използвана. Моля, изберете различна, по-добре дълга фраза.",
+            );
             return;
           case "validation":
             setError(res.error.fields[0]?.message ?? PASSWORD_HELP);

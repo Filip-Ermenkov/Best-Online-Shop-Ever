@@ -44,6 +44,19 @@ export type AuthError =
    * UI handles all four with the same "request a new link" copy.
    */
   | { kind: "invalid_email_change_token"; detail?: string }
+  /**
+   * The submitted password was found in the Have I Been Pwned breach corpus.
+   * Server returns 400 with type=/problems/breached-password and a structured
+   * `errors[]` entry on either "password" (register) or "newPassword" (reset).
+   * The UI should keep the form open with a field-level message in the user's
+   * language — the server's English `detail` is a fallback, not the primary
+   * source of UX copy.
+   */
+  | {
+      kind: "breached_password";
+      fields: { path: string; message: string }[];
+      detail?: string;
+    }
   | { kind: "unauthenticated" }
   | { kind: "network"; cause: unknown }
   | { kind: "unknown"; status: number; detail?: string };

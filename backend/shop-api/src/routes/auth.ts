@@ -1,4 +1,5 @@
 import {
+  checkPasswordBreached,
   DUMMY_PASSWORD_HASH,
   hashPassword,
   needsRehash,
@@ -38,6 +39,7 @@ import {
   sendEmailChangedNotification,
   validateEmailChangeToken,
 } from "../lib/email-change.js";
+import { parseEnv } from "../lib/env.js";
 import { ApiError, ProblemSchema, badRequest, internal } from "../lib/errors.js";
 import { logger as baseLogger } from "../lib/logger.js";
 import { getLockoutState, recordAttempt } from "../lib/lockout.js";
@@ -55,14 +57,36 @@ const EmailSchema = z
   .max(254, "Email is too long")
   .openapi({ example: "ivan@example.com" });
 
+/**
+ * Password rules — NIST SP 800-63B Rev. 4 (finalised mid-2025).
+ *
+ *   - 12-character minimum. NIST's text recommends ≥15 chars when the
+ *     password is the only authenticator. We accept the increased
+ *     credential-stuffing risk of 12 in exchange for sign-up completion
+ *     rate; the shop is cash-on-delivery with no card data, and the
+ *     compensating controls are (a) Argon2id at OWASP 2026 params,
+ *     (b) per-email lockout 5/15min, and (c) HIBP breached-password
+ *     screening on this endpoint (see register handler).
+ *   - 1024-character ceiling for cost protection only. NIST asks for
+ *     SHOULD-accept at least 64; 1024 is well over.
+ *   - No composition rules. NIST 800-63B Rev. 4 explicitly DEPRECATES
+ *     "must contain upper/lower/digit/symbol" rules — they push users
+ *     toward predictable templates (`Password1!`) without improving
+ *     resistance to dictionary or credential-stuffing attacks. The
+ *     strength comes from length and from screening against breach
+ *     corpora, not from forced character classes.
+ *
+ * Composition-rule removal applies to BOTH /register and /reset-password,
+ * since both ingest a fresh password via this schema.
+ */
 const PasswordSchema = z
   .string()
-  .min(8, "Password must be at least 8 characters")
+  .min(12, "Password must be at least 12 characters")
   .max(1024, "Password is unreasonably long")
-  .refine((s) => /[a-z]/.test(s), "Password must contain a lowercase letter")
-  .refine((s) => /[A-Z]/.test(s), "Password must contain an uppercase letter")
-  .refine((s) => /[0-9]/.test(s), "Password must contain a digit")
-  .openapi({ description: "≥8 chars, ≥1 upper, ≥1 lower, ≥1 digit." });
+  .openapi({
+    description:
+      "≥12 characters, ≤1024. No composition rules. Will be rejected if found in the HIBP breach corpus.",
+  });
 
 const FullNameSchema = z.string().trim().min(1, "Name is required").max(120);
 const PhoneSchema = z.string().trim().min(3, "Phone is required").max(40);
@@ -111,7 +135,8 @@ const registerRoute = createRoute({
       content: { "application/json": { schema: RegisterResponseSchema } },
     },
     400: {
-      description: "Validation error.",
+      description:
+        "Validation error OR the supplied password appears in the HIBP breach corpus. The two cases share status but differ by `type`: the default validation problem (type=\"about:blank\") vs /problems/breached-password. Both carry a field-level entry in `errors[]` for inline rendering.",
       content: { "application/problem+json": { schema: ProblemSchema } },
     },
   },
@@ -365,7 +390,7 @@ const resetPasswordRoute = createRoute({
     },
     400: {
       description:
-        "Token is invalid/expired/consumed, OR newPassword failed strength validation. The two cases are distinguished by `type`: /problems/invalid-reset-token vs the default validation problem with field-level errors.",
+        "Token is invalid/expired/consumed, OR newPassword failed strength validation, OR newPassword appears in the HIBP breach corpus. The three cases are distinguished by `type`: /problems/invalid-reset-token, the default validation problem with field-level errors, or /problems/breached-password.",
       content: { "application/problem+json": { schema: ProblemSchema } },
     },
   },
@@ -506,6 +531,60 @@ const verifyEmailChangeRoute = createRoute({
   },
 });
 
+// ─── Breached-password guard ───────────────────────────────────────────────
+
+/**
+ * Reject the request with a 400 RFC 9457 Problem if the supplied password
+ * is in the HIBP breach corpus. Fail-open semantics: a HIBP outage logs a
+ * warning and lets the password through, since we'd rather accept signups
+ * during third-party degradation than couple our availability to theirs.
+ *
+ * `field` controls the structured error path so the frontend can mark the
+ * right input ("password" on register, "newPassword" on reset).
+ */
+async function guardAgainstBreachedPassword(
+  plain: string,
+  field: "password" | "newPassword",
+  log: typeof baseLogger,
+): Promise<void> {
+  // Env-controlled kill switch — see env.ts BREACHED_PASSWORD_CHECK_ENABLED.
+  // Tests default this to false to keep the suite off the public HIBP API;
+  // the dedicated HIBP test re-enables it locally with a stubbed fetch.
+  if (!parseEnv().BREACHED_PASSWORD_CHECK_ENABLED) return;
+  const verdict = await checkPasswordBreached(plain);
+  if (!verdict.checkSucceeded) {
+    log?.warn(
+      { field },
+      "breached_password_check_unavailable",
+    );
+    return; // fail open
+  }
+  if (verdict.breached) {
+    log?.info(
+      { field, occurrences: verdict.occurrences },
+      "breached_password_rejected",
+    );
+    // Distinct `type` URI so the frontend can switch on kind and render
+    // a localized message instead of having to parse the English `detail`.
+    // The structured `errors[]` entry preserves the per-field association
+    // the UI needs to highlight the right input.
+    throw new ApiError({
+      type: "/problems/breached-password",
+      title: "Bad Request",
+      status: 400,
+      detail:
+        "This password has appeared in a known data breach. Please choose a different one.",
+      errors: [
+        {
+          path: field,
+          message:
+            "This password has appeared in a known data breach. Please choose a different one.",
+        },
+      ],
+    });
+  }
+}
+
 // ─── Router ────────────────────────────────────────────────────────────────
 
 export const authRoutes = new OpenAPIHono<{ Variables: AuthVariables }>({
@@ -516,6 +595,13 @@ authRoutes.openapi(registerRoute, async (c) => {
   const body = c.req.valid("json");
   const db = getDb();
   const log = baseLogger;
+
+  // HIBP check first — independent of email existence so the 400/200 split
+  // does not give an attacker a cheap way to distinguish "email taken" from
+  // "fresh + good password". Both terminal branches stay 200; the only 400
+  // is "your password is in a known breach", which is a quality signal
+  // about the password, not about the email.
+  await guardAgainstBreachedPassword(body.password, "password", log);
 
   const [existing] = await db
     .select({ id: schema.users.id })
@@ -853,6 +939,12 @@ authRoutes.openapi(checkResetTokenRoute, async (c) => {
 authRoutes.openapi(resetPasswordRoute, async (c) => {
   const body = c.req.valid("json");
   const log = baseLogger;
+
+  // HIBP check before we touch the token. Doing it first means a user who
+  // picks a breached new password gets a clear 400 with field-level guidance
+  // WITHOUT us consuming (and invalidating) their reset token. They can
+  // pick a different password and retry with the same link.
+  await guardAgainstBreachedPassword(body.newPassword, "newPassword", log);
 
   const result = await consumeResetToken({
     rawToken: body.token,

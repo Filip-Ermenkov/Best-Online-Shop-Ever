@@ -29,6 +29,11 @@ process.env.EMAIL_TRANSPORT ??= "stub";
 // PUBLIC_APP_BASE_URL drives the verifyUrl built into the email body.
 // A stable test value lets tests assert on the URL shape if they wish.
 process.env.PUBLIC_APP_BASE_URL ??= "http://localhost:3000";
+// Default the HIBP screening OFF in tests so the integration suite stays
+// off the public api.pwnedpasswords.com endpoint. Tests that need to
+// exercise the HIBP code path flip it on locally with `process.env.X = "true"`
+// + `_resetEnvForTests()` + a stubbed `globalThis.fetch`.
+process.env.BREACHED_PASSWORD_CHECK_ENABLED ??= "false";
 
 export default defineConfig({
   test: {
@@ -53,6 +58,7 @@ export default defineConfig({
       LOG_LEVEL: "silent",
       EMAIL_TRANSPORT: "stub",
       PUBLIC_APP_BASE_URL: "http://localhost:3000",
+      BREACHED_PASSWORD_CHECK_ENABLED: "false",
     },
   },
 });

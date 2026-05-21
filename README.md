@@ -467,6 +467,24 @@ have to be re-derived when extending the codebase.
   CSPRNG session token, SHA-256-hashed at rest in `sessions.id_hash`.
   `__Host-shop_session` cookie in prod, `shop_session` in dev. SameSite=Lax,
   HttpOnly, Secure (prod). Max-Age set only when `rememberMe=true`.
+- **Password policy follows NIST SP 800-63B Rev. 4** (finalised mid-2025).
+  `PasswordSchema` enforces ≥12 chars, ≤1024 chars, **no composition rules**
+  (no "must contain upper/lower/digit"). Strength comes from length +
+  HIBP screening, not from forced character classes.
+- **Breached-password screening** at registration and password-reset via the
+  HIBP Pwned Passwords k-anonymity API
+  (`backend/auth/src/breached-password.ts`). SHA-1 the password locally,
+  transmit only the 5-char prefix, scan returned suffixes for a count ≥ 1.
+  `Add-Padding: true` header per HIBP v3 spec. Login is intentionally NOT
+  gated by this — would lock out existing customers whose historically-
+  acceptable passwords later turn up in a breach. **Fail-open** semantics:
+  if HIBP is unreachable, the request is allowed with a structured
+  `breached_password_check_unavailable` warning log; we don't couple our
+  signup availability to a single-vendor free service.
+  `BREACHED_PASSWORD_CHECK_ENABLED` env var (default `true`) is the
+  incident kill-switch; vitest config defaults it to `false` so the suite
+  stays off the public endpoint, with one dedicated test that re-enables it
+  with a stubbed `globalThis.fetch`.
 - **Constant-time login**: unknown email runs `argon2.verify` against
   `DUMMY_PASSWORD_HASH`. Identical 401 body for unknown-email and wrong-password.
   Generic `{ ok: true }` for both new and duplicate registration to prevent
@@ -778,7 +796,12 @@ have to be re-derived when extending the codebase.
   `acknowledged_at`) plus a partial unique index
   `complaints_order_withdrawal_unique`.
 - **`@shop/auth`** — Argon2id helpers, session token generation/hashing,
-  `DUMMY_PASSWORD_HASH`. 16 unit tests.
+  `DUMMY_PASSWORD_HASH`, and HIBP k-anonymity breached-password screening
+  (`checkPasswordBreached`). Zero runtime dependencies beyond `argon2`
+  (HIBP uses native `fetch` from Node 22+ — see
+  `backend/auth/src/breached-password.ts`). 30+ unit tests covering
+  password hashing, session tokens, and HIBP (happy path, request shape,
+  every fail-open branch).
 - **`@shop/email`** — transactional email. Three transports
   (`createSesTransport`, `createConsoleTransport`, `createStubTransport`)
   behind a common `EmailTransport` interface, plus eight Bulgarian

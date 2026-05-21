@@ -119,7 +119,8 @@ April 2025 best-practices update.
 | **`security.txt`** (RFC 9116) | ✅ | `frontend/public/.well-known/security.txt`; policy at `/security` |
 | **Branch protection on `main`** | ✅ | Runbook: ARCHITECTURE.md §9.4 (one-time UI setup, verified quarterly) |
 | **CSP violation reporting** | ❌ | Fix: ARCHITECTURE.md §15 item 14 |
-| **HIBP breach-list check** | ❌ | Fix: ARCHITECTURE.md §15 item 15 |
+| **HIBP breach-list check** | ✅ | `backend/auth/src/breached-password.ts`; wired into `/auth/register` and `/auth/reset-password`. Fail-open with structured warning log on HIBP unreachable |
+| **NIST SP 800-63B-4 password rules (length-only ≥12)** | ✅ | `PasswordSchema` in `backend/shop-api/src/routes/auth.ts`; composition rules removed |
 | **Customer MFA option** | ❌ | Fix: ARCHITECTURE.md §15 item 24 (growth-stage) |
 | **STRIDE threat model document** | ❌ | Fix: ARCHITECTURE.md §15 item 16 |
 
@@ -264,7 +265,7 @@ Published 2024–2025 (eighth edition). Notable changes vs 2021:
 | A04 | Cryptographic Failures | ✅ | TLS 1.3, Argon2id (RFC 9106), 32-byte CSPRNG tokens, SHA-256-at-rest, AES at rest (S3 + Neon) |
 | A05 | Injection | ✅ | Zod validation + Drizzle parametrized queries everywhere; WAF SQLi managed rules as backstop |
 | A06 | Insecure Design | ✅ | Idempotency, optimistic locking, line-item snapshots, expand-contract migrations, account-discount server-controlled |
-| A07 | Authentication Failures | ⚠️ | Strong for admin (MFA); customer MFA missing (ASVS L2 gap). Fix: §15 item 24 |
+| A07 | Authentication Failures | ✅ | Argon2id RFC 9106, constant-time login, per-email lockout, NIST 800-63B-4 length-only password rules + HIBP breach screening (shipped May 2026). Customer MFA is the only L2 residual — Fix: §15 item 24 (growth-stage) |
 | A08 | Software and Data Integrity Failures | ✅ Met | Every SBOM signed via Sigstore Fulcio/Rekor (`actions/attest-build-provenance@v4.1.0`), keyless OIDC, transparency log. Verification procedure in ARCHITECTURE.md §9.5 |
 | A09 | Security Logging and Monitoring Failures | ⚠️ | Pino structured logs ✅; distributed tracing ❌; CSP violation reporting ❌. Fix: §15 items 6 + 14 |
 | A10 | Mishandling of Exceptional Conditions (new) | ✅ | RFC 9457 Problem Details on every error; graceful degradation (DB outage → 503 + alarm, not silent failure); best-effort email never blocks |
@@ -303,8 +304,10 @@ L3 (high-assurance / critical systems).
 | V13 API and Web Service | ✅ | ✅ | Hono + zod-openapi + RFC 9457 |
 | V14 Configuration | ✅ | ✅ | Parameter Store, no hardcoded secrets |
 
-**Net:** L1-compliant today. **L2 gaps: customer MFA + SAST.** Both
-addressable per §15.
+**Net:** L1-compliant today. **L2 gaps: customer MFA.** SAST closed
+via CodeQL (May 2026); breach-list screening closed via HIBP k-anonymity
+(May 2026); composition rules removed (May 2026). Customer MFA remains
+the residual gap, addressable per §15 item 24.
 
 ---
 
@@ -316,11 +319,11 @@ breach-list checks.
 
 | Requirement | Status | Notes |
 |---|---|---|
-| Memorised secret minimum 8 characters | ✅ | |
-| Memorised secret max 64+ characters | ✅ | (implicit; no upper cap enforced) |
+| Memorised secret minimum 8 characters | ✅ | Project enforces ≥12 — above NIST floor, below NIST's ≥15 recommendation for single-factor (justified in `backend/shop-api/src/routes/auth.ts` PasswordSchema comment; tradeoff is sign-up completion vs theft severity for a card-data-free CoD shop) |
+| Memorised secret max 64+ characters | ✅ | 1024-char ceiling (cost protection only) |
 | Argon2id or equivalent for storage | ✅ | RFC 9106 compliant |
-| Composition rules (upper/lower/digit) DEPRECATED | ⚠️ | Project still enforces. Fix: §15 item 17 |
-| Breach-list check (HIBP k-anonymity) | ❌ | Fix: §15 item 15 |
+| Composition rules (upper/lower/digit) DEPRECATED | ✅ Removed (May 2026) | Stripped from `PasswordSchema`; frontend register / reset-password copy updated to "≥12 chars; a long passphrase is stronger than a short symbol-heavy password" |
+| Breach-list check (HIBP k-anonymity) | ✅ Shipped (May 2026) | `backend/auth/src/breached-password.ts`. Padding header + UA per HIBP v3 spec. Fail-open on upstream outage; structured `breached_password_check_unavailable` warning log so the rate can be alerted on |
 | Single-use, time-bound recovery tokens | ✅ | 1-hour validity, SHA-256-hashed |
 | Drop sessions on password change | ✅ | All-session-drop |
 | Out-of-band notification at email change | ✅ | Old + new addresses notified |

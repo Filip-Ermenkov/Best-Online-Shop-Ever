@@ -22,3 +22,10 @@ export {
   hashSessionToken,
   SESSION_TOKEN_BYTES,
 } from "./session-tokens.js";
+
+export {
+  checkPasswordBreached,
+  BREACHED_PASSWORD_CONSTANTS,
+  type BreachedPasswordCheck,
+  type BreachedPasswordOptions,
+} from "./breached-password.js";

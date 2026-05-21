@@ -65,6 +65,17 @@ async function readProblem(res: Response): Promise<ProblemResponse | undefined> 
 
 /** Map an HTTP error response into our discriminated AuthError. */
 function classifyError(status: number, problem?: ProblemResponse): AuthError {
+  if (status === 400 && problem?.type === "/problems/breached-password") {
+    // Distinct kind so the register / reset-password pages can render a
+    // localized "this password is in a breach corpus" message instead of
+    // surfacing the server's English text. The per-field info is still
+    // available for highlighting the correct input.
+    return {
+      kind: "breached_password",
+      fields: problem.errors ?? [],
+      detail: problem.detail,
+    };
+  }
   if (status === 400) {
     return {
       kind: "validation",

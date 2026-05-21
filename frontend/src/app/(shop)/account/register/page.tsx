@@ -80,11 +80,28 @@ export default function RegisterPage() {
 
       if (!res.ok) {
         switch (res.error.kind) {
+          case "breached_password":
+            setError(
+              "Тази парола е била включена в известен пробив в данни и не може да бъде използвана. Моля, изберете различна, по-добре дълга фраза.",
+            );
+            break;
           case "validation": {
             // Map Zod field paths to Bulgarian copy.
             const first = res.error.fields[0];
             if (first?.path === "password") {
-              setError("Паролата трябва да е поне 8 символа и да съдържа главна буква, малка буква и цифра.");
+              // The server enforces three things on this field:
+              //   1. ≥12 characters (length-only, no composition rules)
+              //   2. ≤1024 characters (cost cap)
+              //   3. Not in the HIBP Pwned Passwords corpus
+              // (1) and (2) come back with the schema's English text; (3)
+              // comes back with the "data breach" message from the route
+              // handler. Surface the message the server actually sent so the
+              // user sees the specific reason — falling back to a generic
+              // length hint only when no server message is available.
+              setError(
+                first.message ||
+                  "Паролата трябва да е поне 12 символа.",
+              );
             } else if (first?.path === "email") {
               setError("Моля, въведете валиден имейл адрес.");
             } else if (first?.path === "phone") {
@@ -245,12 +262,12 @@ export default function RegisterPage() {
             onChange={(e) => setField("password", e.target.value)}
             autoComplete="new-password"
             required
-            minLength={8}
+            minLength={12}
             className="mt-1"
             disabled={pending}
           />
           <p className="mt-1 text-xs text-muted-foreground">
-            Поне 8 символа, една главна, една малка буква и цифра.
+            Поне 12 символа. Дълга фраза с няколко думи е по-сигурна от къса парола със знаци.
           </p>
         </div>
         <div>

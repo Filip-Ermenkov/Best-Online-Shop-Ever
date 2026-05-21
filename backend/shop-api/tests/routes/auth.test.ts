@@ -1,10 +1,11 @@
 import { hashPassword } from "@shop/auth";
 import { schema } from "@shop/db";
 import { eq, sql } from "drizzle-orm";
-import { beforeAll, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { buildApp } from "../../src/app.js";
 import { sessionCookieName } from "../../src/lib/cookies.js";
 import { getDb } from "../../src/lib/db.js";
+import { _resetEnvForTests } from "../../src/lib/env.js";
 
 let app: ReturnType<typeof buildApp>;
 
@@ -104,18 +105,52 @@ describe("POST /auth/register", () => {
     expect(res.headers.get("content-type")).toContain("application/problem+json");
   });
 
-  it("rejects passwords missing a digit", async () => {
+  // NIST SP 800-63B Rev. 4 (shipped May 2026): the schema enforces ≥12
+  // characters and no composition rules. The old "must contain digit /
+  // upper / lower" assertions are intentionally gone — see the
+  // PasswordSchema comment in routes/auth.ts. Boundary case lives below.
+  it("accepts a digit-free passphrase as long as it is ≥12 chars", async () => {
+    // 12-char passphrase with no digit. Under the old composition rule
+    // this returned 400; under NIST 800-63B-4 it is accepted.
     const res = await app.request("/auth/register", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        email: "weak2@example.com",
-        password: "NoDigitsHere",
+        email: "passphrase@example.com",
+        password: "correcthorse",
+        fullName: "Passphrase User",
+        phone: "+359888333444",
+      }),
+    });
+    expect(res.status).toBe(200);
+  });
+
+  it("rejects passwords just under the ≥12 length floor (boundary)", async () => {
+    // 11 characters. Schema-level rejection — never reaches the HIBP guard.
+    const res = await app.request("/auth/register", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        email: "elevenchars@example.com",
+        password: "elevenchars", // 11 chars
         fullName: "X",
         phone: "+359",
       }),
     });
     expect(res.status).toBe(400);
+    const problem = (await res.json()) as {
+      type?: string;
+      errors?: { path: string; message: string }[];
+    };
+    // Length failure is the default validation problem (type=about:blank),
+    // not the breached-password type. The two must stay distinguishable
+    // because the frontend renders them differently.
+    expect(problem.type).not.toBe("/problems/breached-password");
+    expect(
+      problem.errors?.some(
+        (e) => e.path === "password" && /12/.test(e.message),
+      ),
+    ).toBe(true);
   });
 
   it("returns the same shape on duplicate email — no enumeration leak", async () => {
@@ -147,6 +182,128 @@ describe("POST /auth/register", () => {
       .from(schema.customerProfiles)
       .where(eq(schema.customerProfiles.userId, rows[0]!.id));
     expect(profile[0]!.fullName).toBe("Ivan Test"); // original, not "Imposter"
+  });
+});
+
+/**
+ * HIBP breached-password screening — NIST SP 800-63B Rev. 4.
+ *
+ * The integration suite defaults `BREACHED_PASSWORD_CHECK_ENABLED=false`
+ * (see vitest.config.ts) so the rest of the suite doesn't go to the
+ * public api.pwnedpasswords.com endpoint. This block flips the toggle
+ * ON for its own scope, substitutes `globalThis.fetch` with a stub
+ * that mimics HIBP's `range/<PREFIX>` response, and asserts that the
+ * register handler rejects with the right RFC 9457 type URI.
+ *
+ * The afterEach restores both the env cache and globalThis.fetch so
+ * the toggle doesn't leak into adjacent describes.
+ */
+describe("POST /auth/register — HIBP breached-password screening", () => {
+  const realFetch = globalThis.fetch;
+
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+    delete process.env.BREACHED_PASSWORD_CHECK_ENABLED;
+    process.env.BREACHED_PASSWORD_CHECK_ENABLED = "false";
+    _resetEnvForTests();
+  });
+
+  it("rejects a known-breached password with type=/problems/breached-password", async () => {
+    process.env.BREACHED_PASSWORD_CHECK_ENABLED = "true";
+    _resetEnvForTests();
+
+    // SHA-1("password1234") = upper-cased. Compute deterministically
+    // so the assertion is anchored to a real wire vector, not a guess.
+    const { createHash } = await import("node:crypto");
+    const hash = createHash("sha1")
+      .update("password1234")
+      .digest("hex")
+      .toUpperCase();
+    const expectedSuffix = hash.slice(5);
+
+    const fetchStub = vi.fn(async (url: string | URL | Request) => {
+      const u = String(url);
+      // Only intercept HIBP. Everything else (DB, etc.) doesn't actually
+      // go through globalThis.fetch in this codebase, but be defensive:
+      // delegate anything non-HIBP back to the real fetch.
+      if (!u.startsWith("https://api.pwnedpasswords.com/range/")) {
+        return realFetch(url as RequestInfo);
+      }
+      const body = [
+        "0000000000000000000000000000000000A:0", // padding row
+        `${expectedSuffix}:123456`, // the match
+      ].join("\r\n");
+      return new Response(body, {
+        status: 200,
+        headers: { "content-type": "text/plain" },
+      });
+    });
+    globalThis.fetch = fetchStub as unknown as typeof fetch;
+
+    const res = await app.request("/auth/register", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        email: "hibp-breached@example.com",
+        password: "password1234",
+        fullName: "HIBP Test",
+        phone: "+359888555666",
+      }),
+    });
+
+    expect(res.status).toBe(400);
+    expect(res.headers.get("content-type")).toContain(
+      "application/problem+json",
+    );
+    const problem = (await res.json()) as {
+      type?: string;
+      errors?: { path: string; message: string }[];
+    };
+    expect(problem.type).toBe("/problems/breached-password");
+    expect(
+      problem.errors?.some((e) => e.path === "password"),
+    ).toBe(true);
+
+    // The user must NOT have been created — the rejection happens before
+    // the existing-email check and before the insert.
+    const db = getDb();
+    const rows = await db
+      .select()
+      .from(schema.users)
+      .where(eq(schema.users.email, "hibp-breached@example.com"));
+    expect(rows).toHaveLength(0);
+
+    expect(fetchStub).toHaveBeenCalledOnce();
+    const calledUrl = String(fetchStub.mock.calls[0]?.[0]);
+    expect(calledUrl).toBe(
+      `https://api.pwnedpasswords.com/range/${hash.slice(0, 5)}`,
+    );
+  });
+
+  it("fails open and accepts the registration if HIBP returns 503", async () => {
+    process.env.BREACHED_PASSWORD_CHECK_ENABLED = "true";
+    _resetEnvForTests();
+
+    globalThis.fetch = vi.fn(async (url: string | URL | Request) => {
+      if (String(url).startsWith("https://api.pwnedpasswords.com/range/")) {
+        return new Response("", { status: 503 });
+      }
+      return realFetch(url as RequestInfo);
+    }) as unknown as typeof fetch;
+
+    const res = await app.request("/auth/register", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        email: "hibp-down@example.com",
+        password: "a-fresh-unique-passphrase-for-the-test",
+        fullName: "Fail Open",
+        phone: "+359888777888",
+      }),
+    });
+
+    // 503 from HIBP → guard fails open → registration proceeds (200).
+    expect(res.status).toBe(200);
   });
 });
 
