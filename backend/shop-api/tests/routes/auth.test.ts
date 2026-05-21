@@ -227,7 +227,10 @@ describe("POST /auth/register — HIBP breached-password screening", () => {
       // go through globalThis.fetch in this codebase, but be defensive:
       // delegate anything non-HIBP back to the real fetch.
       if (!u.startsWith("https://api.pwnedpasswords.com/range/")) {
-        return realFetch(url as RequestInfo);
+        // `RequestInfo` is a DOM-lib name and shop-api's tsconfig doesn't
+        // load lib.dom — derive the parameter type from `fetch` itself so
+        // the cast stays portable across lib configurations.
+        return realFetch(url as Parameters<typeof fetch>[0]);
       }
       const body = [
         "0000000000000000000000000000000000A:0", // padding row
@@ -288,7 +291,7 @@ describe("POST /auth/register — HIBP breached-password screening", () => {
       if (String(url).startsWith("https://api.pwnedpasswords.com/range/")) {
         return new Response("", { status: 503 });
       }
-      return realFetch(url as RequestInfo);
+      return realFetch(url as Parameters<typeof fetch>[0]);
     }) as unknown as typeof fetch;
 
     const res = await app.request("/auth/register", {
