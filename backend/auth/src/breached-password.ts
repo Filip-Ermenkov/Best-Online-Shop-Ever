@@ -118,13 +118,10 @@ export async function checkPasswordBreached(
   const fetcher = options.fetcher ?? fetch;
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 
-  // Materialise the password as bytes at this boundary. The digest
-  // helper below is typed against Buffer (not string), so the value
-  // reaching createHash is a byte array rather than a password string.
-  // This narrows the SAST taint chain and is the documented taint-break
-  // point. See file header.
-  const passwordBytes = Buffer.from(plain, "utf8");
-  const hash = computeHibpRangeDigest(passwordBytes);
+  // Compute the HIBP k-anonymity digest. See file header for why
+  // SHA-1 here is a protocol-mandated transport hash and not password
+  // storage (which lives in `./password.ts` as Argon2id).
+  const hash = computeHibpRangeDigest(plain);
   const prefix = hash.slice(0, 5);
   const suffix = hash.slice(5);
 
@@ -168,21 +165,22 @@ export async function checkPasswordBreached(
 }
 
 /**
- * Compute the HIBP wire-protocol digest for an opaque byte sequence.
+ * Compute the HIBP wire-protocol digest.
  *
- * Typed against Buffer, not string, on purpose:
- *   - SHA-1 hashes bytes; an explicit encoding makes the digest
- *     deterministic.
- *   - Password-hash SAST queries track flows of password-typed
- *     strings into weak digest sinks. The Buffer parameter at this
- *     boundary is the documented taint-break point for those queries.
+ * SHA-1 is the HIBP v3 protocol's mandatory digest. The full digest
+ * never leaves this function — only the first 5 hex characters do.
+ * Password STORAGE is Argon2id in `./password.ts`, completely separate
+ * from this file.
  *
- * Runtime is unchanged from the equivalent string call. SHA-1 is
- * the HIBP v3 protocol's mandatory digest; password STORAGE is
- * Argon2id in `./password.ts`, completely separate from this file.
+ * CodeQL's `js/insufficient-password-hash` (and the equivalent Snyk /
+ * Semgrep / SonarQube queries) will fire on this line. That is a
+ * verified false positive — see the file header for the full
+ * rationale. The exclusion is codified in
+ * `.github/codeql/codeql-config.yml` so the repo's CodeQL run does
+ * not re-flag it on every PR.
  */
-function computeHibpRangeDigest(bytes: Buffer): string {
-  return createHash("sha1").update(bytes).digest("hex").toUpperCase();
+function computeHibpRangeDigest(input: string): string {
+  return createHash("sha1").update(input, "utf8").digest("hex").toUpperCase();
 }
 
 /**

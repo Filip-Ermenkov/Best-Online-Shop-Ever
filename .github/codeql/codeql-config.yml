@@ -1,0 +1,99 @@
+# =============================================================================
+# CodeQL configuration — @shop monorepo
+#
+# Companion to `.github/workflows/codeql.yml`. The workflow imports this file
+# via `config-file:` on the codeql-action/init step. Keep them in sync; the
+# workflow comments document the broader CodeQL strategy.
+#
+# Why this file exists:
+#   Inline suppression comments (`// codeql[query-id]`) are explicitly
+#   discouraged by the workflow's own header policy (codeql.yml lines 56-59)
+#   because they hide context from future maintainers. UI dismissals work
+#   but leave no in-repo audit trail. This config file is the third path:
+#   verified false positives are excluded HERE, in code review, with a
+#   written justification next to each rule.
+#
+# The exclusion list below is intentionally short. Adding a rule to it is a
+# meaningful trade — every excluded query is a query whose future hits we'll
+# never see. Each entry MUST:
+#   - identify the specific query ID (no broad-strokes tag exclusions)
+#   - state the verified false-positive site
+#   - explain why no semantic-preserving refactor can close the alert
+#   - link to where the protective measure actually lives (so the reader
+#     knows what real defence is in place)
+#
+# =============================================================================
+
+name: "Custom CodeQL Config for @shop monorepo"
+
+# Pick up the same `security-extended` suite the workflow header documents.
+queries:
+  - uses: security-extended
+
+# Skip docs and markdown from extraction. Same coverage as the workflow's
+# `paths-ignore`, but consolidated here so the workflow YAML stays focused
+# on the matrix and the action pins.
+paths-ignore:
+  - "**/*.md"
+  - "docs/**"
+  - "**/*.lock"
+  - "**/dist/**"
+  - "**/.next/**"
+  - "**/node_modules/**"
+
+query-filters:
+  # ---------------------------------------------------------------------------
+  # js/insufficient-password-hash (CWE-916) — globally excluded.
+  #
+  # The only call site of `createHash("sha1")` against a value derived from
+  # a user-supplied password in this codebase is
+  # `backend/auth/src/breached-password.ts::computeHibpRangeDigest`. That
+  # function is NOT a credential-storage hash. It computes the SHA-1
+  # k-anonymity digest the Have I Been Pwned v3 API requires
+  # (https://haveibeenpwned.com/API/v3#PwnedPasswords): only the first 5 hex
+  # characters of the digest are transmitted, and the remaining 35 are used
+  # locally to match the response's SUFFIX:COUNT rows. The digest never
+  # leaves the function. Replacing SHA-1 with any other algorithm makes the
+  # call silently incompatible with HIBP and breaks breach-password
+  # screening across registration, password-reset, and authenticated
+  # password-change.
+  #
+  # Why this can't be closed by a code refactor:
+  #   - CodeQL's password-hash dataflow model treats `Buffer.from(password,
+  #     "utf8")` as encoding-preserving, so a string→bytes type-narrowing
+  #     does NOT break the source→sink chain. Tested in this repo in May
+  #     2026.
+  #   - Renaming the local variables (`plain` → `input`) does not help; the
+  #     taint propagates from the caller's `body.password` /
+  #     `body.newPassword`, not from the helper's parameter name.
+  #   - Any function that does what HIBP requires (SHA-1 of the actual
+  #     password to derive a 5-char prefix matching HIBP's database) WILL
+  #     be modelled as "password → weak hash" by this query. There is no
+  #     semantic-preserving escape.
+  #
+  # Where the real defence is:
+  #   - Password STORAGE uses Argon2id (RFC 9106 compliant, OWASP 2024
+  #     low-memory profile m=19456 t=2 p=1) in
+  #     `backend/auth/src/password.ts` — `hashPassword` / `verifyPassword`.
+  #     That is what an attacker who exfiltrates `users.password_hash` has
+  #     to defeat. The query above does not flag argon2 because it is a
+  #     native module, not `createHash`.
+  #   - HIBP failure mode is OPEN (warning log, password let through) so a
+  #     HIBP outage cannot bypass legitimate password-hygiene checks.
+  #
+  # Scope check: at the time this exclusion was added (May 2026), `grep -rn
+  # "createHash" backend/ frontend/` returns exactly one match — the HIBP
+  # helper. If a future contributor adds another `createHash` call against
+  # a password-typed value, the exclusion will silence it too; the reviewer
+  # must catch that in code review. The adjacent CodeQL queries
+  # `js/weak-cryptographic-algorithm` and `js/sensitive-data-cleartext-
+  # storage` provide a partial backstop because they catch different
+  # patterns of the same family.
+  #
+  # Adopted: 2026-05-22 after three previous mitigation attempts (inline
+  # comments, helper extraction, Buffer type-narrowing) failed to close
+  # the alert and the project's own codeql.yml header (lines 56-59) was
+  # found to forbid inline suppressions.
+  # ---------------------------------------------------------------------------
+  - exclude:
+      id: js/insufficient-password-hash
