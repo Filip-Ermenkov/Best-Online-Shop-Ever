@@ -10,7 +10,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Separator } from "@/components/ui/separator";
-import { cn, isSafeImageUrl } from "@/lib/utils";
+import { cn, sanitizeImageUrl } from "@/lib/utils";
 
 interface VariantOption { label: string; available: boolean; imageUrl: string; }
 interface Variant { name: string; options: VariantOption[]; }
@@ -185,19 +185,26 @@ export default function AdminNewProductPage() {
                     value={url}
                     onChange={(e) => updateImageUrl(i, e.target.value)}
                   />
-                  {/* Render the preview ONLY when the URL passes a
-                     scheme allowlist (http/https). This blocks the
-                     javascript:/data: URL XSS sink that CodeQL flags
-                     for `<img src={user-input}>`. Admin-only context
-                     today, but defence-in-depth — the validation is
-                     also a recognised CodeQL sanitizer pattern, so
-                     the alert closes cleanly. */}
-                  {isSafeImageUrl(url) && (
-                    <div className="w-16 h-16 rounded border border-border overflow-hidden bg-muted">
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img src={url} alt={`Снимка ${i + 1}`} className="w-full h-full object-cover" />
-                    </div>
-                  )}
+                  {/* Render the preview only when the URL parses cleanly
+                     as http/https — blocks javascript:/data:/vbscript:
+                     URL XSS sinks. We bind the SANITIZER'S RETURN VALUE
+                     (the canonicalized `new URL(...).toString()` string)
+                     to <img src>, not the raw `url` variable, so SAST
+                     taint trackers see "value originates from a trusted
+                     URL constructor" rather than "user input flows into
+                     a DOM sink". This is what closes the "DOM text
+                     reinterpreted as HTML" / "Client-side XSS" alert
+                     classes across CodeQL / Snyk / Semgrep. */}
+                  {(() => {
+                    const safeSrc = sanitizeImageUrl(url);
+                    if (!safeSrc) return null;
+                    return (
+                      <div className="w-16 h-16 rounded border border-border overflow-hidden bg-muted">
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img src={safeSrc} alt={`Снимка ${i + 1}`} className="w-full h-full object-cover" />
+                      </div>
+                    );
+                  })()}
                 </div>
                 {imageUrls.length > 1 && (
                   <button type="button" onClick={() => removeImageSlot(i)} className="pt-2 text-muted-foreground hover:text-destructive">
@@ -239,14 +246,20 @@ export default function AdminNewProductPage() {
                       onChange={(e) => updateOptionImage(vi, oi, e.target.value)}
                       className="flex-1 min-w-[140px] h-7 text-xs"
                     />
-                    {/* Same scheme-allowlist guard as the main
-                       product image preview above. */}
-                    {isSafeImageUrl(opt.imageUrl) && (
-                      <div className="w-7 h-7 rounded border border-border overflow-hidden bg-muted flex-shrink-0">
-                        {/* eslint-disable-next-line @next/next/no-img-element */}
-                        <img src={opt.imageUrl} alt={opt.label} className="w-full h-full object-cover" />
-                      </div>
-                    )}
+                    {/* Same sanitizer-by-transformation pattern as the
+                       main product image preview above — bind the
+                       sanitized return value, not the raw input, so
+                       SAST taint tracking sees a trusted source. */}
+                    {(() => {
+                      const safeSrc = sanitizeImageUrl(opt.imageUrl);
+                      if (!safeSrc) return null;
+                      return (
+                        <div className="w-7 h-7 rounded border border-border overflow-hidden bg-muted flex-shrink-0">
+                          {/* eslint-disable-next-line @next/next/no-img-element */}
+                          <img src={safeSrc} alt={opt.label} className="w-full h-full object-cover" />
+                        </div>
+                      );
+                    })()}
                     <button type="button" onClick={() => removeOption(vi, oi)} className="text-muted-foreground hover:text-destructive">
                       <X className="w-3 h-3" />
                     </button>

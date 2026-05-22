@@ -57,6 +57,23 @@ export type AuthError =
       fields: { path: string; message: string }[];
       detail?: string;
     }
+  /**
+   * Backend rejected the change-password request because newPassword equals
+   * currentPassword. Backend returns 400 with type=/problems/same-password and
+   * a single `errors[]` entry on "newPassword". The UI should render an
+   * inline field-level message — the user almost certainly mis-filled the
+   * form rather than tried to game the system.
+   *
+   * Distinct from the breached-password kind: same-password is a UX nudge
+   * (no security control — Argon2id rotates salt regardless), whereas
+   * breached-password is a hard "this password is in a known breach corpus"
+   * rejection.
+   */
+  | {
+      kind: "same_password";
+      fields: { path: string; message: string }[];
+      detail?: string;
+    }
   | { kind: "unauthenticated" }
   | { kind: "network"; cause: unknown }
   | { kind: "unknown"; status: number; detail?: string };

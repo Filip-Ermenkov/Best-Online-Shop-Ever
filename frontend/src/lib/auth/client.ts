@@ -76,6 +76,16 @@ function classifyError(status: number, problem?: ProblemResponse): AuthError {
       detail: problem.detail,
     };
   }
+  if (status === 400 && problem?.type === "/problems/same-password") {
+    // Specific to /auth/change-password. Lets the profile page render a
+    // localized "your new password must differ" inline against the
+    // newPassword input without parsing English `detail`.
+    return {
+      kind: "same_password",
+      fields: problem.errors ?? [],
+      detail: problem.detail,
+    };
+  }
   if (status === 400) {
     return {
       kind: "validation",
@@ -302,6 +312,53 @@ export async function resetPassword(
     res = await authFetch("/auth/reset-password", {
       method: "POST",
       body: JSON.stringify({ token, newPassword }),
+    });
+  } catch (err) {
+    return { ok: false, error: { kind: "network", cause: err } };
+  }
+  return withErrorMapping(res, async (r) => {
+    return (await r.json()) as { ok: true };
+  });
+}
+
+/**
+ * Rotate the currently authenticated user's password.
+ *
+ * Requires the current password as re-auth proof — the backend will
+ * constant-time-verify it against the stored Argon2id hash and increment
+ * the shared-with-/login lockout counter on failure. On success, the
+ * backend has:
+ *   - rotated users.password_hash to a fresh Argon2id digest,
+ *   - dropped every OTHER session for this user (phone, tablet, etc.),
+ *   - kept THIS session alive — the caller stays logged in,
+ *   - sent a best-effort "your password was changed" notification email.
+ *
+ * The session cookie does NOT change. No redirect is required; the UI
+ * should simply clear the form and surface a success state.
+ *
+ * Failure branches:
+ *   - kind === "invalid_credentials": currentPassword was wrong. Render
+ *     inline against the currentPassword input. Note that repeated
+ *     failures here trip the same lockout as /auth/login.
+ *   - kind === "validation": newPassword failed the length check (<12
+ *     chars). Render the field-level error inline against newPassword.
+ *   - kind === "breached_password": newPassword appears in the HIBP
+ *     breach corpus. Localized field-level copy.
+ *   - kind === "same_password": newPassword === currentPassword. UX nudge
+ *     rendered inline against newPassword.
+ *   - kind === "account_locked": 5+ failed verifies in the rolling 15-min
+ *     window. Same surface as the login-lockout case.
+ *   - kind === "network": fetch failed.
+ */
+export async function changePassword(input: {
+  currentPassword: string;
+  newPassword: string;
+}): Promise<AuthResult<{ ok: true }>> {
+  let res: Response;
+  try {
+    res = await authFetch("/auth/change-password", {
+      method: "POST",
+      body: JSON.stringify(input),
     });
   } catch (err) {
     return { ok: false, error: { kind: "network", cause: err } };

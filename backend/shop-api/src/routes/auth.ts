@@ -43,7 +43,11 @@ import { parseEnv } from "../lib/env.js";
 import { ApiError, ProblemSchema, badRequest, internal } from "../lib/errors.js";
 import { logger as baseLogger } from "../lib/logger.js";
 import { getLockoutState, recordAttempt } from "../lib/lockout.js";
-import { createSession, deleteSession } from "../lib/sessions.js";
+import {
+  createSession,
+  deleteAllSessionsForUser,
+  deleteSession,
+} from "../lib/sessions.js";
 import { validationHook } from "../lib/validation-hook.js";
 import { requireAuth, type AuthVariables } from "../middleware/auth.js";
 
@@ -391,6 +395,62 @@ const resetPasswordRoute = createRoute({
     400: {
       description:
         "Token is invalid/expired/consumed, OR newPassword failed strength validation, OR newPassword appears in the HIBP breach corpus. The three cases are distinguished by `type`: /problems/invalid-reset-token, the default validation problem with field-level errors, or /problems/breached-password.",
+      content: { "application/problem+json": { schema: ProblemSchema } },
+    },
+  },
+});
+
+// ─── Change password (authenticated, self-initiated) ──────────────────────
+
+const ChangePasswordRequestSchema = z
+  .object({
+    /**
+     * Re-auth proof. Length-only validation (1..1024) — the strength rules
+     * are irrelevant here because we're verifying against a stored hash,
+     * not creating a new credential. Matches /auth/login's `password` shape.
+     */
+    currentPassword: z.string().min(1).max(1024),
+    newPassword: PasswordSchema,
+  })
+  .openapi("ChangePasswordRequest");
+
+const ChangePasswordResponseSchema = z
+  .object({ ok: z.literal(true) })
+  .openapi("ChangePasswordResponse");
+
+const changePasswordRoute = createRoute({
+  method: "post",
+  path: "/change-password",
+  tags: ["auth"],
+  summary:
+    "Rotate the authenticated user's password. Requires the current password as re-auth proof.",
+  description:
+    "Closes the OWASP ASVS V6.2 / NIST SP 800-63B-4 §5.1.1.2 'subscribers SHALL be able to change their memorized secret' control. Behaviour: (a) HIBP-screens the proposed newPassword before touching anything (no token to burn here, but consistent with /reset-password); (b) constant-time-verifies currentPassword against the stored Argon2id hash with the same DUMMY_PASSWORD_HASH posture as /login, so a stolen-cookie attacker cannot brute-force the password through this endpoint without falling into the per-email lockout shared with /login; (c) on success rotates passwordHash, drops every OTHER session for the user (keeping the caller's own session alive — industry-standard 'sign out everywhere except here' on intentional change), and sends a best-effort 'your password was changed' notification email to the account address.",
+  request: {
+    body: {
+      required: true,
+      content: { "application/json": { schema: ChangePasswordRequestSchema } },
+    },
+  },
+  responses: {
+    200: {
+      description:
+        "Password rotated. Other sessions dropped; this session preserved (the user stays logged in on the device that initiated the change). Notification email best-effort.",
+      content: { "application/json": { schema: ChangePasswordResponseSchema } },
+    },
+    400: {
+      description:
+        "Validation error OR newPassword failed strength check (≥12 chars) OR newPassword appears in the HIBP breach corpus OR newPassword equals currentPassword. Cases distinguished by `type`: default validation (`about:blank` with field-level errors), `/problems/breached-password`, or `/problems/same-password`.",
+      content: { "application/problem+json": { schema: ProblemSchema } },
+    },
+    401: {
+      description:
+        "No active session OR currentPassword is incorrect. Identical body for both — distinguishing them would leak whether the cookie alone is enough.",
+      content: { "application/problem+json": { schema: ProblemSchema } },
+    },
+    429: {
+      description:
+        "Per-email lockout fired — too many incorrect currentPassword attempts inside the rolling 15-minute window. Shared counter with /auth/login (same lockout machinery), so an attacker who has a stolen cookie cannot bypass login's brute-force ceiling via this endpoint.",
       content: { "application/problem+json": { schema: ProblemSchema } },
     },
   },
@@ -982,6 +1042,176 @@ authRoutes.openapi(resetPasswordRoute, async (c) => {
   });
 
   log?.info({ userId: result.userId }, "password_reset_completed");
+  return c.json({ ok: true } as const, 200);
+});
+
+// /auth/change-password — the authenticated self-service rotation path.
+//
+// Design notes worth keeping after the obvious fact that "users can change
+// their own password":
+//
+//   1. **Session required.** requireAuth gates this — there is no anonymous
+//      change-password mode. The unauthenticated counterpart is
+//      /auth/reset-password, which is gated by a one-time email token.
+//
+//   2. **Current password is mandatory re-auth proof.** The classic OWASP
+//      Authentication Cheat Sheet threat: user logs in on a shared laptop,
+//      walks away, attacker takes over the open tab. Without the
+//      current-password check, the attacker can take over the account
+//      permanently. Verifying the current password keeps a session-only
+//      compromise transient.
+//
+//   3. **Constant-time verify + per-email lockout, same as /login.** If a
+//      session is stolen, the attacker can iterate currentPassword guesses
+//      here. We use the same `recordAttempt` machinery as /login so the
+//      shared 5-fails-in-15-minutes counter applies. The 429 response uses
+//      the existing `/problems/account-locked` type — the frontend treats
+//      it identically to the login-locked case.
+//
+//   4. **HIBP-screen BEFORE the password verify.** Same ordering as
+//      /reset-password: a breached new password gets rejected without
+//      burning a verify-attempt against the lockout counter (which is the
+//      one we actually care about preserving). If the user picked a bad
+//      new password we want them to fix that without making them re-enter
+//      their current password under lockout pressure.
+//
+//   5. **Same-password rejection.** Cheap UX nudge: refuse newPassword ===
+//      currentPassword with a distinct problem type so the UI can render
+//      "your new password must differ" instead of confusing the user with
+//      a silent 200 on an effective no-op. This is NOT a security control
+//      — Argon2id rotates the salt on every hash, so even literal-equal
+//      passwords land on different hashes — it's purely a guard against
+//      the most common mis-fill of the form.
+//
+//   6. **Drop other sessions, KEEP this one.** Industry convention. The
+//      device that initiated the change is, by definition, trusted at
+//      this moment (current-password proven), so logging it out would be
+//      pure user-hostile churn. Every OTHER session — phone-from-last-
+//      week, public-computer-forgotten-logout — gets revoked. The
+//      `deleteAllSessionsForUser(userId, keepIdHash)` helper has been
+//      sitting in lib/sessions.ts since the auth slice waiting for this.
+//
+//   7. **Best-effort notification email.** Same template as the
+//      reset-password notification — gives a victim of session theft real-
+//      time visibility that their password was changed and a "wasn't me,
+//      reset now" runbook. Failure to send must NOT roll back the
+//      rotation: the user just typed a new password successfully; tearing
+//      that down because SES is having a bad day would orphan them.
+authRoutes.use(changePasswordRoute.path, requireAuth);
+authRoutes.openapi(changePasswordRoute, async (c) => {
+  const body = c.req.valid("json");
+  const user = c.get("user");
+  const session = c.get("session");
+  if (!user || !session) {
+    throw new ApiError({
+      type: "about:blank",
+      title: "Unauthorized",
+      status: 401,
+      detail: "Authentication is required.",
+    });
+  }
+  const log = baseLogger;
+  const db = getDb();
+
+  // (4) HIBP first — fail-open inside the guard helper.
+  await guardAgainstBreachedPassword(body.newPassword, "newPassword", log);
+
+  // (5) Cheap structural rejection BEFORE we hit the hasher / DB. We don't
+  // verify the current password yet — that comparison happens in constant
+  // time below. Comparing the plaintexts directly here is fine: the user
+  // typed both into this same request, and rejecting an obvious no-op
+  // request early avoids issuing a hash + a DB query for no reason.
+  if (body.newPassword === body.currentPassword) {
+    throw new ApiError({
+      type: "/problems/same-password",
+      title: "Bad Request",
+      status: 400,
+      detail: "Your new password must be different from your current password.",
+      errors: [
+        {
+          path: "newPassword",
+          message:
+            "Your new password must be different from your current password.",
+        },
+      ],
+    });
+  }
+
+  // (3) Lockout pre-check — same per-email counter as /auth/login.
+  const lockout = await getLockoutState(user.email);
+  if (lockout.locked) {
+    throw new ApiError({
+      type: "/problems/account-locked",
+      title: "Too Many Attempts",
+      status: 429,
+      detail: lockout.unlockAt
+        ? `Account temporarily locked. Try again after ${lockout.unlockAt.toISOString()}.`
+        : "Account temporarily locked due to too many failed attempts.",
+    });
+  }
+
+  // (3) Constant-time current-password verify. We pull the stored hash by
+  // user.id (not email) because the session is the authoritative identity
+  // here — even if the row went missing between session validation and now
+  // we still go through verifyPassword with DUMMY_PASSWORD_HASH to keep
+  // timing flat. recordAttempt fires whether the row exists or not.
+  const [row] = await db
+    .select({ passwordHash: schema.users.passwordHash })
+    .from(schema.users)
+    .where(eq(schema.users.id, user.id))
+    .limit(1);
+  const targetHash = row?.passwordHash ?? (await DUMMY_PASSWORD_HASH);
+  const ok = await verifyPassword(targetHash, body.currentPassword);
+
+  const ip = clientIp(c);
+  const ua = c.req.header("user-agent") ?? null;
+  const isRealSuccess = ok && !!row;
+  await recordAttempt({
+    email: user.email,
+    success: isRealSuccess,
+    ipAddress: ip,
+    userAgent: ua,
+  });
+
+  if (!isRealSuccess) {
+    throw new ApiError({
+      type: "about:blank",
+      title: "Unauthorized",
+      status: 401,
+      detail: "Current password is incorrect.",
+    });
+  }
+
+  // (6) Rotate the hash. Argon2id at the configured params; ~50ms.
+  const newPasswordHash = await hashPassword(body.newPassword);
+  await db
+    .update(schema.users)
+    .set({ passwordHash: newPasswordHash })
+    .where(eq(schema.users.id, user.id));
+
+  // (6) Drop every session EXCEPT this one. `session.idHash` is the SHA-256
+  // of the cookie the caller already has — it survives, every other device
+  // signs out.
+  await deleteAllSessionsForUser(user.id, session.idHash);
+
+  // (7) Best-effort notification — same template as the reset-password
+  // post-action notice. Don't await-throw: a flaky SES must not roll back
+  // a successful password change.
+  const [profile] = await db
+    .select({ fullName: schema.customerProfiles.fullName })
+    .from(schema.customerProfiles)
+    .where(eq(schema.customerProfiles.userId, user.id))
+    .limit(1);
+  const fullName = profile?.fullName ?? null;
+
+  await sendPasswordChangedNotification({
+    to: user.email,
+    fullName,
+    changedAt: new Date(),
+    logger: log,
+  });
+
+  log?.info({ userId: user.id }, "password_change_completed");
   return c.json({ ok: true } as const, 200);
 });
 

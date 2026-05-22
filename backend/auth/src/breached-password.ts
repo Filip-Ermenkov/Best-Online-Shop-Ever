@@ -28,6 +28,31 @@ import { createHash } from "node:crypto";
  *      heritage — it isn't relied upon as a cryptographic primitive here.
  *      The only security property we need is that the 5-character prefix
  *      we transmit reveals nothing about the full hash to the server.
+ *
+ *      ## A note on SAST findings about the SHA-1 call below
+ *
+ *      Static analyzers (CodeQL `js/insufficient-password-hash`, Snyk
+ *      `javascript/InsufficientPasswordHash`, Semgrep
+ *      `javascript.lang.security.insufficient-password-hash`, etc.) will
+ *      sometimes raise an alert because they see "password → SHA-1" and
+ *      assume this is password STORAGE. It is not.
+ *
+ *      Password STORAGE in this codebase is Argon2id, RFC 9106 compliant,
+ *      and lives in `backend/auth/src/password.ts` (`hashPassword` /
+ *      `verifyPassword`). That is the hash an attacker who exfiltrates
+ *      `users.password_hash` has to defeat.
+ *
+ *      The SHA-1 below is a TRANSPORT-LAYER PROTOCOL DIGEST mandated by
+ *      the HIBP v3 specification. The full digest never leaves this
+ *      function — only the first 5 hex characters (20 bits) are sent on
+ *      the wire, and the SHA-1 is local-only for matching the response
+ *      suffix. Replacing it with SHA-256 (or anything else) would simply
+ *      make the function silently incompatible with HIBP and break
+ *      breached-password screening across the board.
+ *
+ *      The dual-suppression comment on the helper below is the documented
+ *      way to acknowledge "yes we saw the alert, here is the verified
+ *      justification, please leave this row alone".
  *   2. Send the first 5 hex chars (20 bits) as a path segment:
  *        GET https://api.pwnedpasswords.com/range/<PREFIX>
  *      The server has no way to know which full hash you're querying;
@@ -132,10 +157,9 @@ export async function checkPasswordBreached(
   const fetcher = options.fetcher ?? fetch;
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 
-  const hash = createHash("sha1")
-    .update(plain, "utf8")
-    .digest("hex")
-    .toUpperCase();
+  // SAFE: protocol-mandated hash, NOT password storage. See file header.
+  // Digest never leaves the function — only the first 5 hex chars do.
+  const hash = computeHibpRangeDigest(plain);
   const prefix = hash.slice(0, 5);
   const suffix = hash.slice(5);
 
@@ -179,6 +203,46 @@ export async function checkPasswordBreached(
     clearTimeout(timer);
     options.signal?.removeEventListener("abort", onExternalAbort);
   }
+}
+
+/**
+ * Compute the HIBP wire-protocol digest for `input`.
+ *
+ * This is a TRANSPORT-LAYER PROTOCOL DIGEST, not a credential-storage
+ * hash. The HIBP v3 specification mandates SHA-1 — replacing it would
+ * make the function silently incompatible with the upstream service and
+ * defeat breached-password screening. Password STORAGE in this codebase
+ * is Argon2id via `hashPassword()` in `./password.ts`; that is the only
+ * place a "password hash" exists in the sense the security scanners
+ * model.
+ *
+ * The full digest never leaves this function. The caller transmits only
+ * the first 5 hex characters (20 bits — the k-anonymity prefix) to
+ * `api.pwnedpasswords.com/range/<PREFIX>`. The remaining 35 hex chars
+ * are consumed locally by `parseSuffixCount` to match against the
+ * server's `SUFFIX:COUNT` rows. No suffix is ever logged, persisted, or
+ * transmitted.
+ *
+ * SAST suppressions (verified false positives):
+ *   - CodeQL `js/insufficient-password-hash` (CWE-916): the rule's
+ *     premise is that a weak hash is being used to STORE a secret. This
+ *     helper STORES NOTHING — its return value is a transient local
+ *     used to construct a 5-character path segment. Storage uses
+ *     Argon2id at `./password.ts`.
+ *   - Snyk `javascript/InsufficientPasswordHash`: same rationale.
+ *   - Semgrep `javascript.lang.security.insufficient-password-hash`:
+ *     same rationale.
+ *   - SonarQube `S5547` / `S4790`: same rationale.
+ */
+// codeql[js/insufficient-password-hash]
+// lgtm[js/insufficient-password-hash]
+// nosemgrep: javascript.lang.security.insufficient-password-hash
+// snyk-skip: javascript/InsufficientPasswordHash
+function computeHibpRangeDigest(input: string): string {
+  // codeql[js/insufficient-password-hash]
+  // lgtm[js/insufficient-password-hash]
+  // nosemgrep: javascript.lang.security.insufficient-password-hash
+  return createHash("sha1").update(input, "utf8").digest("hex").toUpperCase();
 }
 
 /**

@@ -11,7 +11,7 @@
 >   `ARCHITECTURE.md` §15
 > - N/A — out of scope for this product (justified below the table)
 >
-> Last updated: 2026-05-19.
+> Last updated: 2026-05-22.
 
 ---
 
@@ -290,7 +290,7 @@ L3 (high-assurance / critical systems).
 | Chapter | L1 status | L2 status | Notes |
 |---|---|---|---|
 | V1 Architecture, Design and Threat Modeling | ⚠️ | ⚠️ | Architecture documented; STRIDE threat model missing |
-| V2 Authentication | ✅ | ⚠️ | L1 met; L2 needs customer MFA |
+| V2 Authentication | ✅ | ⚠️ | L1 met; L2 needs customer MFA. V6.2 self-service password change shipped May 22 2026 — `POST /auth/change-password` with current-password re-auth, HIBP screening, same-password rejection, shared-with-`/login` lockout counter, other-sessions-dropped-but-this-one-kept fan-out |
 | V3 Session Management | ✅ | ✅ | 256-bit tokens, hashed at rest, all-session-drop on reset |
 | V4 Access Control | ✅ | ✅ | Two-tier middleware; explicit gates |
 | V5 Validation, Sanitization, Encoding | ✅ | ✅ | Zod on every endpoint |
@@ -323,9 +323,10 @@ breach-list checks.
 | Memorised secret max 64+ characters | ✅ | 1024-char ceiling (cost protection only) |
 | Argon2id or equivalent for storage | ✅ | RFC 9106 compliant |
 | Composition rules (upper/lower/digit) DEPRECATED | ✅ Removed (May 2026) | Stripped from `PasswordSchema`; frontend register / reset-password copy updated to "≥12 chars; a long passphrase is stronger than a short symbol-heavy password" |
-| Breach-list check (HIBP k-anonymity) | ✅ Shipped (May 2026) | `backend/auth/src/breached-password.ts`. Padding header + UA per HIBP v3 spec. Fail-open on upstream outage; structured `breached_password_check_unavailable` warning log so the rate can be alerted on |
+| Breach-list check (HIBP k-anonymity) | ✅ Shipped (May 2026) | `backend/auth/src/breached-password.ts`. Padding header + UA per HIBP v3 spec. Fail-open on upstream outage; structured `breached_password_check_unavailable` warning log so the rate can be alerted on. Wired into `/auth/register`, `/auth/reset-password`, AND `/auth/change-password` |
+| §5.1.1.2 Subscribers SHALL be able to change their memorized secret | ✅ Shipped (May 22 2026) | `POST /auth/change-password` — authenticated, current-password re-auth, HIBP-screens new password before verify, rejects newPassword === currentPassword with `/problems/same-password`, shares lockout counter with `/auth/login` so a stolen-cookie attacker can't brute-force around the brute-force cap |
 | Single-use, time-bound recovery tokens | ✅ | 1-hour validity, SHA-256-hashed |
-| Drop sessions on password change | ✅ | All-session-drop |
+| Drop sessions on password change | ✅ | `/auth/reset-password` drops ALL sessions (caller has no session — unauthenticated flow). `/auth/change-password` drops every OTHER session and KEEPS the initiating one (industry convention — the device just proved current-password knowledge, logging it out would be churn) |
 | Out-of-band notification at email change | ✅ | Old + new addresses notified |
 | AAL1 for customer accounts | ✅ | Password + cookie session |
 | AAL2 for admin via TOTP MFA | ✅ | RFC 6238 |

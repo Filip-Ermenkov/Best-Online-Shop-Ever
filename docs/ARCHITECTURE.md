@@ -13,7 +13,7 @@
 > specification. Read that to learn *what* the shop does; this doc
 > covers *how* it's built.
 >
-> Last updated: 2026-05-19.
+> Last updated: 2026-05-22.
 
 ---
 
@@ -180,8 +180,8 @@ without a separate codegen step.
 Three Lambda functions:
 
 - **`shop-api`** — customer-facing. Product catalog, search, cart,
-  orders, auth (8 endpoints across login/register/verify/reset/
-  email-change), 14-day withdrawal, GDPR data export.
+  orders, auth (9 endpoints across login/register/verify/reset/
+  email-change/change-password), 14-day withdrawal, GDPR data export.
 - **`admin-api`** — admin panel backend. Order/product/category/
   customer/discount CRUD, banner management, content versioning,
   backup orchestration.
@@ -201,13 +201,27 @@ Authentication lives in `@shop/auth`:
   for unknown emails)
 - **NIST SP 800-63B Rev. 4** password policy (shipped May 2026):
   ≥12 chars, ≤1024 chars, no composition rules, screened against
-  the Have I Been Pwned breach corpus at registration and password
-  reset via the k-anonymity API. HIBP failure-mode is open (a
-  warning log, not a hard block) — we don't couple signup
-  availability to a single-vendor free service. Login is NOT
-  gated by the HIBP check, so existing customers cannot be locked
-  out retroactively if their once-acceptable password later turns
-  up in a breach. See §5.2 below.
+  the Have I Been Pwned breach corpus at registration, password
+  reset, AND authenticated password change via the k-anonymity API.
+  HIBP failure-mode is open (a warning log, not a hard block) — we
+  don't couple signup availability to a single-vendor free service.
+  Login is NOT gated by the HIBP check, so existing customers
+  cannot be locked out retroactively if their once-acceptable
+  password later turns up in a breach. See §5.2 below.
+- **Authenticated password change** (shipped May 2026): `POST
+  /auth/change-password`. Requires the current password as re-auth
+  proof (defeats the walked-away-from-shared-computer threat per
+  OWASP Authentication Cheat Sheet "Change Password Feature").
+  Closes OWASP ASVS V6.2 / NIST SP 800-63B-4 §5.1.1.2 ("subscribers
+  SHALL be able to change their memorized secret"). On success the
+  hash rotates, every OTHER session for the user is dropped, the
+  initiating session is preserved (industry convention — the
+  device just proved it knows the current password, so logging it
+  out would be pure churn), and a best-effort notification email
+  fires to the account address. The current-password verify shares
+  the same per-email lockout counter as `/auth/login`, so a
+  stolen-cookie attacker cannot brute-force the password through
+  this endpoint without tripping the same 5-fails-in-15-min cap.
 
 Errors follow **RFC 9457 Problem Details**. Logs use **Pino with PII
 redaction**, structured JSON, per-request child logger keyed on
@@ -652,8 +666,10 @@ slices):
 - A06 Insecure Design — ✅ (idempotency, snapshots)
 - A07 Authentication Failures — ✅ for admin, ✅ for customers on
   password hygiene (NIST 800-63B-4 length-only + HIBP breach
-  screening shipped May 2026). Customer MFA is the only remaining
-  gap (Roadmap 24, growth-stage)
+  screening shipped May 2026 + authenticated change-password
+  endpoint shipped May 22 2026 closing ASVS V6.2 / NIST 800-63B-4
+  §5.1.1.2). Customer MFA is the only remaining gap (Roadmap 24,
+  growth-stage)
 - A08 Software & Data Integrity Failures — ⚠️ no signed artifacts
 - A09 Security Logging Failures — ⚠️ no distributed tracing, no CSP report
 - A10 Mishandling Exceptional Conditions (new) — ✅ (RFC 9457 + graceful degradation)
@@ -1447,6 +1463,7 @@ weeks. Don't re-litigate without a strong new constraint:
 | OWASP Top 10 2025 — A02 Security Misconfiguration | ✅ Met | Uniform strict CSP shipped May 2026 (§5.2) |
 | OWASP Top 10 2025 — A09 Logging Failures | ⚠️ | Distributed tracing + CSP-report endpoint (blocking already works; only reporting visibility is deferred) |
 | OWASP ASVS 6.0 L1 | ✅ Compliant | — |
+| OWASP ASVS 6.0 V6.2 (password lifecycle) | ✅ Met (May 22 2026) | Self-service change-password endpoint shipped with HIBP screening, same-password rejection, shared-with-/login lockout |
 | OWASP ASVS 6.0 L2 | ⚠️ Gaps | Customer MFA (SAST shipped via CodeQL) |
 | NIST SP 800-63B-4 | ✅ Met (May 2026) | Length-only ≥12 + HIBP screening shipped; composition rules removed |
 | NIST SP 800-207 (Zero Trust) | ✅ Spirit | Already verifying every request; per-Lambda least-privilege IAM; no implicit subdomain trust |
@@ -1547,16 +1564,31 @@ Ranked by `(impact ÷ effort)` — highest leverage first.
     `breached_password_check_unavailable` warning log so we can alert
     on a rate spike. Threshold and fail-mode rationale documented in
     the module header. Wired into `POST /auth/register` (before the
-    existing-email check, to keep response-shape enumeration-resistant)
-    and into `POST /auth/reset-password` (before token consumption, so
-    a breached-password retry doesn't burn the reset token).
+    existing-email check, to keep response-shape enumeration-resistant),
+    into `POST /auth/reset-password` (before token consumption, so
+    a breached-password retry doesn't burn the reset token), AND
+    into `POST /auth/change-password` (before the current-password
+    verify, so a breached-new-password retry doesn't pressure the
+    shared-with-/login lockout counter).
 17. ✅ **Customer password rules: composition → length-only** — server
     `PasswordSchema` is now `min 12`, `max 1024`, no upper/lower/digit
-    refinements. Frontend register + reset-password pages updated in
-    lockstep. Rejection of breached passwords carries a dedicated
-    `type: "/problems/breached-password"` problem URL so the client
-    can render a Bulgarian message instead of surfacing English from
-    the API.
+    refinements. Frontend register + reset-password + profile
+    change-password forms updated in lockstep. Rejection of breached
+    passwords carries a dedicated `type: "/problems/breached-password"`
+    problem URL so the client can render a Bulgarian message instead
+    of surfacing English from the API.
+17a. ✅ **Authenticated self-service password change** (shipped
+    May 22 2026) — `POST /auth/change-password`. Requires session +
+    current-password re-auth. HIBP-screens the new password,
+    rejects newPassword === currentPassword with `/problems/same-
+    password`, shares the per-email lockout counter with `/auth/login`,
+    on success rotates the Argon2id hash + drops every OTHER session
+    for the user (keeps THIS session — `deleteAllSessionsForUser(uid,
+    keepIdHash)`) + sends a best-effort "your password was changed"
+    notification. Closes OWASP ASVS V6.2 / NIST SP 800-63B-4
+    §5.1.1.2. The profile page password section is now wired (was a
+    client-only mock); the personal-data section is still a stub
+    awaiting a separate `PATCH /auth/me` slice.
 
 ### Week 3 — security depth (remaining)
 
