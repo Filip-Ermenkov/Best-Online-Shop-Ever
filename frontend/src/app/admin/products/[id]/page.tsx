@@ -13,7 +13,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Separator } from "@/components/ui/separator";
-import { cn, isSafeImageUrl } from "@/lib/utils";
+import { cn, sanitizeImageUrl } from "@/lib/utils";
 
 interface VariantOption { id: string; label: string; available: boolean; imageUrl: string; }
 interface Variant { id: string; name: string; options: VariantOption[]; }
@@ -199,15 +199,23 @@ export default function AdminEditProductPage({ params }: Props) {
                 </div>
                 <div className="flex-1 space-y-1">
                   <Input type="url" placeholder="https://..." value={url} onChange={(e) => updateImageUrl(i, e.target.value)} />
-                  {/* Scheme-allowlist guard — see new/page.tsx for
-                     the rationale. Blocks javascript:/data: URL XSS
-                     and closes the CodeQL alert. */}
-                  {isSafeImageUrl(url) && (
-                    <div className="w-16 h-16 rounded border border-border overflow-hidden bg-muted">
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img src={url} alt={`Снимка ${i + 1}`} className="w-full h-full object-cover" />
-                    </div>
-                  )}
+                  {/* Sanitizer-by-transformation: bind the canonicalized
+                     URL string the sanitizer returns, not the raw user
+                     input. Blocks javascript:/data:/vbscript: URL XSS
+                     AND closes "DOM text reinterpreted as HTML" /
+                     "Client-side XSS" alert classes across CodeQL /
+                     Snyk / Semgrep — see sanitizeImageUrl() in
+                     lib/utils.ts for the full rationale. */}
+                  {(() => {
+                    const safeSrc = sanitizeImageUrl(url);
+                    if (!safeSrc) return null;
+                    return (
+                      <div className="w-16 h-16 rounded border border-border overflow-hidden bg-muted">
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img src={safeSrc} alt={`Снимка ${i + 1}`} className="w-full h-full object-cover" />
+                      </div>
+                    );
+                  })()}
                 </div>
                 {imageUrls.length > 1 && (
                   <button type="button" onClick={() => removeImageSlot(i)} className="pt-2 text-muted-foreground hover:text-destructive">
@@ -249,14 +257,18 @@ export default function AdminEditProductPage({ params }: Props) {
                       onChange={(e) => updateOptionImage(vi, oi, e.target.value)}
                       className="flex-1 min-w-[140px] h-7 text-xs"
                     />
-                    {/* Same scheme-allowlist guard as the main
-                       product image preview above. */}
-                    {isSafeImageUrl(opt.imageUrl) && (
-                      <div className="w-7 h-7 rounded border border-border overflow-hidden bg-muted flex-shrink-0">
-                        {/* eslint-disable-next-line @next/next/no-img-element */}
-                        <img src={opt.imageUrl} alt={opt.label} className="w-full h-full object-cover" />
-                      </div>
-                    )}
+                    {/* Same sanitizer-by-transformation pattern as the
+                       main product image preview above. */}
+                    {(() => {
+                      const safeSrc = sanitizeImageUrl(opt.imageUrl);
+                      if (!safeSrc) return null;
+                      return (
+                        <div className="w-7 h-7 rounded border border-border overflow-hidden bg-muted flex-shrink-0">
+                          {/* eslint-disable-next-line @next/next/no-img-element */}
+                          <img src={safeSrc} alt={opt.label} className="w-full h-full object-cover" />
+                        </div>
+                      );
+                    })()}
                     <button type="button" onClick={() => removeOption(vi, oi)} className="text-muted-foreground hover:text-destructive">
                       <X className="w-3 h-3" />
                     </button>

@@ -160,11 +160,19 @@ jobs:
         with:
           languages: ${{ matrix.language }}
           build-mode: ${{ matrix.build-mode }}
-          # security-extended adds high-precision queries on top of the
-          # default `security` suite. Specifically: more taint-tracking
-          # sources/sinks for SQL/NoSQL injection, prototype pollution,
-          # path traversal, server-side request forgery, and ReDoS.
-          queries: security-extended
+          # Custom config file. Lives in .github/codeql/codeql-config.yml
+          # and holds the in-repo, code-reviewed exclusion list for
+          # verified false positives — the third path the project
+          # recognises alongside "fix the bug" and "dismiss in the UI".
+          # See the config file's header for the audit trail of each
+          # excluded query.
+          #
+          # The `queries:` / `query-filters:` / `paths-ignore:` settings
+          # are inherited from the config file. Keeping them THERE
+          # rather than HERE means the security-extended suite choice
+          # and the dual policy (paths-ignore + query-filters) live
+          # next to their justifications instead of split across files.
+          config-file: ./.github/codeql/codeql-config.yml
           # Bumping the config to allow large object graphs without
           # truncation. Default is 250 nodes per query; a Hono app
           # with deep routing easily exceeds that on path-traversal

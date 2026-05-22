@@ -328,6 +328,59 @@ log in → /account/email-change → enter new address + current password
 смяната" → land on /account/login with the green banner → log in with
 the new address.
 
+## Password change (authenticated)
+
+`/account/profile` exposes a password-change form alongside the
+personal-data section. Submitting POSTs to `POST /auth/change-password`
+with the user's **current** password plus a new one. The endpoint:
+
+1. **Requires an active session** (the unauthenticated counterpart is
+   `/auth/reset-password` via emailed token).
+2. **HIBP-screens the new password first** (same k-anonymity check as
+   register / reset; fail-open on HIBP outage). Burning a verify
+   attempt against the shared-with-`/login` lockout because the user
+   picked a breached new password would punish the wrong thing.
+3. **Rejects newPassword === currentPassword** with a distinct
+   `type: "/problems/same-password"` problem URI so the UI can render
+   a localized "your new password must differ" inline against the
+   newPassword input.
+4. **Pre-checks the per-email lockout** before doing the
+   currentPassword verify. The lockout counter is the same one
+   `/auth/login` uses, so an attacker with a stolen session cookie
+   cannot brute-force the password through this endpoint without
+   tripping the same 5-fails-in-15-min ceiling. The 429 carries
+   `type: "/problems/account-locked"` — identical to login lockout.
+5. **Constant-time verifies the current password** against the stored
+   Argon2id hash (uses `DUMMY_PASSWORD_HASH` if the row went missing
+   between session validation and now, to keep timing flat). Records
+   the attempt to `login_attempts` whether the row exists or not.
+6. **On success:** rotates `users.password_hash`, then calls
+   `deleteAllSessionsForUser(userId, session.idHash)` — every OTHER
+   session for the user dies; the device that initiated the change
+   keeps its cookie. Industry convention: the caller just proved
+   current-password knowledge, so logging them out would be churn.
+7. **Best-effort sends `auth.password-changed`** to the account
+   address. Same template the reset-password flow uses. Failure to
+   send must NOT roll back the rotation — the user already typed a
+   new password successfully.
+
+This closes **OWASP ASVS V6.2** ("verifier MUST allow the subscriber
+to change their memorized secret") and **NIST SP 800-63B Rev. 4
+§5.1.1.2** ("subscribers SHALL be able to change their memorized
+secret"). The OWASP Authentication Cheat Sheet "Change Password
+Feature" requirements (active session + current password + HIBP
+screen) are all met.
+
+In **local dev**, `console`-transport prints the post-change
+notification to `api:dev`'s stdout. Smoke flow: log in → /account/
+profile → fill "Текуща парола" + "Нова парола" (≥12 chars) +
+"Потвърди" → submit → see the green "Паролата е сменена успешно"
+banner → confirm the post-change notification email landed in the
+API terminal. Cross-device demo: log in on two different browsers
+simultaneously, change password from browser A, confirm browser B
+gets bounced to /account/login on its next request (its session
+was dropped) while browser A stays logged in.
+
 ## Order withdrawal (14-day right)
 
 `/account/orders/[orderNumber]/withdrawal` is the **digital withdrawal
@@ -858,6 +911,24 @@ have to be re-derived when extending the codebase.
     After a successful reset, sends a Bulgarian "your password was
     changed" notification (`auth.password-changed` template) —
     best-effort, doesn't roll back on send failure.
+  - `/auth/change-password` — authenticated self-service password
+    rotation, gated by `requireAuth`. Requires `currentPassword` as
+    re-auth proof (defeats the walked-away-from-shared-computer
+    threat per OWASP Authentication Cheat Sheet "Change Password
+    Feature"). Order of checks: (1) HIBP screens `newPassword`
+    before anything else (fail-open on HIBP outage; consistent with
+    register / reset); (2) reject newPassword === currentPassword
+    with `400 /problems/same-password`; (3) per-email lockout
+    pre-check (shares the counter with `/auth/login` — a stolen
+    cookie attacker hits the same 5-fails-in-15-min ceiling);
+    (4) constant-time verify against the stored Argon2id hash with
+    `DUMMY_PASSWORD_HASH` fallback to keep timing flat; (5) on
+    success, rotate `password_hash` and `deleteAllSessionsForUser
+    (userId, session.idHash)` — every OTHER device signs out, THIS
+    session is preserved. After rotation, sends `auth.password-
+    changed` to the account address (best-effort, same template
+    `/auth/reset-password` uses). Closes OWASP ASVS V6.2 / NIST SP
+    800-63B-4 §5.1.1.2.
   - `/auth/email-change/request`, `/auth/email-change/verify/check`,
     `/auth/email-change/verify` — email-change flow. Same crypto shape
     as verification (32-byte CSPRNG, SHA-256 at rest, 1h validity,
@@ -1033,6 +1104,29 @@ have to be re-derived when extending the codebase.
     поддръжката" now links to `/account/email-change`.
   - The login page handles `?email-changed=success` alongside the
     existing `?reset=success`.
+- **Password-change UI** wired end-to-end on the profile page:
+  - `lib/auth/client.ts` — added `changePassword({ currentPassword,
+    newPassword })`. New `same_password` variant on the `AuthError`
+    discriminated union, alongside the already-present
+    `breached_password`, `validation`, `invalid_credentials`,
+    `account_locked`, and `network` kinds the new endpoint can emit.
+  - `app/(shop)/account/profile/page.tsx` — the password section,
+    previously a client-only mock with a "this endpoint will be
+    available in a future version" disclaimer, is now wired to
+    `POST /auth/change-password`. Three inputs (current, new,
+    confirm) with `autoComplete="current-password"` and
+    `autoComplete="new-password"` so password managers can offer
+    "remember the new password" prompts. Client-side validation
+    (non-empty, ≥12 chars, confirm matches) before round-trip;
+    server is the source of truth for HIBP / same-password /
+    current-password / lockout. Per-input inline errors with
+    `aria-invalid` + `aria-describedby` so screen readers narrate
+    them. Success state: clears the form (so a left-open tab can't
+    be shoulder-surfed for the new password) and shows a green
+    "Паролата е сменена успешно. Всички други устройства са
+    излезли." banner that auto-dismisses after 5 seconds. The
+    personal-data section above remains a stub awaiting a separate
+    `PATCH /auth/me` slice.
 - **Email verification UI** wired end-to-end:
   - `lib/auth/client.ts` — added `verifyEmail(token)` and
     `resendVerification()`. New `resend_rate_limited` variant on the
@@ -1056,7 +1150,8 @@ have to be re-derived when extending the codebase.
 - MFA for admin (admin-api is its own slice).
 - Corporate registration UI + backend endpoint.
 - Account deletion / GDPR anonymization.
-- Profile edit (`PATCH /auth/me`, password change endpoint).
+- Profile-data edit (`PATCH /auth/me` for fullName/phone). The
+  password-change endpoint shipped May 22 2026.
 - Login attempts retention sweep (180-day window — needs scheduler slice).
 
 ### Infrastructure / CI

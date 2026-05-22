@@ -70,12 +70,52 @@ const BG_TO_LATIN: Record<string, string> = {
  * the alt text, or by an onError handler at the call site).
  */
 export function isSafeImageUrl(url: string | undefined | null): boolean {
-  if (!url || typeof url !== "string") return false;
+  return sanitizeImageUrl(url) !== null;
+}
+
+/**
+ * The taint-sanitized counterpart of {@link isSafeImageUrl}.
+ *
+ * Returns the URL's canonicalized form (the output of
+ * `new URL(url).toString()`) if the input is a safe http/https URL,
+ * otherwise `null`. Callers that need to BIND a user-supplied URL to a
+ * DOM sink such as `<img src>` or `<a href>` should use this — and bind
+ * the RETURNED VALUE, not the raw input.
+ *
+ * Why a separate function rather than just gating on `isSafeImageUrl`:
+ * SAST tools (CodeQL `js/xss` and Snyk's "DOM text reinterpreted as
+ * HTML" rule both flag the pattern
+ *
+ *     {isSafeImageUrl(url) && <img src={url} />}
+ *
+ * even though it's semantically safe — the taint tracker sees the same
+ * user-supplied `url` variable used inside and outside the guard and
+ * cannot prove the guard refined its value (TypeScript's type system
+ * can't express that either; it's runtime branching, not a type
+ * narrowing). Returning a fresh string from the validator and binding
+ * THAT to the sink is the canonical sanitizer-by-transformation
+ * pattern: the value flowing into `src` originates from a trusted
+ * URL-constructor call, not from the raw input. Every mainstream
+ * scanner recognizes this and closes the alert without a manual
+ * suppression list.
+ *
+ * Use as:
+ *
+ *     const safeSrc = sanitizeImageUrl(url);
+ *     if (safeSrc) {
+ *       return <img src={safeSrc} alt="..." />;
+ *     }
+ */
+export function sanitizeImageUrl(url: string | undefined | null): string | null {
+  if (!url || typeof url !== "string") return null;
   try {
     const parsed = new URL(url);
-    return parsed.protocol === "http:" || parsed.protocol === "https:";
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      return null;
+    }
+    return parsed.toString();
   } catch {
-    return false;
+    return null;
   }
 }
 

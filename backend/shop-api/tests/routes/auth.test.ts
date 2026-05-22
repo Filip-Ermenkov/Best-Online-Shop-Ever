@@ -1,10 +1,11 @@
 import { hashPassword } from "@shop/auth";
 import { schema } from "@shop/db";
-import { eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { buildApp } from "../../src/app.js";
 import { sessionCookieName } from "../../src/lib/cookies.js";
 import { getDb } from "../../src/lib/db.js";
+import { getStubTransportForTests } from "../../src/lib/emails.js";
 import { _resetEnvForTests } from "../../src/lib/env.js";
 
 let app: ReturnType<typeof buildApp>;
@@ -576,5 +577,444 @@ describe("POST /auth/logout", () => {
   it("is idempotent — logout without a session returns 204 cleanly", async () => {
     const res = await app.request("/auth/logout", { method: "POST" });
     expect(res.status).toBe(204);
+  });
+});
+
+/**
+ * POST /auth/change-password — authenticated self-service password rotation.
+ *
+ * Closes OWASP ASVS V6.2 / NIST SP 800-63B-4 §5.1.1.2 ("subscribers SHALL be
+ * able to change their memorized secret") plus the OWASP Authentication
+ * Cheat Sheet "Change Password Feature" requirements (active session + current
+ * password as re-auth proof + HIBP-screen the new password). This suite
+ * exercises the 200 happy path, every distinct 4xx branch, the session
+ * fan-out semantics ("drop other sessions, keep this one"), and the
+ * lockout-shared-with-/login behaviour.
+ */
+describe("POST /auth/change-password", () => {
+  const realFetch = globalThis.fetch;
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+    delete process.env.BREACHED_PASSWORD_CHECK_ENABLED;
+    process.env.BREACHED_PASSWORD_CHECK_ENABLED = "false";
+    _resetEnvForTests();
+  });
+
+  /** Boot a verified customer + return a logged-in session cookie. */
+  async function seededAndLoggedIn(opts?: {
+    email?: string;
+    password?: string;
+  }): Promise<{
+    user: { id: string; email: string; plainPassword: string };
+    cookie: string;
+  }> {
+    const user = await seedRegisteredUser(opts);
+    const loginRes = await app.request("/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        email: user.email,
+        password: user.plainPassword,
+        rememberMe: false,
+      }),
+    });
+    expect(loginRes.status).toBe(200);
+    const cookie = extractSessionCookie(loginRes.headers.get("set-cookie"));
+    if (!cookie) throw new Error("no session cookie issued");
+    return {
+      user: { id: user.id, email: user.email, plainPassword: user.plainPassword },
+      cookie,
+    };
+  }
+
+  it("rotates the password, drops OTHER sessions, keeps THIS session, and accepts the new password on /login", async () => {
+    const NEW_PASSWORD = "BrandNewPa55word!!";
+    const { user, cookie: liveCookie } = await seededAndLoggedIn({
+      email: "cp-happy@example.com",
+    });
+
+    // Stand up TWO additional sessions for the same user — represents the
+    // "phone + tablet + laptop" reality. After change-password these MUST
+    // go away while liveCookie (the laptop initiating the change) survives.
+    const db = getDb();
+    const extraLogin1 = await app.request("/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        email: user.email,
+        password: user.plainPassword,
+        rememberMe: false,
+      }),
+    });
+    const extraLogin2 = await app.request("/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        email: user.email,
+        password: user.plainPassword,
+        rememberMe: false,
+      }),
+    });
+    const extraCookie1 = extractSessionCookie(
+      extraLogin1.headers.get("set-cookie"),
+    );
+    const extraCookie2 = extractSessionCookie(
+      extraLogin2.headers.get("set-cookie"),
+    );
+    expect(extraCookie1).toBeTruthy();
+    expect(extraCookie2).toBeTruthy();
+
+    const sessionsBefore = await db
+      .select()
+      .from(schema.sessions)
+      .where(eq(schema.sessions.userId, user.id));
+    expect(sessionsBefore).toHaveLength(3);
+
+    const res = await app.request("/auth/change-password", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Cookie: `${sessionCookieName()}=${liveCookie}`,
+      },
+      body: JSON.stringify({
+        currentPassword: user.plainPassword,
+        newPassword: NEW_PASSWORD,
+      }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { ok: boolean };
+    expect(body).toEqual({ ok: true });
+
+    // (1) Stored hash actually rotated. Don't compare strings — verify it's a
+    // fresh Argon2id digest by length + prefix.
+    const rows = await db
+      .select({ passwordHash: schema.users.passwordHash })
+      .from(schema.users)
+      .where(eq(schema.users.id, user.id));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.passwordHash).toMatch(/^\$argon2id\$/);
+
+    // (2) Session fan-out: exactly the calling session survives.
+    const sessionsAfter = await db
+      .select()
+      .from(schema.sessions)
+      .where(eq(schema.sessions.userId, user.id));
+    expect(sessionsAfter).toHaveLength(1);
+    // /auth/me with the live cookie still works.
+    const meRes = await app.request("/auth/me", {
+      headers: { Cookie: `${sessionCookieName()}=${liveCookie}` },
+    });
+    expect(meRes.status).toBe(200);
+    // /auth/me with either dropped cookie does NOT work.
+    const ghost1 = await app.request("/auth/me", {
+      headers: { Cookie: `${sessionCookieName()}=${extraCookie1}` },
+    });
+    expect(ghost1.status).toBe(401);
+    const ghost2 = await app.request("/auth/me", {
+      headers: { Cookie: `${sessionCookieName()}=${extraCookie2}` },
+    });
+    expect(ghost2.status).toBe(401);
+
+    // (3) New password is now the password of record at /auth/login.
+    const oldLogin = await app.request("/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        email: user.email,
+        password: user.plainPassword,
+        rememberMe: false,
+      }),
+    });
+    expect(oldLogin.status).toBe(401);
+    const newLogin = await app.request("/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        email: user.email,
+        password: NEW_PASSWORD,
+        rememberMe: false,
+      }),
+    });
+    expect(newLogin.status).toBe(200);
+
+    // (4) Notification email recorded.
+    const stub = getStubTransportForTests();
+    const sent = stub.findLast((e) => e.templateId === "auth.password-changed");
+    expect(sent).toBeTruthy();
+    expect(sent!.to).toBe(user.email);
+  });
+
+  it("rejects an unauthenticated request with 401", async () => {
+    const res = await app.request("/auth/change-password", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        currentPassword: "irrelevant",
+        newPassword: "AnotherValidPassword1",
+      }),
+    });
+    expect(res.status).toBe(401);
+  });
+
+  it("rejects a wrong current password with 401 and records a failed login_attempt", async () => {
+    const { user, cookie } = await seededAndLoggedIn({
+      email: "cp-wrong-current@example.com",
+    });
+
+    const res = await app.request("/auth/change-password", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Cookie: `${sessionCookieName()}=${cookie}`,
+      },
+      body: JSON.stringify({
+        currentPassword: "DefinitelyNotMyPassword!1",
+        newPassword: "FreshAndUnrelated2!",
+      }),
+    });
+    expect(res.status).toBe(401);
+    const problem = (await res.json()) as { title: string; detail: string };
+    expect(problem.title).toBe("Unauthorized");
+    expect(problem.detail).toMatch(/current password/i);
+
+    // The password hash MUST NOT have been touched.
+    const db = getDb();
+    const rows = await db
+      .select({ passwordHash: schema.users.passwordHash })
+      .from(schema.users)
+      .where(eq(schema.users.id, user.id));
+    expect(rows[0]!.passwordHash).toMatch(/^\$argon2id\$/);
+    // Confirm the OLD password still works at /login (proves hash unchanged).
+    const reLogin = await app.request("/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        email: user.email,
+        password: user.plainPassword,
+        rememberMe: false,
+      }),
+    });
+    expect(reLogin.status).toBe(200);
+
+    // recordAttempt fired (success=false) — sharing the lockout counter
+    // with /login is a designed-in property of this endpoint.
+    //
+    // Three records total in chronological order:
+    //   1. The setup-phase /auth/login that minted `cookie` — success.
+    //   2. The wrong-current-password change-password attempt under test
+    //      — failure (the assertion this test was built to anchor).
+    //   3. The verification /auth/login above (proving the OLD password
+    //      still works) — success.
+    // The shape we actually care about is "exactly one failure was
+    // recorded by the change-password endpoint" — assert that precisely
+    // rather than coupling to the total row count, which is sensitive to
+    // unrelated verification reads.
+    const attempts = await db
+      .select()
+      .from(schema.loginAttempts)
+      .where(eq(schema.loginAttempts.email, user.email));
+    expect(attempts.filter((a) => !a.success)).toHaveLength(1);
+    expect(attempts.filter((a) => a.success).length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("rejects a new password under the 12-char floor with 400 validation (not /problems/breached-password)", async () => {
+    const { cookie } = await seededAndLoggedIn({
+      email: "cp-short@example.com",
+    });
+    const res = await app.request("/auth/change-password", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Cookie: `${sessionCookieName()}=${cookie}`,
+      },
+      body: JSON.stringify({
+        currentPassword: VALID_PASSWORD,
+        newPassword: "tooShort1", // 9 chars
+      }),
+    });
+    expect(res.status).toBe(400);
+    const problem = (await res.json()) as {
+      type?: string;
+      errors?: { path: string; message: string }[];
+    };
+    // The three 400 branches MUST stay distinguishable so the UI can route
+    // them. Length failures are the default validation problem.
+    expect(problem.type).not.toBe("/problems/breached-password");
+    expect(problem.type).not.toBe("/problems/same-password");
+    expect(
+      problem.errors?.some(
+        (e) => e.path === "newPassword" && /12/.test(e.message),
+      ),
+    ).toBe(true);
+  });
+
+  it("rejects newPassword === currentPassword with 400 /problems/same-password", async () => {
+    const { user, cookie } = await seededAndLoggedIn({
+      email: "cp-same@example.com",
+    });
+    const res = await app.request("/auth/change-password", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Cookie: `${sessionCookieName()}=${cookie}`,
+      },
+      body: JSON.stringify({
+        currentPassword: user.plainPassword,
+        newPassword: user.plainPassword, // identical → reject
+      }),
+    });
+    expect(res.status).toBe(400);
+    const problem = (await res.json()) as {
+      type?: string;
+      errors?: { path: string; message: string }[];
+    };
+    expect(problem.type).toBe("/problems/same-password");
+    expect(
+      problem.errors?.some((e) => e.path === "newPassword"),
+    ).toBe(true);
+
+    // Hash unchanged.
+    const db = getDb();
+    const rows = await db
+      .select({ passwordHash: schema.users.passwordHash })
+      .from(schema.users)
+      .where(eq(schema.users.id, user.id));
+    expect(rows[0]!.passwordHash).toMatch(/^\$argon2id\$/);
+  });
+
+  it("rejects a HIBP-breached new password with 400 /problems/breached-password BEFORE doing anything else", async () => {
+    process.env.BREACHED_PASSWORD_CHECK_ENABLED = "true";
+    _resetEnvForTests();
+
+    const { user, cookie } = await seededAndLoggedIn({
+      email: "cp-breached@example.com",
+    });
+
+    const { createHash } = await import("node:crypto");
+    const hash = createHash("sha1")
+      .update("password1234")
+      .digest("hex")
+      .toUpperCase();
+    const expectedSuffix = hash.slice(5);
+
+    globalThis.fetch = vi.fn(async (url: string | URL | Request) => {
+      const u = String(url);
+      if (!u.startsWith("https://api.pwnedpasswords.com/range/")) {
+        return realFetch(url as Parameters<typeof fetch>[0]);
+      }
+      const body = [
+        "0000000000000000000000000000000000A:0",
+        `${expectedSuffix}:99999`,
+      ].join("\r\n");
+      return new Response(body, {
+        status: 200,
+        headers: { "content-type": "text/plain" },
+      });
+    }) as unknown as typeof fetch;
+
+    const res = await app.request("/auth/change-password", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Cookie: `${sessionCookieName()}=${cookie}`,
+      },
+      body: JSON.stringify({
+        currentPassword: user.plainPassword,
+        newPassword: "password1234",
+      }),
+    });
+    expect(res.status).toBe(400);
+    const problem = (await res.json()) as {
+      type?: string;
+      errors?: { path: string; message: string }[];
+    };
+    expect(problem.type).toBe("/problems/breached-password");
+    expect(
+      problem.errors?.some((e) => e.path === "newPassword"),
+    ).toBe(true);
+
+    // Critical: HIBP fires BEFORE the password verify, so no failed-attempt
+    // row should have been recorded against the user (no spurious lockout
+    // pressure from picking a bad new password).
+    const db = getDb();
+    const attempts = await db
+      .select()
+      .from(schema.loginAttempts)
+      .where(
+        and(
+          eq(schema.loginAttempts.email, user.email),
+          eq(schema.loginAttempts.success, false),
+        ),
+      );
+    expect(attempts).toHaveLength(0);
+
+    // Hash unchanged.
+    const rows = await db
+      .select({ passwordHash: schema.users.passwordHash })
+      .from(schema.users)
+      .where(eq(schema.users.id, user.id));
+    expect(rows[0]!.passwordHash).toMatch(/^\$argon2id\$/);
+  });
+
+  it("returns 429 /problems/account-locked when the per-email lockout has fired", async () => {
+    const { user, cookie } = await seededAndLoggedIn({
+      email: "cp-locked@example.com",
+    });
+
+    // Fire 5 wrong-current-password attempts to trip the same lockout
+    // counter /login uses. Each must record a failure.
+    for (let i = 0; i < 5; i++) {
+      const r = await app.request("/auth/change-password", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Cookie: `${sessionCookieName()}=${cookie}`,
+        },
+        body: JSON.stringify({
+          currentPassword: `WrongGuessNumber${i}!`,
+          newPassword: "FreshAndDifferent22!",
+        }),
+      });
+      expect(r.status).toBe(401);
+    }
+
+    // Sixth attempt — even with the CORRECT current password — must lock.
+    const res = await app.request("/auth/change-password", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Cookie: `${sessionCookieName()}=${cookie}`,
+      },
+      body: JSON.stringify({
+        currentPassword: user.plainPassword,
+        newPassword: "FreshAndDifferent22!",
+      }),
+    });
+    expect(res.status).toBe(429);
+    const problem = (await res.json()) as { title: string; type?: string };
+    expect(problem.type).toBe("/problems/account-locked");
+
+    // The honest assertion: the password was NOT rotated even though the
+    // sixth attempt used the right current password — the lockout fired
+    // first.
+    const db = getDb();
+    const reLogin = await app.request("/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        email: user.email,
+        password: "FreshAndDifferent22!",
+        rememberMe: false,
+      }),
+    });
+    // /login is ALSO locked (it shares the counter) — assert the symmetry.
+    expect(reLogin.status).toBe(429);
+
+    // Hash unchanged.
+    const rows = await db
+      .select({ passwordHash: schema.users.passwordHash })
+      .from(schema.users)
+      .where(eq(schema.users.id, user.id));
+    expect(rows[0]!.passwordHash).toMatch(/^\$argon2id\$/);
   });
 });
