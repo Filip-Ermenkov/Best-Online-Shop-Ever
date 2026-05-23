@@ -13,7 +13,7 @@
 > specification. Read that to learn *what* the shop does; this doc
 > covers *how* it's built.
 >
-> Last updated: 2026-05-22.
+> Last updated: 2026-05-23.
 
 ---
 
@@ -180,8 +180,9 @@ without a separate codegen step.
 Three Lambda functions:
 
 - **`shop-api`** — customer-facing. Product catalog, search, cart,
-  orders, auth (9 endpoints across login/register/verify/reset/
-  email-change/change-password), 14-day withdrawal, GDPR data export.
+  orders, auth (10 endpoints across login/register/verify/reset/
+  email-change/change-password/profile-update), 14-day withdrawal,
+  GDPR data export.
 - **`admin-api`** — admin panel backend. Order/product/category/
   customer/discount CRUD, banner management, content versioning,
   backup orchestration.
@@ -1554,6 +1555,37 @@ Ranked by `(impact ÷ effort)` — highest leverage first.
 13. **Decide A2 vs A3** (decision, not work) — Cloudflare Free
     proxy now (saves money) OR Cloudflare Pro proxy (stronger
     security, slight cost increase that pays back at Tier 5).
+
+### Profile editing — GDPR Art. 16 (SHIPPED May 23, 2026)
+
+17b. ✅ **`PATCH /auth/me` for self-service profile rectification.**
+     Closes the user-visible gap where `/account/profile`'s
+     personal-data section was a client-only stub. Account-type-aware
+     partial update (RFC 5789 semantics, not RFC 7396 merge-patch —
+     we use a typed Zod schema with per-field validation messages
+     rather than the implicit null-as-delete convention). Personal
+     accounts edit `fullName` + `phone`; corporate accounts edit
+     `companyName` + `vatNumber` (nullable) + `registeredAddress` +
+     `mol` + `contactName` + `contactPhone`. Phone normalised to
+     Bulgarian E.164 by `backend/shop-api/src/lib/phone.ts` (hand-
+     rolled, ~20 lines, zero deps — swap for `libphonenumber-js` if
+     multi-country support ever lands). EIK / email / password /
+     role / accountType deliberately NOT editable (each has its own
+     flow or is structurally immutable). Zod `.strict()` rejects
+     unknown fields BEFORE the handler runs (defence-in-depth
+     against role/email/eik smuggling). Handler-level allowlist
+     rejects cross-account fields with per-field errors. No-op
+     short-circuit — submitting only unchanged values returns 200
+     without writing or bumping `updated_at`. Audit trail via
+     structured Pino `profile_updated` event carrying the list of
+     changed field NAMES (never values — values are PII; CloudWatch
+     logs are the wrong place for them). The pre-existing
+     `admin_audit_log` table is intentionally NOT used (that table
+     is for actor=admin, not subject-acting-on-self). GET `/auth/me`
+     was extended additively with a sibling `profile` field
+     (discriminated union by `kind`) so the form can hydrate from
+     server truth on mount. Closes **GDPR Art. 16**
+     (rectification) and the user-visible gap in docs/README.md §8.
 
 ### Week 3 — auth modernization (SHIPPED May 2026)
 

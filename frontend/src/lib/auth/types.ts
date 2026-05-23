@@ -18,6 +18,59 @@ export interface AuthUser {
 }
 
 /**
+ * Editable profile shape, sibling to `AuthUser` in the GET /auth/me /
+ * PATCH /auth/me responses. Discriminated union by `kind`, mirroring the
+ * `customer_profiles` vs `corporate_profiles` split in the DB schema.
+ *
+ * Identity-only consumers (header, route guards) read AuthUser. Profile-
+ * editing UI reads Profile. The two are sibling fields rather than nested
+ * to keep AuthUser's shape stable across slices (this slice only added a
+ * sibling field — no breaking changes to anything that previously consumed
+ * just `user`).
+ */
+export type Profile =
+  | {
+      kind: "personal";
+      fullName: string;
+      phone: string;
+    }
+  | {
+      kind: "corporate";
+      companyName: string;
+      /** Read-only — backend rejects PATCH attempts to set this. Surfaced so the form can show it as a disabled input. */
+      eik: string;
+      vatNumber: string | null;
+      registeredAddress: string;
+      mol: string;
+      contactName: string;
+      contactPhone: string;
+    };
+
+/**
+ * Input for `updateProfile()`. Every field is optional — only the fields you
+ * pass are written. The backend enforces account-type-aware field allowlisting
+ * (sending `companyName` from a personal account is a 400 with a per-field
+ * error), so the UI's render-time gating is defence-in-depth rather than
+ * load-bearing.
+ *
+ * `vatNumber: null` (explicit) means "clear the field"; `vatNumber:
+ * undefined` (or omitted) means "no change". Every other field follows the
+ * standard partial-update convention.
+ */
+export type UpdateProfileInput = {
+  // Personal
+  fullName?: string;
+  phone?: string;
+  // Corporate
+  companyName?: string;
+  vatNumber?: string | null;
+  registeredAddress?: string;
+  mol?: string;
+  contactName?: string;
+  contactPhone?: string;
+};
+
+/**
  * Discriminated error union. Every UI auth path branches on `kind`.
  *
  * Why not just throw? Because the shape of an "invalid credentials" error is

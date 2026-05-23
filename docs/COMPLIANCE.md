@@ -11,7 +11,7 @@
 >   `ARCHITECTURE.md` §15
 > - N/A — out of scope for this product (justified below the table)
 >
-> Last updated: 2026-05-22.
+> Last updated: 2026-05-23.
 
 ---
 
@@ -425,7 +425,7 @@ Bulgarian shop selling to EU residents — full GDPR scope.
 | Art. 7 | Conditions for consent | ✅ Cookie consent UI, distinct refuse-all button |
 | Art. 12 | Transparent information | ✅ Privacy policy + clear UI copy |
 | Art. 15 | Right of access | ✅ JSON export from profile |
-| Art. 16 | Right to rectification | ✅ Profile-page editing |
+| Art. 16 | Right to rectification | ✅ Self-service `/account/profile` wired to `PATCH /auth/me` (May 23, 2026). Account-type-aware: personal accounts edit fullName + phone; corporate accounts edit companyName + VAT + address + MOL + contact name/phone. Phone normalised to Bulgarian E.164 server-side. Audit trail via structured Pino `profile_updated` event (field NAMES only, never VALUES — satisfies Art. 30 records-of-processing without piling PII into log indexes). EIK / email / password / role / accountType have dedicated flows or are deliberately read-only |
 | Art. 17 | Right to erasure | ✅ Delete-account flow with active-order check |
 | Art. 18 | Right to restriction | ⚠️ No explicit "freeze processing" flow |
 | Art. 20 | Right to data portability | ✅ JSON export |

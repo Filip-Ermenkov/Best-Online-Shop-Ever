@@ -20,7 +20,9 @@ import type {
   AuthResult,
   AuthUser,
   LoginInput,
+  Profile,
   RegisterInput,
+  UpdateProfileInput,
 } from "./types";
 
 const baseUrl =
@@ -487,5 +489,77 @@ export async function fetchMe(): Promise<AuthResult<AuthUser>> {
   return withErrorMapping(res, async (r) => {
     const body = (await r.json()) as { user: AuthUser };
     return body.user;
+  });
+}
+
+/**
+ * Read the current user's editable profile from GET /auth/me.
+ *
+ * Backed by the same endpoint as `fetchMe()` but parses the sibling
+ * `profile` field (added in the PATCH /auth/me slice). Returns null for
+ * admin accounts (no profile row) and for the unusual case of a customer
+ * with no profile row (schema invariant violation; should never happen).
+ *
+ * 401 is re-classified as `unauthenticated` — same shape as `fetchMe()`.
+ */
+export async function fetchMyProfile(): Promise<AuthResult<Profile | null>> {
+  let res: Response;
+  try {
+    res = await authFetch("/auth/me");
+  } catch (err) {
+    return { ok: false, error: { kind: "network", cause: err } };
+  }
+  if (res.status === 401) {
+    return { ok: false, error: { kind: "unauthenticated" } };
+  }
+  return withErrorMapping(res, async (r) => {
+    const body = (await r.json()) as { profile: Profile | null };
+    return body.profile;
+  });
+}
+
+/**
+ * Partially update the current user's profile via PATCH /auth/me.
+ *
+ * The backend is account-type-aware: a personal account can patch
+ * `fullName`/`phone`; a corporate account can patch
+ * `companyName`/`vatNumber`/`registeredAddress`/`mol`/`contactName`/
+ * `contactPhone`. EIK, email, password, role, and account type are NOT
+ * editable here (each has its own dedicated flow). Sending a cross-account
+ * field returns 400 with a per-field validation error.
+ *
+ * Phone numbers are normalised to Bulgarian E.164 server-side; the response
+ * carries the canonical form. An invalid phone returns 400 with a per-field
+ * error on `phone` (or `contactPhone`).
+ *
+ * The body returned mirrors GET /auth/me — both `user` and `profile`. On a
+ * no-op (no changed values) the backend short-circuits without writing and
+ * still returns 200 with the current state.
+ *
+ * Failure branches:
+ *   - kind === "validation": unknown field, bad VAT format, invalid phone,
+ *     or a field belonging to the wrong account type. Render the per-field
+ *     errors inline against the offending input.
+ *   - kind === "unauthenticated": session expired between page load and
+ *     submit. The caller should bounce to /account/login.
+ *   - kind === "network": fetch failed.
+ */
+export async function updateProfile(
+  input: UpdateProfileInput,
+): Promise<AuthResult<{ user: AuthUser; profile: Profile | null }>> {
+  let res: Response;
+  try {
+    res = await authFetch("/auth/me", {
+      method: "PATCH",
+      body: JSON.stringify(input),
+    });
+  } catch (err) {
+    return { ok: false, error: { kind: "network", cause: err } };
+  }
+  if (res.status === 401) {
+    return { ok: false, error: { kind: "unauthenticated" } };
+  }
+  return withErrorMapping(res, async (r) => {
+    return (await r.json()) as { user: AuthUser; profile: Profile | null };
   });
 }

@@ -2,7 +2,7 @@
 
 import { useAuth } from "@/contexts/AuthContext";
 import { useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { ButtonLink } from "@/components/ui/button-link";
 import { Input } from "@/components/ui/input";
@@ -10,8 +10,12 @@ import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 import { Package } from "lucide-react";
-import { changePassword } from "@/lib/auth/client";
-import type { AuthError } from "@/lib/auth/types";
+import {
+  changePassword,
+  fetchMyProfile,
+  updateProfile,
+} from "@/lib/auth/client";
+import type { AuthError, Profile, UpdateProfileInput } from "@/lib/auth/types";
 
 /**
  * Inline-error state for the password-change form. We keep one slot per
@@ -29,6 +33,24 @@ type PasswordFormErrors = {
 };
 
 /**
+ * Same per-input + form-level shape for the profile-edit form. Keyed on
+ * the union of every editable field so a single map handles both the
+ * personal and corporate variants — the rendered form will only ever
+ * touch the keys relevant to the user's account type.
+ */
+type ProfileFormErrors = {
+  fullName?: string;
+  phone?: string;
+  companyName?: string;
+  vatNumber?: string;
+  registeredAddress?: string;
+  mol?: string;
+  contactName?: string;
+  contactPhone?: string;
+  form?: string;
+};
+
+/**
  * Map a server AuthError into per-field UI strings (in Bulgarian).
  *
  * Decoupled from the form component so the table of "which kinds fall onto
@@ -41,7 +63,7 @@ function authErrorToPasswordFormErrors(err: AuthError): PasswordFormErrors {
       // Length / shape failures on newPassword arrive as a 400 with
       // errors[].path === "newPassword". Map them to the right input.
       // Anything we can't map falls into the form-level slot.
-      return mapFieldErrors(err.fields, err.detail);
+      return mapPasswordFieldErrors(err.fields, err.detail);
     case "breached_password":
       return {
         newPassword:
@@ -84,7 +106,7 @@ function authErrorToPasswordFormErrors(err: AuthError): PasswordFormErrors {
   }
 }
 
-function mapFieldErrors(
+function mapPasswordFieldErrors(
   fields: { path: string; message: string }[],
   fallbackDetail?: string,
 ): PasswordFormErrors {
@@ -108,20 +130,150 @@ function mapFieldErrors(
   return out;
 }
 
-export default function ProfilePage() {
-  const { user, status, logout } = useAuth();
-  const router = useRouter();
-  const [saved, setSaved] = useState(false);
+/**
+ * Map a server AuthError from PATCH /auth/me into per-field UI strings.
+ *
+ * The backend's known failure modes here are: `validation` (Zod failures
+ * on length/regex, invalid Bulgarian phone, cross-account-type field,
+ * unknown field via .strict()), `unauthenticated` (session died between
+ * page load and submit), and the always-possible `network`.
+ */
+function authErrorToProfileFormErrors(err: AuthError): ProfileFormErrors {
+  switch (err.kind) {
+    case "validation":
+      return mapProfileFieldErrors(err.fields, err.detail);
+    case "unauthenticated":
+      return { form: "Сесията Ви е изтекла. Моля, влезте отново." };
+    case "network":
+      return { form: "Възникна мрежова грешка. Моля, опитайте отново." };
+    case "unknown":
+      return {
+        form: err.detail ?? "Възникна неочаквана грешка. Моля, опитайте отново.",
+      };
+    default:
+      return {
+        form: "Възникна неочаквана грешка. Моля, опитайте отново.",
+      };
+  }
+}
 
-  // Password-change form state. Kept local to this page (not lifted into
-  // AuthContext) because no other component cares about the half-typed
-  // password. Cleared on submit success.
+function mapProfileFieldErrors(
+  fields: { path: string; message: string }[],
+  fallbackDetail?: string,
+): ProfileFormErrors {
+  const out: ProfileFormErrors = {};
+  for (const f of fields) {
+    switch (f.path) {
+      case "fullName":
+        out.fullName = "Името е задължително (1–120 символа).";
+        break;
+      case "phone":
+        out.phone = /Bulgarian|valid/i.test(f.message)
+          ? "Невалиден български телефон. Пример: +359 88 812 3456 или 0888 123 456."
+          : f.message;
+        break;
+      case "companyName":
+        out.companyName = "Името на фирмата е задължително.";
+        break;
+      case "vatNumber":
+        out.vatNumber = /BG/.test(f.message)
+          ? "Невалиден ДДС номер. Български формат: BG + 9 или 10 цифри."
+          : f.message;
+        break;
+      case "registeredAddress":
+        out.registeredAddress = "Адресът на регистрация е задължителен.";
+        break;
+      case "mol":
+        out.mol = "МОЛ е задължително поле.";
+        break;
+      case "contactName":
+        out.contactName = "Името за контакт е задължително.";
+        break;
+      case "contactPhone":
+        out.contactPhone =
+          "Невалиден телефон за контакт. Пример: +359 88 812 3456.";
+        break;
+      default:
+        // Unknown path — usually a `.strict()` rejection (e.g., user
+        // tried to send a field the server doesn't expose). Show at
+        // form level so the user sees something rather than silently
+        // failing.
+        out.form ??= f.message;
+    }
+  }
+  if (!Object.keys(out).length && fallbackDetail) {
+    out.form = fallbackDetail;
+  }
+  return out;
+}
+
+export default function ProfilePage() {
+  const { user, status, logout, refresh } = useAuth();
+  const router = useRouter();
+
+  // ─── Profile data (loaded once on mount) ─────────────────────────────────
+  // AuthContext only carries identity (id, email, role, accountType,
+  // fullName). The editable fields (phone, corporate data) live on the
+  // sibling `profile` field of GET /auth/me. We fetch that lazily on
+  // mount rather than adding it to AuthContext, because no other page
+  // needs it and storing it globally would mean every navigation re-reads
+  // it just to discard it.
+  const [profile, setProfile] = useState<Profile | null>(null);
+  const [profileLoading, setProfileLoading] = useState(true);
+  const [profileLoadError, setProfileLoadError] = useState<string | null>(null);
+
+  // Form state — initialized from `profile` once it loads. Tracked as
+  // strings even for nullable corporate fields so the inputs are always
+  // controlled; we serialize "" → null only for vatNumber at submit time.
+  const [formFullName, setFormFullName] = useState("");
+  const [formPhone, setFormPhone] = useState("");
+  const [formCompanyName, setFormCompanyName] = useState("");
+  const [formVatNumber, setFormVatNumber] = useState("");
+  const [formRegisteredAddress, setFormRegisteredAddress] = useState("");
+  const [formMol, setFormMol] = useState("");
+  const [formContactName, setFormContactName] = useState("");
+  const [formContactPhone, setFormContactPhone] = useState("");
+
+  const [profileErrors, setProfileErrors] = useState<ProfileFormErrors>({});
+  const [profileSubmitting, setProfileSubmitting] = useState(false);
+  const [profileSuccess, setProfileSuccess] = useState(false);
+
+  // ─── Password-change form state (unchanged from the May 22 slice) ────────
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmNewPassword, setConfirmNewPassword] = useState("");
   const [pwErrors, setPwErrors] = useState<PasswordFormErrors>({});
   const [pwSubmitting, setPwSubmitting] = useState(false);
   const [pwSuccess, setPwSuccess] = useState(false);
+
+  // Hydrate form state from a fetched Profile. Extracted so we can re-run
+  // it both on initial load and after a successful PATCH (the server's
+  // response is the canonical post-write state — it includes the
+  // normalised phone, so we always want to mirror server truth).
+  const hydrateFromProfile = useCallback((p: Profile | null) => {
+    if (!p) {
+      setFormFullName("");
+      setFormPhone("");
+      setFormCompanyName("");
+      setFormVatNumber("");
+      setFormRegisteredAddress("");
+      setFormMol("");
+      setFormContactName("");
+      setFormContactPhone("");
+      return;
+    }
+    if (p.kind === "personal") {
+      setFormFullName(p.fullName);
+      setFormPhone(p.phone);
+    } else {
+      setFormCompanyName(p.companyName);
+      setFormVatNumber(p.vatNumber ?? "");
+      setFormRegisteredAddress(p.registeredAddress);
+      setFormMol(p.mol);
+      setFormContactName(p.contactName);
+      setFormContactPhone(p.contactPhone);
+    }
+  }, []);
 
   // Client-side gate. Real protection is in proxy.ts (cookie-presence check)
   // — by the time we get here, the cookie almost always exists. The
@@ -131,6 +283,33 @@ export default function ProfilePage() {
     if (status === "anonymous") router.replace("/account/login");
   }, [status, router]);
 
+  // Load the profile once the user is known and authenticated. We don't
+  // start the fetch until status === "authenticated" so we don't waste a
+  // request on the brief loading window or anonymous bounces.
+  useEffect(() => {
+    if (status !== "authenticated") return;
+    let cancelled = false;
+    void (async () => {
+      const res = await fetchMyProfile();
+      if (cancelled) return;
+      if (res.ok) {
+        setProfile(res.value);
+        hydrateFromProfile(res.value);
+        setProfileLoadError(null);
+      } else if (res.error.kind === "unauthenticated") {
+        router.replace("/account/login");
+      } else {
+        setProfileLoadError(
+          "Неуспешно зареждане на профила. Опитайте да презаредите страницата.",
+        );
+      }
+      setProfileLoading(false);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [status, hydrateFromProfile, router]);
+
   if (status !== "authenticated" || !user) {
     return (
       <div className="max-w-2xl mx-auto px-4 py-10 text-center text-sm text-muted-foreground">
@@ -139,14 +318,81 @@ export default function ProfilePage() {
     );
   }
 
-  // Personal-data editing isn't wired to a backend endpoint yet — there's
-  // no PATCH /auth/me. Until that ships, the form is client-side-only and
-  // shows a toast on save without persisting. Marked as such so it's
-  // obvious to the next slice owner what's missing.
-  function handleSavePersonal(e: React.FormEvent) {
+  /**
+   * Build a minimal PATCH payload: only fields whose value actually
+   * differs from the stored profile. This is also enforced server-side
+   * (the no-op short-circuit there compares stored vs incoming), but
+   * doing it client-side too means:
+   *   - smaller request bodies,
+   *   - empty diff → we skip the request entirely and surface "no
+   *     changes" instead of a vacuous "saved" toast.
+   */
+  function buildPatchPayload(): UpdateProfileInput {
+    const payload: UpdateProfileInput = {};
+    if (!profile) return payload;
+
+    if (profile.kind === "personal") {
+      const fn = formFullName.trim();
+      if (fn !== profile.fullName) payload.fullName = fn;
+      const ph = formPhone.trim();
+      if (ph !== profile.phone) payload.phone = ph;
+    } else {
+      const cn = formCompanyName.trim();
+      if (cn !== profile.companyName) payload.companyName = cn;
+      // VAT: empty string means "clear"; null is the canonical empty value.
+      const v = formVatNumber.trim();
+      const incomingVat: string | null = v === "" ? null : v;
+      if (incomingVat !== profile.vatNumber) payload.vatNumber = incomingVat;
+      const ra = formRegisteredAddress.trim();
+      if (ra !== profile.registeredAddress) payload.registeredAddress = ra;
+      const mo = formMol.trim();
+      if (mo !== profile.mol) payload.mol = mo;
+      const con = formContactName.trim();
+      if (con !== profile.contactName) payload.contactName = con;
+      const cp = formContactPhone.trim();
+      if (cp !== profile.contactPhone) payload.contactPhone = cp;
+    }
+    return payload;
+  }
+
+  async function handleSavePersonal(e: React.FormEvent) {
     e.preventDefault();
-    setSaved(true);
-    setTimeout(() => setSaved(false), 2500);
+    setProfileSuccess(false);
+    setProfileErrors({});
+
+    const payload = buildPatchPayload();
+    if (Object.keys(payload).length === 0) {
+      // Nothing changed. Show "no changes" rather than spam the server
+      // with a redundant request whose response is already the state we
+      // hold locally.
+      setProfileErrors({ form: "Няма промени за запазване." });
+      return;
+    }
+
+    setProfileSubmitting(true);
+    const res = await updateProfile(payload);
+    setProfileSubmitting(false);
+
+    if (res.ok) {
+      setProfile(res.value.profile);
+      hydrateFromProfile(res.value.profile);
+      setProfileSuccess(true);
+      setTimeout(() => setProfileSuccess(false), 4000);
+      // If fullName changed, the header in AuthProvider is still showing
+      // the old name from the initial /auth/me. Refresh AuthContext so
+      // the global identity matches. Other field changes don't affect
+      // the header so this is cheap-most-of-the-time anyway.
+      if (payload.fullName !== undefined) {
+        void refresh();
+      }
+      return;
+    }
+
+    const mapped = authErrorToProfileFormErrors(res.error);
+    setProfileErrors(mapped);
+    if (res.error.kind === "unauthenticated") {
+      router.replace("/account/login");
+    }
   }
 
   /**
@@ -208,12 +454,7 @@ export default function ProfilePage() {
     }
   }
 
-  // The backend stores a single `fullName`. The form historically split
-  // it into first/last for editing — we keep that UX by splitting on the
-  // first space, but the round-trip is a no-op until profile-edit lands.
   const initial = (user.fullName ?? user.email)[0]?.toUpperCase() ?? "?";
-  const [firstName, ...rest] = (user.fullName ?? "").split(/\s+/);
-  const lastName = rest.join(" ");
 
   return (
     <div className="max-w-2xl mx-auto px-4 py-10">
@@ -248,46 +489,263 @@ export default function ProfilePage() {
         </div>
       </div>
 
-      {/* Personal-data form — still a client-only stub until PATCH /auth/me lands. */}
-      <form onSubmit={handleSavePersonal} className="space-y-4">
-        <h2 className="font-semibold">Лични данни</h2>
-        <div className="grid grid-cols-2 gap-4">
+      {/* Profile-edit form — wired to PATCH /auth/me. */}
+      {profileLoading ? (
+        <div className="text-sm text-muted-foreground">Зареждане на профила...</div>
+      ) : profileLoadError ? (
+        <div
+          role="alert"
+          className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700"
+        >
+          {profileLoadError}
+        </div>
+      ) : profile?.kind === "personal" ? (
+        <form onSubmit={(e) => void handleSavePersonal(e)} className="space-y-4" noValidate>
+          <h2 className="font-semibold">Лични данни</h2>
           <div>
-            <Label htmlFor="firstName">Име</Label>
-            <Input id="firstName" defaultValue={firstName ?? ""} className="mt-1" />
+            <Label htmlFor="fullName">Име и фамилия</Label>
+            <Input
+              id="fullName"
+              className="mt-1"
+              value={formFullName}
+              onChange={(e) => setFormFullName(e.target.value)}
+              aria-invalid={profileErrors.fullName ? true : undefined}
+              aria-describedby={profileErrors.fullName ? "fullName-error" : undefined}
+              disabled={profileSubmitting}
+              autoComplete="name"
+              maxLength={120}
+            />
+            {profileErrors.fullName && (
+              <p id="fullName-error" className="mt-1 text-sm text-red-600">
+                {profileErrors.fullName}
+              </p>
+            )}
           </div>
           <div>
-            <Label htmlFor="lastName">Фамилия</Label>
-            <Input id="lastName" defaultValue={lastName} className="mt-1" />
+            <Label htmlFor="email">Email</Label>
+            <Input id="email" type="email" defaultValue={user.email} className="mt-1" disabled />
+            <p className="mt-1 text-xs text-muted-foreground">
+              За промяна на имейл адреса{" "}
+              <a
+                href="/account/email-change"
+                className="text-primary hover:underline"
+              >
+                кликнете тук
+              </a>
+              . Ще изпратим линк за потвърждаване на новия адрес.
+            </p>
           </div>
-        </div>
-        <div>
-          <Label htmlFor="email">Email</Label>
-          <Input id="email" type="email" defaultValue={user.email} className="mt-1" disabled />
-          <p className="mt-1 text-xs text-muted-foreground">
-            За промяна на имейл адреса{" "}
-            <a
-              href="/account/email-change"
-              className="text-primary hover:underline"
-            >
-              кликнете тук
-            </a>
-            . Ще изпратим линк за потвърждаване на новия адрес.
-          </p>
-        </div>
-        <div>
-          <Label htmlFor="phone">Телефон</Label>
-          <Input id="phone" type="tel" className="mt-1" placeholder="+359 88 ..." />
-        </div>
+          <div>
+            <Label htmlFor="phone">Телефон</Label>
+            <Input
+              id="phone"
+              type="tel"
+              className="mt-1"
+              placeholder="+359 88 812 3456 или 0888 812 345"
+              value={formPhone}
+              onChange={(e) => setFormPhone(e.target.value)}
+              aria-invalid={profileErrors.phone ? true : undefined}
+              aria-describedby={profileErrors.phone ? "phone-error" : "phone-hint"}
+              disabled={profileSubmitting}
+              autoComplete="tel"
+              maxLength={40}
+            />
+            {profileErrors.phone ? (
+              <p id="phone-error" className="mt-1 text-sm text-red-600">
+                {profileErrors.phone}
+              </p>
+            ) : (
+              <p id="phone-hint" className="mt-1 text-xs text-muted-foreground">
+                Български номер. Приема се +359..., 00359... или 0... — записва се в единен формат.
+              </p>
+            )}
+          </div>
 
-        <div className="flex items-center gap-3 pt-2">
-          <Button type="submit">Запази промените</Button>
-          {saved && <p className="text-sm text-green-600">Записано успешно!</p>}
-        </div>
-        <p className="text-xs text-muted-foreground">
-          Промените на личните данни все още не се записват — този endpoint ще бъде наличен в следваща версия.
+          {profileErrors.form && (
+            <div
+              role="alert"
+              className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700"
+            >
+              {profileErrors.form}
+            </div>
+          )}
+
+          <div className="flex items-center gap-3 pt-2">
+            <Button type="submit" disabled={profileSubmitting}>
+              {profileSubmitting ? "Записване..." : "Запази промените"}
+            </Button>
+            {profileSuccess && (
+              <p className="text-sm text-green-600" role="status">
+                Записано успешно.
+              </p>
+            )}
+          </div>
+        </form>
+      ) : profile?.kind === "corporate" ? (
+        <form onSubmit={(e) => void handleSavePersonal(e)} className="space-y-4" noValidate>
+          <h2 className="font-semibold">Фирмени данни</h2>
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <Label htmlFor="companyName">Име на фирмата</Label>
+              <Input
+                id="companyName"
+                className="mt-1"
+                value={formCompanyName}
+                onChange={(e) => setFormCompanyName(e.target.value)}
+                aria-invalid={profileErrors.companyName ? true : undefined}
+                disabled={profileSubmitting}
+                autoComplete="organization"
+                maxLength={200}
+              />
+              {profileErrors.companyName && (
+                <p className="mt-1 text-sm text-red-600">{profileErrors.companyName}</p>
+              )}
+            </div>
+            <div>
+              <Label htmlFor="eik">ЕИК / БУЛСТАТ</Label>
+              <Input
+                id="eik"
+                className="mt-1"
+                value={profile.eik}
+                disabled
+              />
+              <p className="mt-1 text-xs text-muted-foreground">
+                ЕИК не може да се редактира — това е юридическият идентификатор на фирмата.
+              </p>
+            </div>
+          </div>
+
+          <div>
+            <Label htmlFor="vatNumber">ДДС номер</Label>
+            <Input
+              id="vatNumber"
+              className="mt-1"
+              placeholder="BG123456789 (по избор)"
+              value={formVatNumber}
+              onChange={(e) => setFormVatNumber(e.target.value)}
+              aria-invalid={profileErrors.vatNumber ? true : undefined}
+              disabled={profileSubmitting}
+              maxLength={20}
+            />
+            {profileErrors.vatNumber ? (
+              <p className="mt-1 text-sm text-red-600">{profileErrors.vatNumber}</p>
+            ) : (
+              <p className="mt-1 text-xs text-muted-foreground">
+                Само за регистрирани по ДДС фирми. Оставете празно ако не сте регистрирани.
+              </p>
+            )}
+          </div>
+
+          <div>
+            <Label htmlFor="registeredAddress">Адрес на регистрация</Label>
+            <Input
+              id="registeredAddress"
+              className="mt-1"
+              value={formRegisteredAddress}
+              onChange={(e) => setFormRegisteredAddress(e.target.value)}
+              aria-invalid={profileErrors.registeredAddress ? true : undefined}
+              disabled={profileSubmitting}
+              autoComplete="street-address"
+              maxLength={300}
+            />
+            {profileErrors.registeredAddress && (
+              <p className="mt-1 text-sm text-red-600">{profileErrors.registeredAddress}</p>
+            )}
+          </div>
+
+          <div>
+            <Label htmlFor="mol">МОЛ (Материалноотговорно лице)</Label>
+            <Input
+              id="mol"
+              className="mt-1"
+              value={formMol}
+              onChange={(e) => setFormMol(e.target.value)}
+              aria-invalid={profileErrors.mol ? true : undefined}
+              disabled={profileSubmitting}
+              maxLength={120}
+            />
+            {profileErrors.mol && (
+              <p className="mt-1 text-sm text-red-600">{profileErrors.mol}</p>
+            )}
+          </div>
+
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <Label htmlFor="contactName">Лице за контакт</Label>
+              <Input
+                id="contactName"
+                className="mt-1"
+                value={formContactName}
+                onChange={(e) => setFormContactName(e.target.value)}
+                aria-invalid={profileErrors.contactName ? true : undefined}
+                disabled={profileSubmitting}
+                autoComplete="name"
+                maxLength={120}
+              />
+              {profileErrors.contactName && (
+                <p className="mt-1 text-sm text-red-600">{profileErrors.contactName}</p>
+              )}
+            </div>
+            <div>
+              <Label htmlFor="contactPhone">Телефон за контакт</Label>
+              <Input
+                id="contactPhone"
+                type="tel"
+                className="mt-1"
+                placeholder="+359 88 812 3456"
+                value={formContactPhone}
+                onChange={(e) => setFormContactPhone(e.target.value)}
+                aria-invalid={profileErrors.contactPhone ? true : undefined}
+                disabled={profileSubmitting}
+                autoComplete="tel"
+                maxLength={40}
+              />
+              {profileErrors.contactPhone && (
+                <p className="mt-1 text-sm text-red-600">{profileErrors.contactPhone}</p>
+              )}
+            </div>
+          </div>
+
+          <div>
+            <Label htmlFor="email-corp">Email</Label>
+            <Input id="email-corp" type="email" defaultValue={user.email} className="mt-1" disabled />
+            <p className="mt-1 text-xs text-muted-foreground">
+              За промяна на имейл адреса{" "}
+              <a
+                href="/account/email-change"
+                className="text-primary hover:underline"
+              >
+                кликнете тук
+              </a>
+              .
+            </p>
+          </div>
+
+          {profileErrors.form && (
+            <div
+              role="alert"
+              className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700"
+            >
+              {profileErrors.form}
+            </div>
+          )}
+
+          <div className="flex items-center gap-3 pt-2">
+            <Button type="submit" disabled={profileSubmitting}>
+              {profileSubmitting ? "Записване..." : "Запази промените"}
+            </Button>
+            {profileSuccess && (
+              <p className="text-sm text-green-600" role="status">
+                Записано успешно.
+              </p>
+            )}
+          </div>
+        </form>
+      ) : (
+        <p className="text-sm text-muted-foreground">
+          Този профил няма данни за редакция.
         </p>
-      </form>
+      )}
 
       <Separator className="my-8" />
 

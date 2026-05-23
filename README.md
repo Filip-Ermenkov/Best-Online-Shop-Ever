@@ -381,6 +381,77 @@ simultaneously, change password from browser A, confirm browser B
 gets bounced to /account/login on its next request (its session
 was dropped) while browser A stays logged in.
 
+## Profile editing (PATCH /auth/me)
+
+`/account/profile` exposes the personal-data section (or fírmени-data
+section for corporate accounts) wired to `PATCH /auth/me`. The endpoint
+is a partial-update operation per **RFC 5789** — every field on the
+request body is optional and only the keys the client sends are written.
+The schema is account-type-aware:
+
+- **Personal accounts** (`accountType=personal`) can edit `fullName` and
+  `phone`. The customer email goes through the dedicated
+  `/account/email-change` flow (out-of-band confirmation + alert);
+  password through `/account/profile`'s password section.
+- **Corporate accounts** (`accountType=corporate`) can edit `companyName`,
+  `vatNumber` (nullable — explicit `null` clears it), `registeredAddress`,
+  `mol`, `contactName`, `contactPhone`. **EIK / БУЛСТАТ** is deliberately
+  read-only: it is the legal business identifier and editing it would
+  amount to pretending to be a different company. If the user truly
+  changes their legal entity they should register again.
+
+The Zod request schema is `.strict()` — unknown keys produce a 400
+validation error BEFORE the handler runs. This is defence-in-depth
+against confused-deputy attempts to set fields we don't expose (`role`,
+`email`, `accountType`, `eik`). The handler then runs a per-account-type
+allowlist check: a personal account sending `companyName` (a key the
+schema accepts in principle but that doesn't apply to this user) is
+rejected with a per-field error `{ path: "companyName", message: "…" }`
+the UI surfaces inline.
+
+Phone numbers are normalised to **Bulgarian E.164** by
+`backend/shop-api/src/lib/phone.ts`. Accepted input shapes: `+359 88
+812 3456`, `00359 88 812 3456`, `0888 123 456` — separators (spaces,
+dashes, dots, parens) are stripped. The national-significant number
+must be 7–9 digits and start with 2–9 (covers mobile prefixes 87/88/89
+plus Sofia and other area codes; 0 and 1 are reserved). The function
+returns the canonical `+359XXXXXXXXX` form or `null` on rejection.
+Both `phone` (personal) and `contactPhone` (corporate) go through it.
+
+The handler has a **no-op short-circuit**: it reads the current row,
+compares each submitted field against the stored value, and returns the
+current state without writing if nothing actually changed. This matters
+for the common UX pattern where the form submits the whole record on
+"Save" — most fields will match what's already stored and we shouldn't
+bump `updated_at` (or emit an audit-log entry) for zero changes.
+
+The audit trail is a **structured Pino log** with `event:
+"profile_updated"`, the `userId`, the `accountType`, the list of
+**field names** that changed, the IP, and the User-Agent. We deliberately
+do NOT log field VALUES — those are PII and CloudWatch logs are the wrong
+place for the actual changed name/phone/address. The log entry plus
+30-day CloudWatch retention satisfies **GDPR Art. 30 / Art. 32**
+"records of processing activities" without piling personal data into
+log indexes. The `admin_audit_log` table is intentionally NOT used —
+that table is for actor=admin actions against third parties; this is
+the subject acting on their own data.
+
+GET `/auth/me` was extended in the same slice to return a sibling
+`profile` field carrying the editable data — discriminated by `kind:
+"personal" | "corporate"`. The pre-existing `user` field is unchanged,
+so any consumer that only reads `user` (the SSR auth bootstrap, the
+client AuthContext) is unaffected. The profile page uses the new field
+directly to hydrate its form on mount.
+
+In **local dev** there are no emails sent on profile updates by design
+— the only out-of-band notification the spec requires is for email
+changes (which has its own flow). Smoke flow: log in → /account/profile
+→ edit name/phone → click "Запази промените" → green "Записано
+успешно" confirmation → reload to confirm persistence. Sending an
+invalid phone like `123` yields a red inline error against the phone
+input. A no-op submit (same values) shows a friendly "Няма промени за
+запазване" instead of an error.
+
 ## Order withdrawal (14-day right)
 
 `/account/orders/[orderNumber]/withdrawal` is the **digital withdrawal
@@ -883,6 +954,8 @@ have to be re-derived when extending the codebase.
 - **`@shop/api`** — exposes:
   - `/products`, `/categories` (read API, ETag, cursor pagination)
   - `/auth/register`, `/auth/login`, `/auth/logout`, `/auth/me`
+    (the last now `GET` for read + `PATCH` for partial profile
+    update; see Profile editing section above for the full design).
   - `/auth/verify-email`, `/auth/resend-verification` — signup-token
     flow. 32-byte CSPRNG → base64url, SHA-256 at rest, 24h validity,
     single-use (`consumed_at`). `verify-email` is unauthenticated (the
