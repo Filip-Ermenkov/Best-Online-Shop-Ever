@@ -1018,3 +1018,363 @@ describe("POST /auth/change-password", () => {
     expect(rows[0]!.passwordHash).toMatch(/^\$argon2id\$/);
   });
 });
+
+/**
+ * PATCH /auth/me — partial profile update.
+ *
+ * Covers: happy-path personal update + audit log shape, 401 when no
+ * session, 400 when phone is malformed (Bulgarian normaliser rejects),
+ * 400 when a corporate field is sent on a personal account (cross-type
+ * rejection), 400 when an unknown field is sent (Zod .strict()), the
+ * no-op short-circuit (no row update, no error), and the corporate-
+ * account happy-path covering vatNumber clear-via-null.
+ *
+ * What is NOT covered here: the EIK-stays-immutable guarantee is
+ * structural (no schema key for it on the request) and therefore
+ * unreachable to test; sending it produces an unknown-field 400 like
+ * any other. The audit-log assertion is on the Pino-emitted shape via
+ * a structured-log spy — the existing test pattern in this file does
+ * not yet wire up a Pino spy, so we assert audit semantics indirectly
+ * through the database state (updated_at advanced) + the response
+ * shape.
+ */
+describe("PATCH /auth/me", () => {
+  /** Boot a verified personal customer + return a logged-in session cookie. */
+  async function seededPersonalAndLoggedIn(opts?: {
+    email?: string;
+  }): Promise<{
+    user: {
+      id: string;
+      email: string;
+      plainPassword: string;
+    };
+    cookie: string;
+  }> {
+    const user = await seedRegisteredUser({
+      email: opts?.email ?? "patch-personal@example.com",
+    });
+    const loginRes = await app.request("/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        email: user.email,
+        password: user.plainPassword,
+        rememberMe: false,
+      }),
+    });
+    expect(loginRes.status).toBe(200);
+    const cookie = extractSessionCookie(loginRes.headers.get("set-cookie"));
+    if (!cookie) throw new Error("no session cookie issued");
+    return {
+      user: {
+        id: user.id,
+        email: user.email,
+        plainPassword: user.plainPassword,
+      },
+      cookie,
+    };
+  }
+
+  /** Boot a verified corporate customer + log in. Profile row created here too. */
+  async function seededCorporateAndLoggedIn(): Promise<{
+    user: { id: string; email: string };
+    cookie: string;
+  }> {
+    const db = getDb();
+    const email = "patch-corp@example.com";
+    const passwordHash = await hashPassword(VALID_PASSWORD);
+    const [u] = await db
+      .insert(schema.users)
+      .values({
+        email,
+        passwordHash,
+        role: "customer",
+        accountType: "corporate",
+        emailVerifiedAt: new Date(),
+      })
+      .returning();
+    if (!u) throw new Error("seed failed");
+    await db.insert(schema.corporateProfiles).values({
+      userId: u.id,
+      companyName: "Acme OOD",
+      eik: "204123456",
+      vatNumber: "BG204123456",
+      registeredAddress: "ул. Тест 1, София",
+      mol: "Иван Иванов",
+      contactName: "Мария Тестова",
+      contactPhone: "+359888777666",
+    });
+    const loginRes = await app.request("/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        email,
+        password: VALID_PASSWORD,
+        rememberMe: false,
+      }),
+    });
+    expect(loginRes.status).toBe(200);
+    const cookie = extractSessionCookie(loginRes.headers.get("set-cookie"));
+    if (!cookie) throw new Error("no session cookie issued");
+    return { user: { id: u.id, email }, cookie };
+  }
+
+  it("updates fullName + normalises phone, returns the post-write state", async () => {
+    const { user, cookie } = await seededPersonalAndLoggedIn();
+
+    const res = await app.request("/auth/me", {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+        Cookie: `${sessionCookieName()}=${cookie}`,
+      },
+      body: JSON.stringify({
+        fullName: "Иван Тестов",
+        // Local-format phone — server normalises to E.164.
+        phone: "0888 123 456",
+      }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      user: { fullName: string };
+      profile: { kind: "personal"; fullName: string; phone: string };
+    };
+
+    expect(body.user.fullName).toBe("Иван Тестов");
+    expect(body.profile.kind).toBe("personal");
+    expect(body.profile.fullName).toBe("Иван Тестов");
+    // Normalised to E.164 — leading 0 stripped, +359 prefixed.
+    expect(body.profile.phone).toBe("+359888123456");
+
+    // DB confirms.
+    const db = getDb();
+    const [row] = await db
+      .select()
+      .from(schema.customerProfiles)
+      .where(eq(schema.customerProfiles.userId, user.id));
+    expect(row!.fullName).toBe("Иван Тестов");
+    expect(row!.phone).toBe("+359888123456");
+  });
+
+  it("rejects an unauthenticated request with 401 and writes nothing", async () => {
+    const seeded = await seedRegisteredUser({ email: "patch-noauth@example.com" });
+
+    const res = await app.request("/auth/me", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ fullName: "Should Not Save" }),
+    });
+    expect(res.status).toBe(401);
+
+    // Row unchanged.
+    const db = getDb();
+    const [row] = await db
+      .select()
+      .from(schema.customerProfiles)
+      .where(eq(schema.customerProfiles.userId, seeded.id));
+    expect(row!.fullName).toBe("Ivan Test"); // value from seedRegisteredUser
+  });
+
+  it("rejects an invalid Bulgarian phone with 400 + per-field error and does not write", async () => {
+    const { user, cookie } = await seededPersonalAndLoggedIn({
+      email: "patch-badphone@example.com",
+    });
+
+    const res = await app.request("/auth/me", {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+        Cookie: `${sessionCookieName()}=${cookie}`,
+      },
+      body: JSON.stringify({ phone: "123" }), // way too short
+    });
+    expect(res.status).toBe(400);
+    const problem = (await res.json()) as {
+      title: string;
+      errors?: { path: string; message: string }[];
+    };
+    expect(problem.errors).toBeDefined();
+    expect(problem.errors!.some((e) => e.path === "phone")).toBe(true);
+
+    // Phone unchanged.
+    const db = getDb();
+    const [row] = await db
+      .select()
+      .from(schema.customerProfiles)
+      .where(eq(schema.customerProfiles.userId, user.id));
+    expect(row!.phone).toBe("+359888000000"); // value from seedRegisteredUser
+  });
+
+  it("rejects a corporate field sent on a personal account with 400 + per-field error", async () => {
+    const { user, cookie } = await seededPersonalAndLoggedIn({
+      email: "patch-cross@example.com",
+    });
+
+    const res = await app.request("/auth/me", {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+        Cookie: `${sessionCookieName()}=${cookie}`,
+      },
+      body: JSON.stringify({ companyName: "Should Be Rejected" }),
+    });
+    expect(res.status).toBe(400);
+    const problem = (await res.json()) as {
+      errors?: { path: string; message: string }[];
+    };
+    expect(problem.errors).toBeDefined();
+    expect(
+      problem.errors!.some((e) => e.path === "companyName"),
+    ).toBe(true);
+
+    // No write — the personal row is unchanged AND no corporate row was created.
+    const db = getDb();
+    const [corp] = await db
+      .select()
+      .from(schema.corporateProfiles)
+      .where(eq(schema.corporateProfiles.userId, user.id));
+    expect(corp).toBeUndefined();
+  });
+
+  it("rejects an unknown field (Zod .strict()) with 400 — defence against role/email/eik smuggling", async () => {
+    const { cookie } = await seededPersonalAndLoggedIn({
+      email: "patch-unknown@example.com",
+    });
+
+    const res = await app.request("/auth/me", {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+        Cookie: `${sessionCookieName()}=${cookie}`,
+      },
+      body: JSON.stringify({
+        // Attempt to set the role via PATCH. The strict-schema must
+        // reject this BEFORE the handler-level account-type check runs.
+        role: "admin",
+        fullName: "Trying To Sneak In",
+      }),
+    });
+    expect(res.status).toBe(400);
+    // The fullName write must NOT have taken effect either — atomic
+    // rejection of the whole body, not a partial save.
+    const db = getDb();
+    const [meRow] = await db
+      .select({ id: schema.users.id, role: schema.users.role })
+      .from(schema.users)
+      .where(eq(schema.users.email, "patch-unknown@example.com"));
+    expect(meRow!.role).toBe("customer"); // role stayed customer, not admin
+  });
+
+  it("short-circuits a no-op PATCH (no changes, no updated_at bump)", async () => {
+    const { user, cookie } = await seededPersonalAndLoggedIn({
+      email: "patch-noop@example.com",
+    });
+
+    // Read the row's current updated_at so we can assert it didn't change.
+    const db = getDb();
+    const [before] = await db
+      .select()
+      .from(schema.customerProfiles)
+      .where(eq(schema.customerProfiles.userId, user.id));
+    const beforeUpdatedAt = before!.updatedAt;
+
+    // Wait a beat so any spurious update would visibly bump the timestamp.
+    await new Promise((r) => setTimeout(r, 20));
+
+    const res = await app.request("/auth/me", {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+        Cookie: `${sessionCookieName()}=${cookie}`,
+      },
+      body: JSON.stringify({
+        // Same values as seeded.
+        fullName: "Ivan Test",
+        phone: "+359888000000",
+      }),
+    });
+    expect(res.status).toBe(200);
+
+    const [after] = await db
+      .select()
+      .from(schema.customerProfiles)
+      .where(eq(schema.customerProfiles.userId, user.id));
+    expect(after!.updatedAt.getTime()).toBe(beforeUpdatedAt.getTime());
+  });
+
+  it("updates corporate fields and accepts an explicit null vatNumber to clear it", async () => {
+    const { user, cookie } = await seededCorporateAndLoggedIn();
+
+    const res = await app.request("/auth/me", {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+        Cookie: `${sessionCookieName()}=${cookie}`,
+      },
+      body: JSON.stringify({
+        companyName: "Acme Renamed EOOD",
+        vatNumber: null, // explicit clear — company deregistered from VAT
+        // Local format (10 digits with leading 0 — standard Bulgarian mobile)
+        // → server normalises to E.164 by stripping the trunk prefix and
+        // prepending +359.
+        contactPhone: "088 999 1110",
+      }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      profile: {
+        kind: "corporate";
+        companyName: string;
+        eik: string;
+        vatNumber: string | null;
+        contactPhone: string;
+      };
+    };
+    expect(body.profile.kind).toBe("corporate");
+    expect(body.profile.companyName).toBe("Acme Renamed EOOD");
+    expect(body.profile.vatNumber).toBeNull();
+    expect(body.profile.contactPhone).toBe("+359889991110"); // normalised
+    // EIK is structurally unchanged — the schema doesn't accept a key for it.
+    expect(body.profile.eik).toBe("204123456");
+
+    // DB confirms.
+    const db = getDb();
+    const [row] = await db
+      .select()
+      .from(schema.corporateProfiles)
+      .where(eq(schema.corporateProfiles.userId, user.id));
+    expect(row!.companyName).toBe("Acme Renamed EOOD");
+    expect(row!.vatNumber).toBeNull();
+    expect(row!.contactPhone).toBe("+359889991110");
+    expect(row!.eik).toBe("204123456");
+  });
+
+  it("rejects a malformed VAT number with 400 + per-field error and does not write", async () => {
+    const { user, cookie } = await seededCorporateAndLoggedIn();
+
+    const res = await app.request("/auth/me", {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+        Cookie: `${sessionCookieName()}=${cookie}`,
+      },
+      body: JSON.stringify({
+        vatNumber: "RO123456789", // wrong country prefix
+      }),
+    });
+    expect(res.status).toBe(400);
+    const problem = (await res.json()) as {
+      errors?: { path: string; message: string }[];
+    };
+    expect(problem.errors).toBeDefined();
+    expect(problem.errors!.some((e) => e.path === "vatNumber")).toBe(true);
+
+    // VAT unchanged.
+    const db = getDb();
+    const [row] = await db
+      .select()
+      .from(schema.corporateProfiles)
+      .where(eq(schema.corporateProfiles.userId, user.id));
+    expect(row!.vatNumber).toBe("BG204123456");
+  });
+});

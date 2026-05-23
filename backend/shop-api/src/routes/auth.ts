@@ -43,6 +43,7 @@ import { parseEnv } from "../lib/env.js";
 import { ApiError, ProblemSchema, badRequest, internal } from "../lib/errors.js";
 import { logger as baseLogger } from "../lib/logger.js";
 import { getLockoutState, recordAttempt } from "../lib/lockout.js";
+import { normalizeBulgarianPhone } from "../lib/phone.js";
 import {
   createSession,
   deleteAllSessionsForUser,
@@ -105,6 +106,52 @@ const PublicUserSchema = z
     fullName: z.string().nullable(),
   })
   .openapi("PublicUser");
+
+// ─── Profile schemas ───────────────────────────────────────────────────────
+//
+// Editable profile data, returned on GET /auth/me and PATCH /auth/me. Modelled
+// as a discriminated union by `kind` so consumers branch on it the same way
+// the database schema does (separate customer_profiles vs corporate_profiles
+// tables — see backend/db/src/schema/users.ts).
+//
+// Deliberately omitted from BOTH read and write:
+//   - email           — has a dedicated multi-step flow at /auth/email-change.
+//   - password        — has a dedicated flow at /auth/change-password.
+//   - role            — set by the system at registration; not user-mutable.
+//   - accountType     — set at registration; switching from personal to
+//                       corporate is effectively a different account and would
+//                       need a migration of the linked profile row anyway.
+//   - eik (corporate) — the legal business identifier. Editing it would mean
+//                       pretending to be a different company. If the user truly
+//                       changes their legal entity, the right move is a new
+//                       registration. Returned in the read response so the
+//                       form can show it as a disabled field.
+
+const PersonalProfileSchema = z
+  .object({
+    kind: z.literal("personal"),
+    fullName: z.string(),
+    phone: z.string(),
+  })
+  .openapi("PersonalProfile");
+
+const CorporateProfileSchema = z
+  .object({
+    kind: z.literal("corporate"),
+    companyName: z.string(),
+    /** Read-only — see the comment block above. */
+    eik: z.string(),
+    vatNumber: z.string().nullable(),
+    registeredAddress: z.string(),
+    mol: z.string(),
+    contactName: z.string(),
+    contactPhone: z.string(),
+  })
+  .openapi("CorporateProfile");
+
+const ProfileSchema = z
+  .discriminatedUnion("kind", [PersonalProfileSchema, CorporateProfileSchema])
+  .openapi("Profile");
 
 // ─── Register ──────────────────────────────────────────────────────────────
 
@@ -202,18 +249,138 @@ const logoutRoute = createRoute({
 // ─── Me ────────────────────────────────────────────────────────────────────
 
 const MeResponseSchema = z
-  .object({ user: PublicUserSchema })
+  .object({
+    user: PublicUserSchema,
+    /**
+     * Editable profile shape, sibling to `user`. Null when the row is missing
+     * (admin accounts always; an inconsistent customer row should never
+     * occur but is tolerated rather than 500-ing). Discriminated by `kind`.
+     */
+    profile: ProfileSchema.nullable(),
+  })
   .openapi("MeResponse");
 
 const meRoute = createRoute({
   method: "get",
   path: "/me",
   tags: ["auth"],
-  summary: "Return the currently authenticated user",
+  summary: "Return the currently authenticated user and editable profile",
   responses: {
     200: {
-      description: "The user behind the active session cookie.",
+      description: "The user behind the active session cookie + their profile.",
       content: { "application/json": { schema: MeResponseSchema } },
+    },
+    401: {
+      description: "No active session.",
+      content: { "application/problem+json": { schema: ProblemSchema } },
+    },
+  },
+});
+
+// ─── Update me (PATCH /auth/me) ───────────────────────────────────────────
+//
+// Partial update of the editable profile fields. Account-type-aware:
+//   - personal:  fullName, phone
+//   - corporate: companyName, vatNumber, registeredAddress, mol,
+//                contactName, contactPhone
+//
+// Semantics:
+//   - HTTP PATCH per RFC 5789 (partial update). NOT RFC 7396 merge-patch:
+//     we use a typed Zod schema rather than the implicit "null = delete"
+//     convention; that gives us field-level validation messages the UI
+//     can render inline, which merge-patch's freeform shape can't.
+//   - Every field is OPTIONAL. Sending none returns the current state
+//     (no-op short-circuit; the row's updated_at is NOT bumped).
+//   - Unknown keys are REJECTED with 400 (Zod `.strict()`). This is a
+//     defence-in-depth measure against a confused-deputy attempt to set
+//     fields we don't expose (role, email, accountType, eik).
+//   - Submitting a field that belongs to the OTHER account type (e.g. a
+//     personal account trying to PATCH `companyName`) is rejected 400 with
+//     a per-field error pointing to the rejected path.
+//   - Phone numbers are normalised to E.164 before persisting. Anything
+//     normalizeBulgarianPhone() rejects produces a 400 with a per-field
+//     error on `phone` or `contactPhone`.
+//   - VAT number (corporate) MAY be set to null explicitly to clear it.
+//     This is the only field where null carries meaning; for the rest
+//     omitting the key means "no change".
+//
+// Why no `If-Match` / ETag:
+//   - The only writer to a user's own profile is the user themself. The
+//     "concurrent edit" case is "logged in on two tabs at once"; last-write-
+//     wins is the right behaviour there. Adding optimistic locking would
+//     buy nothing against any actual threat model.
+//
+// Audit log:
+//   - Structured Pino log `profile_updated` with the LIST OF FIELD NAMES
+//     that changed (never the values — those are PII). GDPR Art. 16
+//     "record of processing activities" is satisfied by the CloudWatch
+//     log retention. We deliberately do NOT write to admin_audit_log
+//     (that table is for actor=admin actions on third parties).
+
+const UpdateMeRequestSchema = z
+  .object({
+    // Personal-account fields. Optional; absence means "no change".
+    fullName: z.string().trim().min(1, "Name is required").max(120).optional(),
+    phone: z.string().trim().min(3, "Phone is required").max(40).optional(),
+
+    // Corporate-account fields. Optional; absence means "no change".
+    // EIK is intentionally not present — see ProfileSchema comment above.
+    companyName: z.string().trim().min(1, "Company name is required").max(200).optional(),
+    /**
+     * VAT number. Bulgarian format is "BG" + 9 or 10 digits per Council
+     * Directive 2006/112/EC, Annex I. The literal-null case is accepted to
+     * let a previously-VAT-registered company clear the field if they
+     * deregister. Empty string is treated as null at handler level.
+     */
+    vatNumber: z
+      .string()
+      .trim()
+      .max(20)
+      .regex(/^BG\d{9,10}$/, "VAT number must be Bulgarian format: BG + 9 or 10 digits")
+      .nullable()
+      .optional(),
+    registeredAddress: z.string().trim().min(3).max(300).optional(),
+    mol: z.string().trim().min(1).max(120).optional(),
+    contactName: z.string().trim().min(1).max(120).optional(),
+    contactPhone: z.string().trim().min(3).max(40).optional(),
+  })
+  // .strict() — reject unknown keys at the Zod layer. A 400 fires with a
+  // validation error before the handler runs. Defence in depth against
+  // confused-deputy attempts to set role / email / accountType / eik.
+  .strict()
+  .openapi("UpdateMeRequest");
+
+const updateMeRoute = createRoute({
+  method: "patch",
+  path: "/me",
+  tags: ["auth"],
+  summary: "Update the editable profile fields of the current user",
+  description:
+    "Partial update of the authenticated user's profile. Every field is " +
+    "optional; only the ones present in the body are written. The endpoint " +
+    "is account-type-aware: personal customers can update fullName + phone, " +
+    "corporate customers can update companyName + VAT + address + MOL + " +
+    "contact name + contact phone. EIK, email, password, role, and account " +
+    "type are not editable here — they have their own flows. Phone numbers " +
+    "are normalised to E.164.",
+  request: {
+    body: {
+      required: true,
+      content: { "application/json": { schema: UpdateMeRequestSchema } },
+    },
+  },
+  responses: {
+    200: {
+      description:
+        "Profile updated (or no-op if no fields changed). Returns the full " +
+        "current state — same shape as GET /auth/me.",
+      content: { "application/json": { schema: MeResponseSchema } },
+    },
+    400: {
+      description:
+        "Validation error: unknown field, invalid phone, VAT format wrong, " +
+        "or a field belonging to the other account type was sent.",
+      content: { "application/problem+json": { schema: ProblemSchema } },
     },
     401: {
       description: "No active session.",
@@ -824,7 +991,17 @@ authRoutes.openapi(meRoute, async (c) => {
       detail: "Authentication is required.",
     });
   }
-  const fullName = await resolveFullName(getDb(), user.id, user.role);
+  const db = getDb();
+  // Two reads in parallel — fullName comes from the same tables resolveProfile
+  // walks, but resolveFullName collapses the result to a single string for
+  // the PublicUser shape, while resolveProfile returns the full editable
+  // record. They could share a query; the duplication is intentional —
+  // resolveFullName must keep working for the eight other endpoints that
+  // need just the display name without paying for the rest of the row.
+  const [fullName, profile] = await Promise.all([
+    resolveFullName(db, user.id, user.role),
+    resolveProfile(db, user.id, user.role, user.accountType),
+  ]);
   return c.json(
     {
       user: {
@@ -837,6 +1014,256 @@ authRoutes.openapi(meRoute, async (c) => {
           : null,
         fullName,
       },
+      profile,
+    },
+    200,
+  );
+});
+
+// PATCH /auth/me — partial profile update. See route comment block above
+// for the full design (rejection rules, audit log, no-op semantics).
+authRoutes.use(updateMeRoute.path, requireAuth);
+authRoutes.openapi(updateMeRoute, async (c) => {
+  const body = c.req.valid("json");
+  const user = c.get("user");
+  if (!user) {
+    throw new ApiError({
+      type: "about:blank",
+      title: "Unauthorized",
+      status: 401,
+      detail: "Authentication is required.",
+    });
+  }
+  const log = baseLogger;
+  const db = getDb();
+
+  // Admin accounts have no profile row of either kind to edit. We could
+  // build an admin-profile surface later; for now this endpoint is
+  // customer-only.
+  if (user.role !== "customer" || !user.accountType) {
+    throw new ApiError({
+      type: "about:blank",
+      title: "Forbidden",
+      status: 403,
+      detail: "Profile editing is not available for this account type.",
+    });
+  }
+
+  // ── Account-type field-allowlist enforcement ────────────────────────────
+  // Zod's .strict() already rejected unknown keys at the schema layer.
+  // Here we reject keys that ARE in the schema but belong to the other
+  // account type. Sending companyName on a personal account is a 400 with
+  // a per-field error so the UI can highlight the offending input.
+  const PERSONAL_FIELDS = ["fullName", "phone"] as const;
+  const CORPORATE_FIELDS = [
+    "companyName",
+    "vatNumber",
+    "registeredAddress",
+    "mol",
+    "contactName",
+    "contactPhone",
+  ] as const;
+  const allowed: readonly string[] =
+    user.accountType === "personal" ? PERSONAL_FIELDS : CORPORATE_FIELDS;
+  const submittedKeys = Object.entries(body)
+    .filter(([, v]) => v !== undefined)
+    .map(([k]) => k);
+  const rejected = submittedKeys.filter((k) => !allowed.includes(k));
+  if (rejected.length > 0) {
+    throw badRequest(
+      `Fields not editable on a ${user.accountType} account: ${rejected.join(", ")}`,
+      rejected.map((path) => ({
+        path,
+        message: `Field "${path}" is not valid for a ${user.accountType} account.`,
+      })),
+    );
+  }
+
+  // ── Phone normalisation ─────────────────────────────────────────────────
+  // Both fields share the same Bulgarian E.164 normaliser. Any value we
+  // can't canonicalise produces a 400 with a per-field error so the UI
+  // can render a localised hint against the right input.
+  if (typeof body.phone === "string") {
+    const normalized = normalizeBulgarianPhone(body.phone);
+    if (!normalized) {
+      throw badRequest("Invalid Bulgarian phone number.", [
+        {
+          path: "phone",
+          message:
+            "Phone must be a valid Bulgarian number (e.g. +359 88 812 3456).",
+        },
+      ]);
+    }
+    body.phone = normalized;
+  }
+  if (typeof body.contactPhone === "string") {
+    const normalized = normalizeBulgarianPhone(body.contactPhone);
+    if (!normalized) {
+      throw badRequest("Invalid Bulgarian contact phone number.", [
+        {
+          path: "contactPhone",
+          message:
+            "Contact phone must be a valid Bulgarian number (e.g. +359 88 812 3456).",
+        },
+      ]);
+    }
+    body.contactPhone = normalized;
+  }
+
+  // ── No-op short-circuit ─────────────────────────────────────────────────
+  // If the user submitted zero changes (or every submitted value matches
+  // the stored value), don't write. This keeps updated_at honest — it
+  // really did NOT change — and skips the audit log entry. Cheap PATCHes
+  // are the common case (e.g., the UI saves the whole form even when the
+  // user only touched one field; the values for the others come back
+  // identical to what's stored).
+  const currentProfile = await resolveProfile(
+    db,
+    user.id,
+    user.role,
+    user.accountType,
+  );
+  if (!currentProfile) {
+    // Customer with no profile row — schema invariant violation. The
+    // registration flow inserts one transactionally so this should be
+    // unreachable. If it is reached, returning 500 surfaces the bug
+    // rather than silently masking it with an INSERT-instead-of-UPDATE.
+    throw internal("Profile row is missing for this user.");
+  }
+
+  const changedFields: string[] = [];
+  if (currentProfile.kind === "personal") {
+    if (typeof body.fullName === "string" && body.fullName !== currentProfile.fullName) {
+      changedFields.push("fullName");
+    }
+    if (typeof body.phone === "string" && body.phone !== currentProfile.phone) {
+      changedFields.push("phone");
+    }
+  } else {
+    if (
+      typeof body.companyName === "string" &&
+      body.companyName !== currentProfile.companyName
+    ) {
+      changedFields.push("companyName");
+    }
+    // vatNumber: undefined = no-op, null = clear, string = set. Compare the
+    // intent against the stored value.
+    if (body.vatNumber !== undefined) {
+      const stored = currentProfile.vatNumber;
+      const incoming = body.vatNumber; // string | null
+      if (incoming !== stored) changedFields.push("vatNumber");
+    }
+    if (
+      typeof body.registeredAddress === "string" &&
+      body.registeredAddress !== currentProfile.registeredAddress
+    ) {
+      changedFields.push("registeredAddress");
+    }
+    if (typeof body.mol === "string" && body.mol !== currentProfile.mol) {
+      changedFields.push("mol");
+    }
+    if (
+      typeof body.contactName === "string" &&
+      body.contactName !== currentProfile.contactName
+    ) {
+      changedFields.push("contactName");
+    }
+    if (
+      typeof body.contactPhone === "string" &&
+      body.contactPhone !== currentProfile.contactPhone
+    ) {
+      changedFields.push("contactPhone");
+    }
+  }
+
+  if (changedFields.length === 0) {
+    // No-op. Return the current state without writing. We deliberately do
+    // NOT log here — a save that didn't save is not an event worth
+    // recording, and CloudWatch volume matters.
+    const fullName = await resolveFullName(db, user.id, user.role);
+    return c.json(
+      {
+        user: {
+          id: user.id,
+          email: user.email,
+          role: user.role,
+          accountType: user.accountType,
+          emailVerifiedAt: user.emailVerifiedAt
+            ? user.emailVerifiedAt.toISOString()
+            : null,
+          fullName,
+        },
+        profile: currentProfile,
+      },
+      200,
+    );
+  }
+
+  // ── Persist ─────────────────────────────────────────────────────────────
+  // Only the changed fields go into the SET clause. Drizzle's $onUpdate
+  // hook on updated_at fires for us.
+  if (user.accountType === "personal") {
+    const patch: Partial<typeof schema.customerProfiles.$inferInsert> = {};
+    if (changedFields.includes("fullName")) patch.fullName = body.fullName!;
+    if (changedFields.includes("phone")) patch.phone = body.phone!;
+    await db
+      .update(schema.customerProfiles)
+      .set(patch)
+      .where(eq(schema.customerProfiles.userId, user.id));
+  } else {
+    const patch: Partial<typeof schema.corporateProfiles.$inferInsert> = {};
+    if (changedFields.includes("companyName")) patch.companyName = body.companyName!;
+    if (changedFields.includes("vatNumber")) patch.vatNumber = body.vatNumber ?? null;
+    if (changedFields.includes("registeredAddress")) {
+      patch.registeredAddress = body.registeredAddress!;
+    }
+    if (changedFields.includes("mol")) patch.mol = body.mol!;
+    if (changedFields.includes("contactName")) patch.contactName = body.contactName!;
+    if (changedFields.includes("contactPhone")) patch.contactPhone = body.contactPhone!;
+    await db
+      .update(schema.corporateProfiles)
+      .set(patch)
+      .where(eq(schema.corporateProfiles.userId, user.id));
+  }
+
+  // ── Audit ───────────────────────────────────────────────────────────────
+  // Structured log only; no PII values. The CloudWatch retention + Pino
+  // PII-redaction policy keeps this GDPR Art. 30 / Art. 32 compatible.
+  // Field NAMES are not personal data; field VALUES would be. We log the
+  // former, never the latter.
+  log?.info(
+    {
+      userId: user.id,
+      accountType: user.accountType,
+      changed: changedFields,
+      ip: clientIp(c),
+      ua: c.req.header("user-agent") ?? null,
+    },
+    "profile_updated",
+  );
+
+  // Re-read so we return the canonical post-write state (rather than
+  // patching the in-memory object). One extra SELECT; trivially cheap.
+  const updatedProfile = await resolveProfile(
+    db,
+    user.id,
+    user.role,
+    user.accountType,
+  );
+  const fullName = await resolveFullName(db, user.id, user.role);
+  return c.json(
+    {
+      user: {
+        id: user.id,
+        email: user.email,
+        role: user.role,
+        accountType: user.accountType,
+        emailVerifiedAt: user.emailVerifiedAt
+          ? user.emailVerifiedAt.toISOString()
+          : null,
+        fullName,
+      },
+      profile: updatedProfile,
     },
     200,
   );
@@ -1429,6 +1856,79 @@ async function resolveFullName(
   if (corporate) return corporate.contactName;
 
   return null;
+}
+
+/**
+ * Read the editable profile for a customer. Returns null for admins (who
+ * don't have one) and for customers whose profile row is missing (a schema
+ * invariant violation — registration inserts one transactionally, so this
+ * should be unreachable in production data).
+ *
+ * Shape matches the ProfileSchema discriminated union; the PATCH /auth/me
+ * handler relies on `kind` to know which fields to compare and update.
+ */
+type ResolvedProfile =
+  | {
+      kind: "personal";
+      fullName: string;
+      phone: string;
+    }
+  | {
+      kind: "corporate";
+      companyName: string;
+      eik: string;
+      vatNumber: string | null;
+      registeredAddress: string;
+      mol: string;
+      contactName: string;
+      contactPhone: string;
+    };
+
+async function resolveProfile(
+  db: DbClient,
+  userId: string,
+  role: "admin" | "customer",
+  accountType: "personal" | "corporate" | null,
+): Promise<ResolvedProfile | null> {
+  if (role !== "customer" || !accountType) return null;
+
+  if (accountType === "personal") {
+    const [row] = await db
+      .select({
+        fullName: schema.customerProfiles.fullName,
+        phone: schema.customerProfiles.phone,
+      })
+      .from(schema.customerProfiles)
+      .where(eq(schema.customerProfiles.userId, userId))
+      .limit(1);
+    if (!row) return null;
+    return { kind: "personal", fullName: row.fullName, phone: row.phone };
+  }
+
+  const [row] = await db
+    .select({
+      companyName: schema.corporateProfiles.companyName,
+      eik: schema.corporateProfiles.eik,
+      vatNumber: schema.corporateProfiles.vatNumber,
+      registeredAddress: schema.corporateProfiles.registeredAddress,
+      mol: schema.corporateProfiles.mol,
+      contactName: schema.corporateProfiles.contactName,
+      contactPhone: schema.corporateProfiles.contactPhone,
+    })
+    .from(schema.corporateProfiles)
+    .where(eq(schema.corporateProfiles.userId, userId))
+    .limit(1);
+  if (!row) return null;
+  return {
+    kind: "corporate",
+    companyName: row.companyName,
+    eik: row.eik,
+    vatNumber: row.vatNumber,
+    registeredAddress: row.registeredAddress,
+    mol: row.mol,
+    contactName: row.contactName,
+    contactPhone: row.contactPhone,
+  };
 }
 
 function clientIp(c: Context): string | null {
