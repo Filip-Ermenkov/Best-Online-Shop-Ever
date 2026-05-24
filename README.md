@@ -452,6 +452,150 @@ invalid phone like `123` yields a red inline error against the phone
 input. A no-op submit (same values) shows a friendly "Няма промени за
 запазване" instead of an error.
 
+## Account deletion (DELETE /auth/me)
+
+`/account/delete` is the **GDPR Art. 17 right-to-erasure** flow wired
+end-to-end. The endpoint is `DELETE /auth/me`, gated by `requireAuth`,
+and demands two layers of intent confirmation:
+
+1. **Current-password re-auth.** A stolen cookie alone must not be
+   enough to irreversibly destroy the account — same defence-in-depth
+   posture as `/auth/change-password` and `/auth/email-change/request`.
+   The lockout counter is shared with `/auth/login`, so a stolen-cookie
+   attacker iterating `currentPassword` here hits the same 5-fails-in-
+   15-min ceiling.
+2. **Typed confirmation phrase.** The Zod schema is
+   `z.literal("ИЗТРИЙ")` (Bulgarian for "DELETE") — any other value
+   (lowercase, English, transliteration) returns 400 before the
+   handler runs. The UI hardcodes the phrase so a happy-path submit
+   from the browser never trips this; it's the canonical SaaS
+   destructive-action belt-and-braces.
+
+The slice carefully balances two binding regimes:
+
+- **GDPR Art. 17(1)** — data subject's right to erasure "without undue
+  delay". We execute immediately on request, no soft-undelete grace
+  period (Stripe / GitHub / Shopify customer-account pattern).
+- **Bulgarian Accountancy Act / Закон за счетоводството** — **10-year
+  mandatory retention** for invoices and accounting documents. GDPR
+  Art. 17(3)(b) explicitly carves out an exemption for retention
+  required by a legal obligation. The records stay; the personal data
+  linking them to a specific person is **pseudonymised** wherever the
+  law doesn't require the full PII.
+
+The endpoint executes a single transaction (see
+`backend/shop-api/src/lib/account-deletion.ts`) that does both:
+
+**Hard-deleted (no legal-retention claim):**
+- `customer_profiles` / `corporate_profiles` row
+- `addresses` (address book)
+- `carts` + `cart_items` (FK cascade from carts.userId)
+- `discounts`
+- `mfa_recovery_codes`
+- `sessions` (all of them, including the caller's — handled outside the
+  transaction via `deleteAllSessionsForUser`)
+- `email_verification_tokens` for this user
+- `password_reset_tokens` for this user
+- `login_attempts` rows matching the original email (Art. 5(1)(c)
+  data-minimisation — auth telemetry for a user who has exercised
+  their right to erasure should not survive)
+
+**Pseudonymised (Art. 17(3)(b) legal-retention exemption):**
+- `users` row — kept in place; `email` rewritten to
+  `deleted-<uuid>@deleted.invalid` (RFC 6761 reserves `.invalid` so
+  the address is unroutable), `passwordHash` rewritten to a non-Argon2
+  sentinel (defence in depth — even if the `deletedAt` filter is
+  bypassed somewhere, `verifyPassword` rejects the sentinel as
+  malformed), `deletedAt` + `anonymizedAt` set.
+- `orders` row — kept (10-year accounting retention).
+  `customerId` set NULL; `customerEmail` / `customerName` /
+  `customerPhone` set to `"[deleted]"`. **The financial fields
+  (`subtotalCents` / `discountAmountCents` / `totalCents`) and the
+  `order_items` line-item snapshots stay intact** — these are the
+  invoice content the law requires.
+- `order_delivery_address` — kept. `street` set to `"[deleted]"`,
+  `apartmentOrOffice` set to NULL. **`city` + `postalCode` are
+  preserved** as coarse-grained tax-territory data that no longer
+  identifies a person.
+- `order_corporate_data` — kept. **Only `contactName` is
+  pseudonymised.** `companyName` + `eik` + `vatNumber` +
+  `registeredAddress` + `mol` are LEGALLY REQUIRED invoice content
+  under Bulgarian VAT law and stay intact (this is GDPR Art. 17(3)(b)
+  in its purest form — the entity on the invoice IS the company, not
+  the natural person who logged in).
+- `complaints` (where the customer was the deleted user) — kept (EU
+  2011/83/EU Art. 11a + 2023/2673 require the withdrawal record on a
+  durable medium for the statutory period). `customerEmail` /
+  `customerName` / `customerPhone` set to `"[deleted]"`. The `reason`
+  enum + `description` (substantive complaint content) stay intact.
+
+**Active-order check.** If any order is in an active state (`processing`
+/ `shipped` / `ready_for_pickup` / `delivered`-but-not-yet-accepted),
+the endpoint returns `422 /problems/active-orders-block-deletion` with
+the blocking `orderNumbers` in `errors[].path`. GDPR Art. 6(1)(b)
+"processing necessary for the performance of a contract" supersedes
+Art. 17 erasure while shipping is in flight. The UI lists the blocking
+orders and instructs the user to wait or contact support.
+
+**Email re-registration.** After deletion, the original address is
+freed — the `users_email_unique` index sees the new sentinel and
+ignores the original value. `/auth/register` already filters its
+existing-email check by `isNull(deletedAt)`, so registering again with
+the original email lands cleanly on a fresh row.
+
+**Adjacent endpoints already handle deletion silently** (no
+enumeration leakage):
+- `/auth/login` — deleted users get the same 401 as unknown emails
+  (the constant-time-with-DUMMY_PASSWORD_HASH path).
+- `/auth/forgot-password` — deleted users get the same 200 as unknown
+  emails (no recovery email issued).
+- `/auth/email-change/request` conflict check filters by `deletedAt`,
+  so a freed email isn't surfaced as "in use".
+- `validateSession` filters by `deletedAt` and drops the session row
+  if a deleted user's cookie shows up — the `currentUser` middleware
+  then clears the orphaned cookie on the same response.
+
+**Post-deletion notification email.** Best-effort `auth.account-
+deleted` (Bulgarian) to the ORIGINAL address (captured before the
+transaction rewrites it). Explains what was deleted, what is legally
+retained, and how to react if the recipient did NOT initiate the
+deletion (lock down email, contact support — same pattern as the
+post-password-change template).
+
+**No `admin_audit_log` write** — that table is for actor=admin acting
+on third parties. For subject-on-self destructive actions, structured
+Pino `account_deleted` log + CloudWatch retention satisfies GDPR
+Art. 30 records-of-processing without piling PII into log indexes.
+The log entry carries `userId` and `pseudonymizedAt` (timestamp), never
+the original email value.
+
+**No CSRF token** — same posture as PATCH /auth/me. SameSite=Lax +
+same-origin DELETE + current-password re-auth covers the threat model.
+
+In **local dev**, `console`-transport prints the post-deletion email
+to `api:dev`'s stdout. Smoke flow:
+
+1. Register / verify / log in.
+2. Optionally place an order via the regular cart flow.
+3. Navigate to `/account/profile` → scroll to the bottom "Изтриване на
+   акаунт" section → click "Изтрий акаунта си".
+4. Read the disclosure, type `ИЗТРИЙ` in the confirmation box, enter
+   the current password, click "Изтрий акаунта".
+5. Land on `/?account-deleted=success` with a green confirmation
+   banner; the API terminal shows the `auth.account-deleted` email.
+6. Confirm via psql:
+   ```sql
+   SELECT email, deleted_at, anonymized_at FROM users
+     WHERE id = '<the-uuid>';
+   -- email is now deleted-XXX@deleted.invalid, both timestamps set.
+   SELECT customer_id, customer_email FROM orders
+     WHERE order_number = '<that-order>';
+   -- customer_id NULL, customer_email '[deleted]'.
+   ```
+7. Re-registering with the same email succeeds — it's a fresh row.
+8. If you try to delete a user with a `status='processing'` order
+   the API returns 422 and lists the blocking order number.
+
 ## Order withdrawal (14-day right)
 
 `/account/orders/[orderNumber]/withdrawal` is the **digital withdrawal
@@ -1222,9 +1366,6 @@ have to be re-derived when extending the codebase.
 
 - MFA for admin (admin-api is its own slice).
 - Corporate registration UI + backend endpoint.
-- Account deletion / GDPR anonymization.
-- Profile-data edit (`PATCH /auth/me` for fullName/phone). The
-  password-change endpoint shipped May 22 2026.
 - Login attempts retention sweep (180-day window — needs scheduler slice).
 
 ### Infrastructure / CI

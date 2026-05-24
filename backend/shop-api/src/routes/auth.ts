@@ -39,6 +39,13 @@ import {
   sendEmailChangedNotification,
   validateEmailChangeToken,
 } from "../lib/email-change.js";
+import {
+  AccountAlreadyDeletedError,
+  UserRowMissingError,
+  executeAccountDeletion,
+  findActiveOrdersForUser,
+  sendAccountDeletedEmail,
+} from "../lib/account-deletion.js";
 import { parseEnv } from "../lib/env.js";
 import { ApiError, ProblemSchema, badRequest, internal } from "../lib/errors.js";
 import { logger as baseLogger } from "../lib/logger.js";
@@ -384,6 +391,91 @@ const updateMeRoute = createRoute({
     },
     401: {
       description: "No active session.",
+      content: { "application/problem+json": { schema: ProblemSchema } },
+    },
+  },
+});
+
+// ─── Delete me (DELETE /auth/me) ──────────────────────────────────────────
+//
+// GDPR Art. 17 right-to-erasure endpoint. Requires:
+//   - active session (requireAuth),
+//   - currentPassword re-auth proof (defeats the stolen-cookie threat —
+//     same posture as /auth/change-password and /auth/email-change/request),
+//   - confirmationPhrase exactly equal to the literal string "ИЗТРИЙ" so a
+//     mis-clicked DELETE from a TS-typed client SDK can't trigger this
+//     irreversibly. This is the canonical SaaS "type DELETE in the box"
+//     destructive-action confirmation, transposed to Bulgarian.
+//
+// Refuses with 422 if the user has any orders in an active state
+// (processing / shipped / ready_for_pickup / delivered-not-yet-accepted).
+// Active orders represent ongoing contract performance — GDPR Art. 6(1)(b)
+// supersedes Art. 17 for the duration. The 422 body carries the blocking
+// order numbers so the UI can show the user exactly what to wait for.
+//
+// On success the entire orchestration runs atomically (see
+// executeAccountDeletion in lib/account-deletion.ts). The response is 204
+// — the caller's session has been killed, so there is nothing user-bound
+// to return. The frontend logs out locally and redirects to the homepage
+// with a success banner.
+
+const DeleteMeRequestSchema = z
+  .object({
+    /** Re-auth proof. Length-only validation — see ChangePasswordRequest. */
+    currentPassword: z.string().min(1).max(1024),
+    /** Literal Bulgarian word for "DELETE". Locked to the exact form the
+     * UI shows so a typo doesn't accidentally proceed. */
+    confirmationPhrase: z.literal("ИЗТРИЙ"),
+  })
+  .strict()
+  .openapi("DeleteMeRequest");
+
+const deleteMeRoute = createRoute({
+  method: "delete",
+  path: "/me",
+  tags: ["auth"],
+  summary:
+    "Permanently delete the authenticated user's account. Requires current-password re-auth and a fixed confirmation phrase.",
+  description:
+    "GDPR Art. 17 right-to-erasure endpoint. Profile rows, addresses, cart, " +
+    "sessions, tokens, and per-account discount are hard-deleted. Orders + " +
+    "complaints + invoice-side snapshots are pseudonymised (10-year " +
+    "Bulgarian Accountancy Act retention takes precedence over erasure per " +
+    "Art. 17(3)(b)). The original email is freed for re-registration. " +
+    "Returns 422 if there are still-active orders blocking the deletion.",
+  request: {
+    body: {
+      required: true,
+      content: { "application/json": { schema: DeleteMeRequestSchema } },
+    },
+  },
+  responses: {
+    204: {
+      description:
+        "Account deleted. The session cookie is cleared on this response; the user is now anonymous.",
+    },
+    400: {
+      description:
+        "Validation error — missing confirmationPhrase or wrong value.",
+      content: { "application/problem+json": { schema: ProblemSchema } },
+    },
+    401: {
+      description:
+        "No active session OR currentPassword is incorrect. Identical body for both — distinguishing them would leak whether the cookie alone is enough.",
+      content: { "application/problem+json": { schema: ProblemSchema } },
+    },
+    403: {
+      description: "Admin accounts cannot delete themselves through this endpoint.",
+      content: { "application/problem+json": { schema: ProblemSchema } },
+    },
+    422: {
+      description:
+        "There are still-active orders blocking the deletion. Body carries the blocking order numbers in `errors[].path`.",
+      content: { "application/problem+json": { schema: ProblemSchema } },
+    },
+    429: {
+      description:
+        "Per-email lockout fired — shared with /auth/login. Too many incorrect currentPassword attempts.",
       content: { "application/problem+json": { schema: ProblemSchema } },
     },
   },
@@ -1267,6 +1359,176 @@ authRoutes.openapi(updateMeRoute, async (c) => {
     },
     200,
   );
+});
+
+// DELETE /auth/me — GDPR Art. 17 right to erasure. See route definition
+// above for the design rationale and lib/account-deletion.ts for the
+// detailed pseudonymise-vs-hard-delete inventory and the legal-retention
+// rationale (Bulgarian Accountancy Act / GDPR Art. 17(3)(b)).
+authRoutes.use(deleteMeRoute.path, requireAuth);
+authRoutes.openapi(deleteMeRoute, async (c) => {
+  const body = c.req.valid("json");
+  const user = c.get("user");
+  if (!user) {
+    throw new ApiError({
+      type: "about:blank",
+      title: "Unauthorized",
+      status: 401,
+      detail: "Authentication is required.",
+    });
+  }
+  const log = baseLogger;
+  const db = getDb();
+
+  // Admin self-deletion via this endpoint is intentionally rejected.
+  // The shop has exactly one admin account by design (see ARCHITECTURE
+  // §12.4). Letting it be deleted via the customer-account-deletion
+  // flow would create a recovery scenario that's not in the runbook,
+  // and the operation has zero customer-facing value.
+  if (user.role !== "customer") {
+    throw new ApiError({
+      type: "about:blank",
+      title: "Forbidden",
+      status: 403,
+      detail: "Admin accounts cannot be deleted through this endpoint.",
+    });
+  }
+
+  // ── Lockout pre-check — same per-email counter as /auth/login. ────────
+  // A stolen-cookie attacker iterating currentPassword via this endpoint
+  // hits the same 5-fails-in-15-min ceiling as on /login.
+  const lockout = await getLockoutState(user.email);
+  if (lockout.locked) {
+    throw new ApiError({
+      type: "/problems/account-locked",
+      title: "Too Many Attempts",
+      status: 429,
+      detail: lockout.unlockAt
+        ? `Account temporarily locked. Try again after ${lockout.unlockAt.toISOString()}.`
+        : "Account temporarily locked due to too many failed attempts.",
+    });
+  }
+
+  // ── Constant-time current-password verify ───────────────────────────
+  // Same posture as /auth/change-password and /auth/email-change/request:
+  // verify against the stored Argon2id hash with DUMMY_PASSWORD_HASH
+  // fallback to keep timing flat across (a) deleted row, (b) deleted-mid-
+  // session, (c) DB hiccup. Failed attempts go to login_attempts so the
+  // lockout counter ticks.
+  const [row] = await db
+    .select({ passwordHash: schema.users.passwordHash })
+    .from(schema.users)
+    .where(eq(schema.users.id, user.id))
+    .limit(1);
+  const targetHash = row?.passwordHash ?? (await DUMMY_PASSWORD_HASH);
+  const passwordOk = await verifyPassword(targetHash, body.currentPassword);
+
+  const ip = clientIp(c);
+  const ua = c.req.header("user-agent") ?? null;
+  const isRealSuccess = passwordOk && !!row;
+  await recordAttempt({
+    email: user.email,
+    success: isRealSuccess,
+    ipAddress: ip,
+    userAgent: ua,
+  });
+
+  if (!isRealSuccess) {
+    throw new ApiError({
+      type: "about:blank",
+      title: "Unauthorized",
+      status: 401,
+      detail: "Current password is incorrect.",
+    });
+  }
+
+  // ── Active-order check ──────────────────────────────────────────────
+  // Run BEFORE the destructive work; if there's anything in flight we
+  // refuse with 422 and surface the blocking order numbers so the UI can
+  // tell the user exactly what to wait for.
+  const blocking = await findActiveOrdersForUser(user.id);
+  if (blocking.orderNumbers.length > 0) {
+    throw new ApiError({
+      type: "/problems/active-orders-block-deletion",
+      title: "Unprocessable Entity",
+      status: 422,
+      detail:
+        "Account deletion is blocked while orders are still being processed. " +
+        "Please wait for the listed orders to complete, or contact support to cancel them.",
+      errors: blocking.orderNumbers.map((orderNumber) => ({
+        path: orderNumber,
+        message: `Order ${orderNumber} is still in an active state and must be completed first.`,
+      })),
+    });
+  }
+
+  // ── Capture identity BEFORE the transaction (for the notification) ──
+  // executeAccountDeletion also captures and returns these; we don't
+  // need to take a second copy here. The function pseudonymises the
+  // users.email column inside the transaction and gives us back the
+  // original.
+  let outcome;
+  try {
+    outcome = await executeAccountDeletion({ userId: user.id });
+  } catch (err) {
+    if (err instanceof AccountAlreadyDeletedError) {
+      // Concurrent request already deleted us. Treat as success — the
+      // session is already invalid; the cookie clear below is the right
+      // response. No notification email is sent on the redundant call
+      // (the first call already issued one).
+      log?.info({ userId: user.id }, "account_deletion_already_executed");
+      clearSessionCookie(c);
+      return c.body(null, 204);
+    }
+    if (err instanceof UserRowMissingError) {
+      throw new ApiError({
+        type: "about:blank",
+        title: "Unauthorized",
+        status: 401,
+        detail: "Authentication is required.",
+      });
+    }
+    throw err;
+  }
+
+  // ── Audit log ─────────────────────────────────────────────────────────
+  // Structured Pino log. Same posture as PATCH /auth/me — we don't write
+  // to admin_audit_log because that table is for actor=admin acting on
+  // third parties. The CloudWatch retention covers GDPR Art. 30 records-
+  // of-processing for the subject-on-self event.
+  // Critical: we deliberately do NOT log the original email value — it's
+  // PII and logs are the wrong place. The userId is sufficient for any
+  // forensic replay (and after this point the users.email column has
+  // already been rewritten to a sentinel).
+  log?.info(
+    {
+      userId: user.id,
+      accountType: user.accountType,
+      pseudonymizedAt: outcome.deletedAt.toISOString(),
+      ip,
+      ua,
+    },
+    "account_deleted",
+  );
+
+  // ── Best-effort post-action notification ─────────────────────────────
+  // Sent to the ORIGINAL email (captured pre-pseudonymisation by
+  // executeAccountDeletion). Failure must NOT roll back the deletion —
+  // the action is intentionally irreversible.
+  await sendAccountDeletedEmail({
+    to: outcome.originalEmail,
+    fullName: outcome.originalFullName,
+    deletedAt: outcome.deletedAt,
+    logger: log,
+  });
+
+  // Clear the session cookie on this response. The session row itself was
+  // already dropped by executeAccountDeletion (which calls
+  // deleteAllSessionsForUser). Other devices' cookies will be cleared on
+  // their next request by the currentUser middleware's orphaned-cookie
+  // cleanup.
+  clearSessionCookie(c);
+  return c.body(null, 204);
 });
 
 // /verify-email is intentionally NOT gated by requireAuth. Anyone holding the

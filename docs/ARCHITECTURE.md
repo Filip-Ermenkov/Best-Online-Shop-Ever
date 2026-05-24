@@ -13,7 +13,7 @@
 > specification. Read that to learn *what* the shop does; this doc
 > covers *how* it's built.
 >
-> Last updated: 2026-05-23.
+> Last updated: 2026-05-24.
 
 ---
 
@@ -1555,6 +1555,70 @@ Ranked by `(impact ÷ effort)` — highest leverage first.
 13. **Decide A2 vs A3** (decision, not work) — Cloudflare Free
     proxy now (saves money) OR Cloudflare Pro proxy (stronger
     security, slight cost increase that pays back at Tier 5).
+
+### Account deletion — GDPR Art. 17 (SHIPPED May 24, 2026)
+
+17c. ✅ **`DELETE /auth/me` for self-service right-to-erasure.**
+     Closes the user-visible gap where the profile page had no way to
+     delete the account, and the documentation honesty gap where
+     `COMPLIANCE.md` previously claimed Art. 17 was shipped despite zero
+     code existing. The endpoint is gated by `requireAuth` + current-
+     password re-auth (defeats the stolen-cookie threat) + a typed
+     confirmation phrase locked to the Bulgarian literal `"ИЗТРИЙ"` via
+     `z.literal` (defence against mis-clicked DELETE from a TS-typed
+     client). The deletion runs in a single transaction (see
+     `backend/shop-api/src/lib/account-deletion.ts`) that balances two
+     binding regimes: GDPR Art. 17(1) "without undue delay" execution
+     vs the Bulgarian Accountancy Act's 10-year invoice-retention
+     mandate. Art. 17(3)(b) explicitly carves out the legal-obligation
+     exemption — we keep the legally-mandated records and pseudonymise
+     the linking PII. Hard-deleted: `customer_profiles` /
+     `corporate_profiles` / `addresses` / `carts` / `discounts` /
+     `mfa_recovery_codes` / `sessions` (all of them) /
+     `email_verification_tokens` / `password_reset_tokens` /
+     `login_attempts` (matched by email — Art. 5(1)(c) data
+     minimisation). Pseudonymised: `users` row stays in place with
+     `email` rewritten to `deleted-<uuid>@deleted.invalid` (RFC 6761
+     reserves `.invalid`) so the original email is freed for re-
+     registration AND the `users_email_unique` index is preserved;
+     `passwordHash` rewritten to a non-Argon2 sentinel so even if the
+     `deletedAt` filter is bypassed somewhere downstream
+     `verifyPassword` rejects the sentinel as malformed (defence in
+     depth); `deletedAt` + `anonymizedAt` set. Orders kept with
+     `customerId=NULL` and `customerEmail`/`customerName`/
+     `customerPhone` set to `"[deleted]"`; financial columns and
+     `order_items` snapshots untouched (invoice content). Delivery-
+     address: `street` + `apartmentOrOffice` blanked; `city` +
+     `postalCode` preserved (coarse-grained tax-territory data, no
+     longer identifying). Corporate-data snapshot: only `contactName`
+     blanked — `companyName` + `eik` + `vatNumber` +
+     `registeredAddress` + `mol` are LEGALLY REQUIRED invoice fields
+     under Bulgarian VAT law and stay intact. Complaints (where the
+     customer was the deleted user): customer_email/name/phone
+     blanked; `reason` enum + `description` kept (Art. 11a durable-
+     medium audit trail). Active-order check returns `422
+     /problems/active-orders-block-deletion` with blocking
+     orderNumbers in `errors[].path` — Art. 6(1)(b) "contract
+     performance" supersedes Art. 17 erasure while shipping is in
+     flight. Admin self-deletion via this endpoint returns 403 (the
+     shop has exactly one admin account by design — see §12.4 MFA
+     recovery runbook). Adjacent endpoints already filter
+     `isNull(deletedAt)` for enumeration resistance (`/auth/login`
+     constant-time-with-DUMMY_PASSWORD_HASH, `/auth/forgot-password`
+     silently-200, `/auth/email-change/request` conflict check) — no
+     code changes needed there. Post-deletion notification email
+     (`auth.account-deleted`, Bulgarian) sent best-effort to the
+     ORIGINAL address (captured before the transaction rewrites
+     `users.email`); explains what was deleted, what is legally
+     retained, and how to react if the recipient did not initiate the
+     deletion. Audit trail via structured Pino `account_deleted`
+     event (`userId` + `pseudonymizedAt` timestamp + IP + UA; never
+     the original email value). The pre-existing `admin_audit_log`
+     table is intentionally NOT used (subject-on-self vs actor=admin
+     posture — same call as PATCH /auth/me). No CSRF token (SameSite=
+     Lax + same-origin DELETE + re-auth covers it). Closes **GDPR
+     Art. 17** (right to erasure) and the user-visible gap in
+     docs/README.md §8.
 
 ### Profile editing — GDPR Art. 16 (SHIPPED May 23, 2026)
 
