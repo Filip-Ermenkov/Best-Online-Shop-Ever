@@ -12,28 +12,50 @@ import { CheckCircle2, X } from "lucide-react";
  * way) before they navigate away.
  *
  * Lifecycle:
- *   - Mount reads the query string. If the flag is present, banner shows.
- *   - Banner is dismissible (X) AND auto-strips the query param from the
- *     URL after first paint via router.replace() — so a refresh / back-
- *     forward doesn't re-trigger it.
+ *   - First render reads the query string via the useState initializer
+ *     (NOT inside an effect — that would trip
+ *     react-hooks/set-state-in-effect, the React 19 rule that
+ *     discourages setState-from-effect cascades). The initializer is a
+ *     pure read of the current useSearchParams() snapshot, so this is a
+ *     normal useState initialisation rather than the setState-in-effect
+ *     anti-pattern.
+ *   - An effect then syncs the URL BACK to the external world: it strips
+ *     the `?account-deleted=success` query param via router.replace() so
+ *     a refresh / back-forward doesn't re-trigger the banner. This
+ *     effect touches ONLY the external system (the URL); it does NOT
+ *     call setState, which is the shape the rule explicitly endorses.
+ *   - The dismiss button toggles local state — no effect involved.
+ *
+ * Subtle: after the URL strip, `params` changes and the effect re-fires,
+ * but the `if` guard short-circuits because the query param is gone. The
+ * banner stays visible because `visible` is local state, decoupled from
+ * the URL after the initial read.
  *
  * Why a Client Component and not a server-rendered banner?
  *   The homepage is a Server Component (PPR-friendly) that fetches the
- *   category tree and featured products at build/revalidate time. Reading
- *   searchParams would force dynamic rendering for every visit. Pushing
- *   this into a tiny CSR island keeps the home page statically generated.
+ *   category tree and featured products at build/revalidate time.
+ *   Reading searchParams there would force dynamic rendering for every
+ *   visit. Pushing this into a tiny CSR island keeps the home page
+ *   statically generated.
  */
 export default function AccountDeletedBanner() {
   const params = useSearchParams();
   const router = useRouter();
   const pathname = usePathname();
-  const [visible, setVisible] = useState(false);
 
+  // Initialise from the URL exactly once at mount. The initializer
+  // function is pure — calling .get() on the search-params snapshot has
+  // no side effect.
+  const [visible, setVisible] = useState(
+    () => params.get("account-deleted") === "success",
+  );
+
+  // Sync React state back to the URL (external system): strip the
+  // ?account-deleted param so a refresh doesn't re-trigger the banner.
+  // No setState in this effect — visible is already correctly seeded
+  // from the URL by the useState initializer above.
   useEffect(() => {
     if (params.get("account-deleted") === "success") {
-      setVisible(true);
-      // Strip the query param so a later refresh doesn't re-trigger the
-      // banner. Use replace() (not push) to avoid littering history.
       const next = new URLSearchParams(params.toString());
       next.delete("account-deleted");
       const qs = next.toString();
