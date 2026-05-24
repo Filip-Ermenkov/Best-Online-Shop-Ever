@@ -127,9 +127,36 @@ export type AuthError =
       fields: { path: string; message: string }[];
       detail?: string;
     }
+  /**
+   * The user tried to delete their account while there were still
+   * orders in an active state (processing / shipped / ready_for_pickup /
+   * delivered-but-not-yet-accepted). The legal basis is GDPR Art. 6(1)(b)
+   * (contract performance) which supersedes Art. 17 erasure while shipping
+   * is in flight. `orderNumbers` carries the blocking order numbers so the
+   * UI can show the user exactly what they're waiting for. Surfaced as
+   * `errors[].path = orderNumber` by the backend.
+   */
+  | {
+      kind: "active_orders_block_deletion";
+      orderNumbers: string[];
+      detail?: string;
+    }
   | { kind: "unauthenticated" }
   | { kind: "network"; cause: unknown }
   | { kind: "unknown"; status: number; detail?: string };
+
+/**
+ * Input for `deleteAccount()`. The confirmation phrase MUST be exactly
+ * "ИЗТРИЙ" (Bulgarian for "DELETE") — the backend Zod schema is `z.literal`,
+ * so any other value (including lowercase / different transliteration)
+ * returns 400. The phrase is hardcoded in the UI; the field exists only so
+ * a confused-deputy call with `{ currentPassword: "x" }` and nothing else
+ * cannot accidentally erase the account.
+ */
+export interface DeleteAccountInput {
+  currentPassword: string;
+  confirmationPhrase: "ИЗТРИЙ";
+}
 
 export type AuthResult<T> =
   | { ok: true; value: T }

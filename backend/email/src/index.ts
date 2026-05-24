@@ -76,3 +76,9 @@ export {
   WITHDRAWAL_ADMIN_NOTIFICATION_TEMPLATE_ID,
 } from "./templates/withdrawal-admin-notification.js";
 export type { WithdrawalAdminNotificationTemplateInput } from "./templates/withdrawal-admin-notification.js";
+
+export {
+  renderAccountDeletedEmail,
+  ACCOUNT_DELETED_TEMPLATE_ID,
+} from "./templates/account-deleted.js";
+export type { AccountDeletedTemplateInput } from "./templates/account-deleted.js";

@@ -5,6 +5,7 @@ import { fetchCategoryTree, fetchProducts } from "@/lib/api";
 import type { Product } from "@/lib/types";
 import ProductCard from "@/components/shop/ProductCard";
 import BannerSlider from "@/components/shop/BannerSlider";
+import AccountDeletedBanner from "@/components/shop/AccountDeletedBanner";
 import { ButtonLink } from "@/components/ui/button-link";
 
 /**
@@ -32,6 +33,11 @@ export default async function HomePage() {
 
   return (
     <div>
+      {/* Post-deletion success banner — only renders when the URL carries
+         ?account-deleted=success. Lightweight client island so the rest
+         of the page stays statically rendered. */}
+      <AccountDeletedBanner />
+
       {/* Banner Slider — mock data until we ship a banners API */}
       <BannerSlider banners={banners} />
 

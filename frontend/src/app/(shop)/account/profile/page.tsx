@@ -842,6 +842,30 @@ export default function ProfilePage() {
           При смяна на парола всички други активни сесии (други устройства, други браузъри) ще бъдат автоматично прекратени. Тази сесия остава активна.
         </p>
       </form>
+
+      <Separator className="my-8" />
+
+      {/* Danger zone — GDPR Art. 17 right to erasure. Visually de-emphasised
+         (no big destructive button on this page) so an accidental click
+         can't trigger the destructive flow. The action lives behind a
+         link to /account/delete which carries the typed-confirmation +
+         re-auth UX. */}
+      <section aria-labelledby="danger-zone-heading">
+        <h2 id="danger-zone-heading" className="font-semibold text-red-700">
+          Изтриване на акаунт
+        </h2>
+        <p className="text-sm text-muted-foreground mt-1">
+          Можете да изтриете акаунта си изцяло. Профилните данни, адресите,
+          кошницата и активните сесии ще бъдат изтрити. Историята на
+          поръчките се запазва псевдонимизирана, заради 10-годишния срок
+          за съхранение на счетоводни документи.
+        </p>
+        <div className="mt-3">
+          <ButtonLink href="/account/delete" variant="outline" size="sm">
+            Изтрий акаунта си
+          </ButtonLink>
+        </div>
+      </section>
     </div>
   );
 }

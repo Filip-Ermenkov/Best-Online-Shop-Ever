@@ -19,6 +19,7 @@ import type {
   AuthError,
   AuthResult,
   AuthUser,
+  DeleteAccountInput,
   LoginInput,
   Profile,
   RegisterInput,
@@ -121,6 +122,19 @@ function classifyError(status: number, problem?: ProblemResponse): AuthError {
     problem?.type === "/problems/invalid-email-change-token"
   ) {
     return { kind: "invalid_email_change_token", detail: problem.detail };
+  }
+  if (
+    status === 422 &&
+    problem?.type === "/problems/active-orders-block-deletion"
+  ) {
+    // Surface the blocking order numbers — the backend writes them into
+    // `errors[].path`. The UI uses this list to render exactly which
+    // orders the user is waiting for.
+    return {
+      kind: "active_orders_block_deletion",
+      orderNumbers: (problem.errors ?? []).map((e) => e.path),
+      detail: problem.detail,
+    };
   }
   return { kind: "unknown", status, detail: problem?.detail };
 }
@@ -562,4 +576,63 @@ export async function updateProfile(
   return withErrorMapping(res, async (r) => {
     return (await r.json()) as { user: AuthUser; profile: Profile | null };
   });
+}
+
+/**
+ * Permanently delete the current user's account via DELETE /auth/me.
+ *
+ * GDPR Art. 17 right-to-erasure endpoint. The backend:
+ *   - hard-deletes profile / addresses / cart / sessions / tokens /
+ *     login_attempts for the user,
+ *   - pseudonymises orders / order_delivery_address / order_corporate_data /
+ *     complaints (10-year Bulgarian Accountancy Act retention takes
+ *     precedence over erasure per Art. 17(3)(b)),
+ *   - rewrites users.email to `deleted-<uuid>@deleted.invalid` so the
+ *     original email is freed for re-registration,
+ *   - drops every session and clears THIS request's session cookie via
+ *     `Set-Cookie: Max-Age=0`.
+ *
+ * Returns `{ ok: true }` on 204 — the API responds with no body since the
+ * user that would have populated it no longer exists in a recognisable
+ * form. Callers should then locally clear cart state and redirect.
+ *
+ * Failure branches:
+ *   - kind === "active_orders_block_deletion": there are orders still in
+ *     flight. `orderNumbers` lists them; the UI should show the list so
+ *     the user knows what to wait for. The user can either let those
+ *     orders complete (they roll past `accepted` → terminal) or contact
+ *     support to cancel them.
+ *   - kind === "invalid_credentials": current password was wrong.
+ *   - kind === "account_locked": shared with /auth/login lockout — too
+ *     many wrong-password attempts.
+ *   - kind === "validation": missing / wrong confirmation phrase. The UI
+ *     hardcodes the phrase so this should not fire on a happy-path
+ *     submit; it's mostly a guard against API consumers built later.
+ *   - kind === "unauthenticated": session expired between page load and
+ *     submit.
+ *   - kind === "unknown" with status 403: caller is an admin (admin
+ *     accounts cannot delete themselves through this endpoint — see
+ *     ARCHITECTURE.md §12.4 admin-MFA recovery runbook).
+ *   - kind === "network": fetch failed.
+ */
+export async function deleteAccount(
+  input: DeleteAccountInput,
+): Promise<AuthResult<{ ok: true }>> {
+  let res: Response;
+  try {
+    res = await authFetch("/auth/me", {
+      method: "DELETE",
+      body: JSON.stringify(input),
+    });
+  } catch (err) {
+    return { ok: false, error: { kind: "network", cause: err } };
+  }
+  if (res.status === 401) {
+    return { ok: false, error: { kind: "invalid_credentials" } };
+  }
+  if (res.status === 204) {
+    return { ok: true, value: { ok: true } };
+  }
+  // Any other non-OK status flows through the standard problem mapper.
+  return withErrorMapping(res, async () => ({ ok: true } as const));
 }

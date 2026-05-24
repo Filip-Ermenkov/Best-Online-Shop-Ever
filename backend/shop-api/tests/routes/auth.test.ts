@@ -1378,3 +1378,728 @@ describe("PATCH /auth/me", () => {
     expect(row!.vatNumber).toBe("BG204123456");
   });
 });
+
+/**
+ * DELETE /auth/me — GDPR Art. 17 right-to-erasure suite.
+ *
+ * Covers:
+ *   - happy path (personal): 204, sessions dropped, users row pseudonymised
+ *     (deletedAt + anonymizedAt + sentinel email), profile + cart + tokens
+ *     hard-deleted, post-action notification email queued by transport stub.
+ *   - happy path (corporate): corporate_profiles hard-deleted,
+ *     order_corporate_data.contactName pseudonymised on owned orders while
+ *     the invoice-required fields (companyName, eik, vatNumber,
+ *     registeredAddress, mol) survive intact.
+ *   - 401 no cookie, 401 wrong currentPassword.
+ *   - 400 missing / wrong confirmationPhrase (Zod literal mismatch).
+ *   - 422 active-orders-block-deletion, surfacing the blocking orderNumber
+ *     in errors[].path.
+ *   - 403 admin self-deletion rejection.
+ *   - Order PII pseudonymisation: customerId=NULL, customerEmail/Name/Phone
+ *     blanked to "[deleted]". Order items + financial fields untouched
+ *     (10-year accounting retention).
+ *   - order_delivery_address: street + apartmentOrOffice stripped, but
+ *     city + postalCode preserved (coarse-grained tax-territory data).
+ *   - Email is freed for re-registration after deletion.
+ *   - Post-delete login attempt returns generic 401 (enumeration resistance
+ *     preserved — the deleted user looks like an unknown email).
+ *   - Forgot-password on deleted email silently 200s (no recovery email
+ *     issued).
+ *   - login_attempts for the deleted user's email are hard-deleted
+ *     (data-minimisation per GDPR Art. 5(1)(c)).
+ */
+describe("DELETE /auth/me — account erasure (GDPR Art. 17)", () => {
+  /** Boot a verified personal customer + log in. Returns the seed + cookie. */
+  async function seededPersonalAndLoggedIn(opts?: {
+    email?: string;
+  }): Promise<{
+    user: { id: string; email: string; plainPassword: string };
+    cookie: string;
+  }> {
+    const user = await seedRegisteredUser({
+      email: opts?.email ?? "delete-personal@example.com",
+    });
+    const loginRes = await app.request("/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        email: user.email,
+        password: user.plainPassword,
+        rememberMe: false,
+      }),
+    });
+    expect(loginRes.status).toBe(200);
+    const cookie = extractSessionCookie(loginRes.headers.get("set-cookie"));
+    if (!cookie) throw new Error("no session cookie issued");
+    return {
+      user: { id: user.id, email: user.email, plainPassword: user.plainPassword },
+      cookie,
+    };
+  }
+
+  /** Boot a corporate customer + log in. */
+  async function seededCorporateAndLoggedIn(): Promise<{
+    user: { id: string; email: string };
+    cookie: string;
+  }> {
+    const db = getDb();
+    const email = "delete-corp@example.com";
+    const passwordHash = await hashPassword(VALID_PASSWORD);
+    const [u] = await db
+      .insert(schema.users)
+      .values({
+        email,
+        passwordHash,
+        role: "customer",
+        accountType: "corporate",
+        emailVerifiedAt: new Date(),
+      })
+      .returning();
+    if (!u) throw new Error("seed failed");
+    await db.insert(schema.corporateProfiles).values({
+      userId: u.id,
+      companyName: "Acme OOD",
+      eik: "204555111",
+      vatNumber: "BG204555111",
+      registeredAddress: "ул. Корпорация 5, София",
+      mol: "Петър Петров",
+      contactName: "Мария Контактна",
+      contactPhone: "+359888555444",
+    });
+    const loginRes = await app.request("/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email, password: VALID_PASSWORD, rememberMe: false }),
+    });
+    expect(loginRes.status).toBe(200);
+    const cookie = extractSessionCookie(loginRes.headers.get("set-cookie"));
+    if (!cookie) throw new Error("no session cookie issued");
+    return { user: { id: u.id, email }, cookie };
+  }
+
+  /** Insert an order in the given status directly (bypasses the admin
+   * transition path we don't have yet). Returns the new orderNumber. */
+  async function seedOrderFor(opts: {
+    userId: string;
+    customerEmail: string;
+    status: "processing" | "accepted" | "ready_for_pickup" | "cancelled";
+    withDeliveryAddress?: boolean;
+    withCorporateData?: { companyName: string; eik: string; mol: string };
+  }): Promise<{ id: string; orderNumber: string }> {
+    const db = getDb();
+    const orderNumber = `2026-05-${String(
+      Math.floor(Math.random() * 99999),
+    ).padStart(5, "0")}`;
+    const [order] = await db
+      .insert(schema.orders)
+      .values({
+        orderNumber,
+        customerId: opts.userId,
+        idempotencyKey: `test-${crypto.randomUUID()}`,
+        status: opts.status,
+        paymentMethod: "pay_at_store",
+        customerEmail: opts.customerEmail,
+        customerPhone: "+359888000000",
+        customerName: "Original Name",
+        subtotalCents: "1999",
+        discountPercent: "0",
+        discountAmountCents: "0",
+        totalCents: "1999",
+        acceptedAt: opts.status === "accepted" ? new Date() : null,
+      })
+      .returning();
+    if (!order) throw new Error("order seed failed");
+    if (opts.withDeliveryAddress) {
+      await db.insert(schema.orderDeliveryAddress).values({
+        orderId: order.id,
+        city: "София",
+        postalCode: "1000",
+        street: "бул. Витоша 25",
+        apartmentOrOffice: "ап. 4",
+      });
+    }
+    if (opts.withCorporateData) {
+      await db.insert(schema.orderCorporateData).values({
+        orderId: order.id,
+        companyName: opts.withCorporateData.companyName,
+        eik: opts.withCorporateData.eik,
+        vatNumber: null,
+        registeredAddress: "ул. Тест 1, София",
+        mol: opts.withCorporateData.mol,
+        contactName: "Снапнат контакт",
+      });
+    }
+    return { id: order.id, orderNumber };
+  }
+
+  // ─── 401 / 400 / 403 surface ─────────────────────────────────────────
+
+  it("returns 401 when no session cookie is present", async () => {
+    const res = await app.request("/auth/me", {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        currentPassword: VALID_PASSWORD,
+        confirmationPhrase: "ИЗТРИЙ",
+      }),
+    });
+    expect(res.status).toBe(401);
+  });
+
+  it("returns 401 when currentPassword is wrong", async () => {
+    const { cookie } = await seededPersonalAndLoggedIn();
+    const res = await app.request("/auth/me", {
+      method: "DELETE",
+      headers: {
+        "Content-Type": "application/json",
+        Cookie: `${sessionCookieName()}=${cookie}`,
+      },
+      body: JSON.stringify({
+        currentPassword: "WrongPassword123!",
+        confirmationPhrase: "ИЗТРИЙ",
+      }),
+    });
+    expect(res.status).toBe(401);
+  });
+
+  it("returns 400 when confirmationPhrase is wrong (Zod z.literal mismatch)", async () => {
+    const { user, cookie } = await seededPersonalAndLoggedIn({
+      email: "phrase-mismatch@example.com",
+    });
+    const res = await app.request("/auth/me", {
+      method: "DELETE",
+      headers: {
+        "Content-Type": "application/json",
+        Cookie: `${sessionCookieName()}=${cookie}`,
+      },
+      body: JSON.stringify({
+        currentPassword: user.plainPassword,
+        confirmationPhrase: "DELETE", // lowercase / English — wrong
+      }),
+    });
+    expect(res.status).toBe(400);
+
+    // User row still present + not pseudonymised.
+    const db = getDb();
+    const [row] = await db
+      .select()
+      .from(schema.users)
+      .where(eq(schema.users.id, user.id));
+    expect(row!.deletedAt).toBeNull();
+    expect(row!.email).toBe("phrase-mismatch@example.com");
+  });
+
+  it("returns 403 when an admin tries to self-delete via this endpoint", async () => {
+    const db = getDb();
+    const passwordHash = await hashPassword(VALID_PASSWORD);
+    const [admin] = await db
+      .insert(schema.users)
+      .values({
+        email: "admin@example.com",
+        passwordHash,
+        role: "admin",
+        accountType: null,
+        emailVerifiedAt: new Date(),
+      })
+      .returning();
+    if (!admin) throw new Error("admin seed failed");
+    const loginRes = await app.request("/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        email: "admin@example.com",
+        password: VALID_PASSWORD,
+        rememberMe: false,
+      }),
+    });
+    const cookie = extractSessionCookie(loginRes.headers.get("set-cookie"));
+    if (!cookie) throw new Error("no admin session cookie");
+
+    const res = await app.request("/auth/me", {
+      method: "DELETE",
+      headers: {
+        "Content-Type": "application/json",
+        Cookie: `${sessionCookieName()}=${cookie}`,
+      },
+      body: JSON.stringify({
+        currentPassword: VALID_PASSWORD,
+        confirmationPhrase: "ИЗТРИЙ",
+      }),
+    });
+    expect(res.status).toBe(403);
+
+    // Admin row unchanged.
+    const [row] = await db
+      .select()
+      .from(schema.users)
+      .where(eq(schema.users.id, admin.id));
+    expect(row!.deletedAt).toBeNull();
+    expect(row!.email).toBe("admin@example.com");
+  });
+
+  it("returns 422 + lists blocking orderNumbers when there are active orders", async () => {
+    const { user, cookie } = await seededPersonalAndLoggedIn({
+      email: "blocked@example.com",
+    });
+    // One active order (processing) + one safe (accepted).
+    const active = await seedOrderFor({
+      userId: user.id,
+      customerEmail: user.email,
+      status: "processing",
+    });
+    await seedOrderFor({
+      userId: user.id,
+      customerEmail: user.email,
+      status: "accepted",
+    });
+
+    const res = await app.request("/auth/me", {
+      method: "DELETE",
+      headers: {
+        "Content-Type": "application/json",
+        Cookie: `${sessionCookieName()}=${cookie}`,
+      },
+      body: JSON.stringify({
+        currentPassword: user.plainPassword,
+        confirmationPhrase: "ИЗТРИЙ",
+      }),
+    });
+    expect(res.status).toBe(422);
+    const problem = (await res.json()) as {
+      type: string;
+      errors: { path: string; message: string }[];
+    };
+    expect(problem.type).toBe("/problems/active-orders-block-deletion");
+    expect(problem.errors).toBeDefined();
+    expect(problem.errors.some((e) => e.path === active.orderNumber)).toBe(true);
+    // The accepted order is NOT a blocker.
+    expect(problem.errors.length).toBe(1);
+
+    // Nothing was deleted (defence: a 422 must roll back any partial work).
+    const db = getDb();
+    const [row] = await db
+      .select()
+      .from(schema.users)
+      .where(eq(schema.users.id, user.id));
+    expect(row!.deletedAt).toBeNull();
+    expect(row!.email).toBe("blocked@example.com");
+  });
+
+  // ─── Happy path: personal ────────────────────────────────────────────
+
+  it("happy path (personal): pseudonymises users row + hard-deletes profile / cart / tokens, drops sessions, sends notification email", async () => {
+    const stub = getStubTransportForTests();
+    stub.reset();
+
+    const { user, cookie } = await seededPersonalAndLoggedIn({
+      email: "happy-personal@example.com",
+    });
+
+    // Seed a cart row + an outstanding password-reset token to confirm
+    // both are hard-deleted by the transaction.
+    const db = getDb();
+    await db.insert(schema.carts).values({ userId: user.id });
+    await db.insert(schema.passwordResetTokens).values({
+      tokenHash: "abc123",
+      userId: user.id,
+      expiresAt: new Date(Date.now() + 60_000),
+    });
+
+    const res = await app.request("/auth/me", {
+      method: "DELETE",
+      headers: {
+        "Content-Type": "application/json",
+        Cookie: `${sessionCookieName()}=${cookie}`,
+      },
+      body: JSON.stringify({
+        currentPassword: user.plainPassword,
+        confirmationPhrase: "ИЗТРИЙ",
+      }),
+    });
+    expect(res.status).toBe(204);
+
+    // Response clears the session cookie.
+    const setCookie = res.headers.get("set-cookie");
+    expect(setCookie).toMatch(new RegExp(`${sessionCookieName()}=;`));
+    expect(setCookie).toMatch(/Max-Age=0|Expires=/i);
+
+    // users row pseudonymised in place.
+    const [pseudo] = await db
+      .select()
+      .from(schema.users)
+      .where(eq(schema.users.id, user.id));
+    expect(pseudo).toBeDefined();
+    expect(pseudo!.deletedAt).not.toBeNull();
+    expect(pseudo!.anonymizedAt).not.toBeNull();
+    expect(pseudo!.email).toMatch(
+      /^deleted-[0-9a-f-]+@deleted\.invalid$/,
+    );
+    expect(pseudo!.email).not.toBe("happy-personal@example.com");
+    // Sentinel password hash — not Argon2id, so verifyPassword could
+    // never match against it.
+    expect(pseudo!.passwordHash).toMatch(/^deleted:/);
+    expect(pseudo!.passwordHash).not.toMatch(/^\$argon2id\$/);
+    expect(pseudo!.emailVerifiedAt).toBeNull();
+
+    // Profile row gone.
+    const profileRows = await db
+      .select()
+      .from(schema.customerProfiles)
+      .where(eq(schema.customerProfiles.userId, user.id));
+    expect(profileRows).toHaveLength(0);
+
+    // Cart gone.
+    const cartRows = await db
+      .select()
+      .from(schema.carts)
+      .where(eq(schema.carts.userId, user.id));
+    expect(cartRows).toHaveLength(0);
+
+    // Token gone.
+    const tokens = await db
+      .select()
+      .from(schema.passwordResetTokens)
+      .where(eq(schema.passwordResetTokens.userId, user.id));
+    expect(tokens).toHaveLength(0);
+
+    // All sessions dropped (the one we used + any others).
+    const sessions = await db
+      .select()
+      .from(schema.sessions)
+      .where(eq(schema.sessions.userId, user.id));
+    expect(sessions).toHaveLength(0);
+
+    // Post-action notification email was sent to the ORIGINAL address.
+    expect(stub.sent.length).toBeGreaterThanOrEqual(1);
+    const acctEmail = stub.sent.find(
+      (e) => e.templateId === "auth.account-deleted",
+    );
+    expect(acctEmail).toBeDefined();
+    expect(acctEmail!.to).toBe("happy-personal@example.com");
+  });
+
+  it("happy path (personal): subsequent GET /auth/me with the (now-orphaned) cookie returns 401 and clears the cookie", async () => {
+    const { user, cookie } = await seededPersonalAndLoggedIn({
+      email: "orphan-cookie@example.com",
+    });
+    await app.request("/auth/me", {
+      method: "DELETE",
+      headers: {
+        "Content-Type": "application/json",
+        Cookie: `${sessionCookieName()}=${cookie}`,
+      },
+      body: JSON.stringify({
+        currentPassword: user.plainPassword,
+        confirmationPhrase: "ИЗТРИЙ",
+      }),
+    });
+
+    const meRes = await app.request("/auth/me", {
+      headers: { Cookie: `${sessionCookieName()}=${cookie}` },
+    });
+    expect(meRes.status).toBe(401);
+    const setCookie = meRes.headers.get("set-cookie");
+    expect(setCookie).toMatch(new RegExp(`${sessionCookieName()}=;`));
+  });
+
+  // ─── Happy path: corporate + invoice-retention rules ────────────────
+
+  it("happy path (corporate): hard-deletes corporate_profiles; pseudonymises order_corporate_data.contactName but preserves invoice-required fields (companyName, eik, mol, registeredAddress)", async () => {
+    const { user, cookie } = await seededCorporateAndLoggedIn();
+    const order = await seedOrderFor({
+      userId: user.id,
+      customerEmail: user.email,
+      status: "accepted",
+      withCorporateData: {
+        companyName: "Acme OOD",
+        eik: "204555111",
+        mol: "Петър Петров",
+      },
+    });
+
+    const res = await app.request("/auth/me", {
+      method: "DELETE",
+      headers: {
+        "Content-Type": "application/json",
+        Cookie: `${sessionCookieName()}=${cookie}`,
+      },
+      body: JSON.stringify({
+        currentPassword: VALID_PASSWORD,
+        confirmationPhrase: "ИЗТРИЙ",
+      }),
+    });
+    expect(res.status).toBe(204);
+
+    const db = getDb();
+    // corporate_profiles hard-deleted.
+    const profileRows = await db
+      .select()
+      .from(schema.corporateProfiles)
+      .where(eq(schema.corporateProfiles.userId, user.id));
+    expect(profileRows).toHaveLength(0);
+
+    // order_corporate_data snapshot survives; contactName is "[deleted]"
+    // but the legally-required invoice fields are intact.
+    const [snapshot] = await db
+      .select()
+      .from(schema.orderCorporateData)
+      .where(eq(schema.orderCorporateData.orderId, order.id));
+    expect(snapshot).toBeDefined();
+    expect(snapshot!.contactName).toBe("[deleted]");
+    expect(snapshot!.companyName).toBe("Acme OOD");
+    expect(snapshot!.eik).toBe("204555111");
+    expect(snapshot!.mol).toBe("Петър Петров");
+    expect(snapshot!.registeredAddress).toBe("ул. Тест 1, София");
+  });
+
+  it("pseudonymises order PII (customerId=NULL, email/name/phone='[deleted]') but preserves money + order_items", async () => {
+    const { user, cookie } = await seededPersonalAndLoggedIn({
+      email: "order-pii@example.com",
+    });
+    const order = await seedOrderFor({
+      userId: user.id,
+      customerEmail: user.email,
+      status: "accepted",
+    });
+    // Seed one line item to confirm it survives.
+    const db = getDb();
+    // Need a product to FK to; reuse the seed pattern from fixtures.
+    const [product] = await db
+      .insert(schema.products)
+      .values({
+        slug: `tmp-${crypto.randomUUID()}`,
+        code: `TMP-${Math.floor(Math.random() * 100000)}`,
+        name: "Tmp",
+        description: "",
+        priceCents: "1999",
+      })
+      .returning();
+    await db.insert(schema.orderItems).values({
+      orderId: order.id,
+      productId: product!.id,
+      productCode: product!.code,
+      productName: product!.name,
+      unitPriceCents: "1999",
+      quantity: 1,
+    });
+
+    const res = await app.request("/auth/me", {
+      method: "DELETE",
+      headers: {
+        "Content-Type": "application/json",
+        Cookie: `${sessionCookieName()}=${cookie}`,
+      },
+      body: JSON.stringify({
+        currentPassword: user.plainPassword,
+        confirmationPhrase: "ИЗТРИЙ",
+      }),
+    });
+    expect(res.status).toBe(204);
+
+    const [postOrder] = await db
+      .select()
+      .from(schema.orders)
+      .where(eq(schema.orders.id, order.id));
+    expect(postOrder!.customerId).toBeNull();
+    expect(postOrder!.customerEmail).toBe("[deleted]");
+    expect(postOrder!.customerName).toBe("[deleted]");
+    expect(postOrder!.customerPhone).toBe("[deleted]");
+    // Money + status unchanged — these ARE the invoice content.
+    expect(postOrder!.totalCents).toBe("1999");
+    expect(postOrder!.status).toBe("accepted");
+
+    // Line items untouched.
+    const items = await db
+      .select()
+      .from(schema.orderItems)
+      .where(eq(schema.orderItems.orderId, order.id));
+    expect(items).toHaveLength(1);
+    expect(items[0]!.productName).toBe("Tmp");
+    expect(items[0]!.unitPriceCents).toBe("1999");
+  });
+
+  it("pseudonymises order_delivery_address.street + apartment but preserves city + postalCode (coarse-grained)", async () => {
+    const { user, cookie } = await seededPersonalAndLoggedIn({
+      email: "addr-pii@example.com",
+    });
+    const order = await seedOrderFor({
+      userId: user.id,
+      customerEmail: user.email,
+      status: "accepted",
+      withDeliveryAddress: true,
+    });
+
+    const res = await app.request("/auth/me", {
+      method: "DELETE",
+      headers: {
+        "Content-Type": "application/json",
+        Cookie: `${sessionCookieName()}=${cookie}`,
+      },
+      body: JSON.stringify({
+        currentPassword: user.plainPassword,
+        confirmationPhrase: "ИЗТРИЙ",
+      }),
+    });
+    expect(res.status).toBe(204);
+
+    const db = getDb();
+    const [addr] = await db
+      .select()
+      .from(schema.orderDeliveryAddress)
+      .where(eq(schema.orderDeliveryAddress.orderId, order.id));
+    expect(addr).toBeDefined();
+    expect(addr!.street).toBe("[deleted]");
+    expect(addr!.apartmentOrOffice).toBeNull();
+    // Coarse-grained location preserved.
+    expect(addr!.city).toBe("София");
+    expect(addr!.postalCode).toBe("1000");
+  });
+
+  // ─── Adjacent endpoint regressions ───────────────────────────────────
+
+  it("frees the email for re-registration after deletion", async () => {
+    const { user, cookie } = await seededPersonalAndLoggedIn({
+      email: "reregister@example.com",
+    });
+    const deleteRes = await app.request("/auth/me", {
+      method: "DELETE",
+      headers: {
+        "Content-Type": "application/json",
+        Cookie: `${sessionCookieName()}=${cookie}`,
+      },
+      body: JSON.stringify({
+        currentPassword: user.plainPassword,
+        confirmationPhrase: "ИЗТРИЙ",
+      }),
+    });
+    expect(deleteRes.status).toBe(204);
+
+    // Same email, fresh signup, should succeed (200 generic ok).
+    const reg = await app.request("/auth/register", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        email: "reregister@example.com",
+        password: VALID_PASSWORD,
+        fullName: "Брат на покойния",
+        phone: "+359888999000",
+      }),
+    });
+    expect(reg.status).toBe(200);
+
+    // Now TWO rows for this email: one deleted (pseudonymised), one fresh.
+    // The fresh one has the original email; the deleted one has the sentinel.
+    const db = getDb();
+    const original = await db
+      .select()
+      .from(schema.users)
+      .where(eq(schema.users.email, "reregister@example.com"));
+    expect(original).toHaveLength(1);
+    expect(original[0]!.deletedAt).toBeNull();
+    expect(original[0]!.passwordHash).toMatch(/^\$argon2id\$/);
+  });
+
+  it("login attempt on a deleted email returns 401 (enumeration resistance preserved)", async () => {
+    const { user, cookie } = await seededPersonalAndLoggedIn({
+      email: "login-after-delete@example.com",
+    });
+    await app.request("/auth/me", {
+      method: "DELETE",
+      headers: {
+        "Content-Type": "application/json",
+        Cookie: `${sessionCookieName()}=${cookie}`,
+      },
+      body: JSON.stringify({
+        currentPassword: user.plainPassword,
+        confirmationPhrase: "ИЗТРИЙ",
+      }),
+    });
+
+    const loginRes = await app.request("/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        email: "login-after-delete@example.com",
+        password: user.plainPassword,
+        rememberMe: false,
+      }),
+    });
+    expect(loginRes.status).toBe(401);
+  });
+
+  it("forgot-password on a deleted email silently 200s without issuing a token", async () => {
+    const { user, cookie } = await seededPersonalAndLoggedIn({
+      email: "forgot-after-delete@example.com",
+    });
+    await app.request("/auth/me", {
+      method: "DELETE",
+      headers: {
+        "Content-Type": "application/json",
+        Cookie: `${sessionCookieName()}=${cookie}`,
+      },
+      body: JSON.stringify({
+        currentPassword: user.plainPassword,
+        confirmationPhrase: "ИЗТРИЙ",
+      }),
+    });
+
+    const fp = await app.request("/auth/forgot-password", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: "forgot-after-delete@example.com" }),
+    });
+    expect(fp.status).toBe(200);
+
+    // No new password-reset token row exists for the (now-pseudonymised)
+    // user. The token table is keyed by user_id — the deletion drops all
+    // outstanding rows for this user, and forgot-password's "unknown
+    // email" branch issues nothing.
+    const db = getDb();
+    const tokens = await db
+      .select()
+      .from(schema.passwordResetTokens)
+      .where(eq(schema.passwordResetTokens.userId, user.id));
+    expect(tokens).toHaveLength(0);
+  });
+
+  it("hard-deletes login_attempts rows keyed by the deleted email", async () => {
+    const { user, cookie } = await seededPersonalAndLoggedIn({
+      email: "attempts-cleanup@example.com",
+    });
+    // Generate a failed attempt so the table has a row to clean.
+    await app.request("/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        email: "attempts-cleanup@example.com",
+        password: "definitely-wrong",
+        rememberMe: false,
+      }),
+    });
+
+    const db = getDb();
+    const beforeRows = await db
+      .select()
+      .from(schema.loginAttempts)
+      .where(eq(schema.loginAttempts.email, "attempts-cleanup@example.com"));
+    expect(beforeRows.length).toBeGreaterThan(0);
+
+    await app.request("/auth/me", {
+      method: "DELETE",
+      headers: {
+        "Content-Type": "application/json",
+        Cookie: `${sessionCookieName()}=${cookie}`,
+      },
+      body: JSON.stringify({
+        currentPassword: user.plainPassword,
+        confirmationPhrase: "ИЗТРИЙ",
+      }),
+    });
+
+    const afterRows = await db
+      .select()
+      .from(schema.loginAttempts)
+      .where(eq(schema.loginAttempts.email, "attempts-cleanup@example.com"));
+    expect(afterRows).toHaveLength(0);
+  });
+});
