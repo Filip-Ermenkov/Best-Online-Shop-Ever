@@ -14,6 +14,7 @@ import { currentUser, type AuthVariables } from "./middleware/auth.js";
 import { authRoutes } from "./routes/auth.js";
 import { cartRoutes } from "./routes/cart.js";
 import { categoriesRoutes } from "./routes/categories.js";
+import { cspRoutes } from "./routes/csp.js";
 import { ordersRoutes } from "./routes/orders.js";
 import { productsRoutes } from "./routes/products.js";
 
@@ -166,6 +167,10 @@ export function buildApp() {
   app.route("/auth", authRoutes);
   app.route("/cart", cartRoutes);
   app.route("/orders", ordersRoutes);
+  // CSP violation reports — anonymous, no currentUser middleware (intentional).
+  // Always returns 204 No Content; see backend/shop-api/src/routes/csp.ts for
+  // the full design rationale.
+  app.route("/csp-report", cspRoutes);
 
   app.doc("/openapi.json", {
     openapi: "3.1.0",

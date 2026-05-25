@@ -1,5 +1,6 @@
 import { afterAll, beforeEach } from "vitest";
 import { sql } from "drizzle-orm";
+import { _resetRateLimitForTests } from "../../src/lib/csp-report.js";
 import { getDb } from "../../src/lib/db.js";
 import {
   _resetEmailTransportForTests,
@@ -62,6 +63,12 @@ beforeEach(async () => {
   _resetEmailTransportForTests();
   getEmailTransport(); // builds the stub from env
   getStubTransportForTests().reset();
+
+  // CSP report endpoint maintains an in-memory per-IP token bucket. Reset
+  // between tests so the rate-limit test isn't polluted by counts from
+  // earlier files in the suite, and so other tests don't accidentally trip
+  // the limit by chaining many requests.
+  _resetRateLimitForTests();
 });
 
 afterAll(async () => {

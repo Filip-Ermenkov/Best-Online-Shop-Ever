@@ -11,7 +11,7 @@
 >   `ARCHITECTURE.md` §15
 > - N/A — out of scope for this product (justified below the table)
 >
-> Last updated: 2026-05-24.
+> Last updated: 2026-05-25.
 
 ---
 
@@ -118,7 +118,7 @@ April 2025 best-practices update.
 | **SLSA L2 signed provenance** | ✅ | Sigstore keyless via `actions/attest-build-provenance@v4.1.0` |
 | **`security.txt`** (RFC 9116) | ✅ | `frontend/public/.well-known/security.txt`; policy at `/security` |
 | **Branch protection on `main`** | ✅ | Runbook: ARCHITECTURE.md §9.4 (one-time UI setup, verified quarterly) |
-| **CSP violation reporting** | ❌ | Fix: ARCHITECTURE.md §15 item 14 |
+| **CSP violation reporting** | ✅ | `POST /csp-report` (May 2026); accepts both legacy `application/csp-report` and modern `application/reports+json` payloads; structured Pino `csp_violation` log at warn level (CloudWatch Insights queryable); browser-extension noise filter downgrades chrome/moz/safari-extension origins to debug; in-memory per-IP token bucket (60/min) caps log spend. Frontend CSP emits `Reporting-Endpoints: csp-endpoint=…` + `report-to csp-endpoint` (modern) and `report-uri …` (legacy fallback) on every HTML document |
 | **HIBP breach-list check** | ✅ | `backend/auth/src/breached-password.ts`; wired into `/auth/register` and `/auth/reset-password`. Fail-open with structured warning log on HIBP unreachable |
 | **NIST SP 800-63B-4 password rules (length-only ≥12)** | ✅ | `PasswordSchema` in `backend/shop-api/src/routes/auth.ts`; composition rules removed |
 | **Customer MFA option** | ❌ | Fix: ARCHITECTURE.md §15 item 24 (growth-stage) |
@@ -225,8 +225,8 @@ gaps.
 
 | Category | Status | Notes |
 |---|---|---|
-| DE.CM — Continuous monitoring | ⚠️ | CloudWatch alarms yes; distributed tracing no |
-| DE.AE — Adverse event analysis | ⚠️ | Pino logs yes; tracing no |
+| DE.CM — Continuous monitoring | ⚠️ | CloudWatch alarms yes; CSP violation reporting yes (`POST /csp-report`, May 2026 — covers XSS-attempt visibility on the client side); distributed tracing no |
+| DE.AE — Adverse event analysis | ⚠️ | Pino logs yes (incl. `csp_violation` structured event); tracing no |
 
 ### Respond (RS)
 
@@ -267,7 +267,7 @@ Published 2024–2025 (eighth edition). Notable changes vs 2021:
 | A06 | Insecure Design | ✅ | Idempotency, optimistic locking, line-item snapshots, expand-contract migrations, account-discount server-controlled |
 | A07 | Authentication Failures | ✅ | Argon2id RFC 9106, constant-time login, per-email lockout, NIST 800-63B-4 length-only password rules + HIBP breach screening (shipped May 2026). Customer MFA is the only L2 residual — Fix: §15 item 24 (growth-stage) |
 | A08 | Software and Data Integrity Failures | ✅ Met | Every SBOM signed via Sigstore Fulcio/Rekor (`actions/attest-build-provenance@v4.1.0`), keyless OIDC, transparency log. Verification procedure in ARCHITECTURE.md §9.5 |
-| A09 | Security Logging and Monitoring Failures | ⚠️ | Pino structured logs ✅; distributed tracing ❌; CSP violation reporting ❌. Fix: §15 items 6 + 14 |
+| A09 | Security Logging and Monitoring Failures | ⚠️ | Pino structured logs ✅; CSP violation reporting ✅ (`POST /csp-report` shipped May 2026; Reporting API v1 + legacy fallback; per-IP rate-limited; CloudWatch Insights queryable); distributed tracing ❌. Fix: §15 item 6 (ADOT) |
 | A10 | Mishandling of Exceptional Conditions (new) | ✅ | RFC 9457 Problem Details on every error; graceful degradation (DB outage → 503 + alarm, not silent failure); best-effort email never blocks |
 
 E-commerce-specific OWASP 2025 vulnerabilities flagged in research:

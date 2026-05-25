@@ -97,6 +97,18 @@ const API_ORIGIN = isProd
   : "http://localhost:3001";
 const IMG_ORIGIN = "https://cdn.duda1.bg";
 
+/**
+ * CSP violation report sink. Both the legacy `report-uri` directive and the
+ * modern Reporting-Endpoints + `report-to` directive point at this URL — the
+ * server-side handler in `backend/shop-api/src/routes/csp.ts` accepts both
+ * payload shapes on the same endpoint. Using the absolute URL on a sibling
+ * subdomain (shop-api.duda1.bg) means the reports travel cross-origin; that
+ * is fine because the cors() middleware on the API already allowlists the
+ * shop's origin, AND the Reporting API spec explicitly supports cross-origin
+ * endpoints.
+ */
+const CSP_REPORT_URL = `${API_ORIGIN}/csp-report`;
+
 // Dev-only image origins. The seed data and the dev banner component pull
 // placeholder images from `placehold.co`. In production those slots are
 // filled by the admin pointing at real images on `cdn.duda1.bg`, so the
@@ -136,11 +148,16 @@ function generateNonce(): string {
 function buildStrictCsp(nonce: string): string {
   const directives = [
     "default-src 'self'",
-    `script-src 'self' 'nonce-${nonce}' 'strict-dynamic'${isProd ? "" : " 'unsafe-eval'"}`,
+    // `'report-sample'` asks the browser to include a 40-char excerpt of the
+    // violating content in the report body (CSP3 §6.6.4). Without it, violations
+    // arrive with `sample: ""` which makes debugging "what script tried to run"
+    // a guessing game. The privacy cost is tiny — the sample is bounded and
+    // travels to the report endpoint we control.
+    `script-src 'self' 'nonce-${nonce}' 'strict-dynamic' 'report-sample'${isProd ? "" : " 'unsafe-eval'"}`,
     // Style nonce in prod; dev needs 'unsafe-inline' because some HMR
     // injection paths can't reach the proxy's nonce.
     isProd
-      ? `style-src 'self' 'nonce-${nonce}'`
+      ? `style-src 'self' 'nonce-${nonce}' 'report-sample'`
       : "style-src 'self' 'unsafe-inline'",
     `img-src 'self' blob: data: ${IMG_ORIGIN}${DEV_IMG_ORIGINS}`,
     "font-src 'self' data:",
@@ -150,6 +167,15 @@ function buildStrictCsp(nonce: string): string {
     "form-action 'self'",
     "frame-ancestors 'none'",
     "upgrade-insecure-requests",
+    // Modern Reporting API v1 directive (used with `Reporting-Endpoints`
+    // response header — see withStrictCsp below). The token MUST match the
+    // endpoint NAME declared in Reporting-Endpoints, NOT a URL.
+    "report-to csp-endpoint",
+    // Legacy CSP1/CSP2 fallback for browsers that don't yet support the
+    // Reporting API (older Firefox/Safari versions still in the long tail
+    // through 2026). The two coexist cleanly: modern browsers honour
+    // report-to and ignore report-uri; older browsers do the reverse.
+    `report-uri ${CSP_REPORT_URL}`,
   ];
   return directives.join("; ");
 }
@@ -181,6 +207,20 @@ function withStrictCsp(req: NextRequest, response: NextResponse): NextResponse {
   const nonce = generateNonce();
   const csp = buildStrictCsp(nonce);
 
+  // The `Reporting-Endpoints` header is the mapping between the endpoint
+  // NAME referenced in the CSP's `report-to csp-endpoint` directive and the
+  // actual URL the browser POSTs to. It is the modern (Reporting API v1)
+  // replacement for the deprecated `Report-To` JSON-blob header — MDN flags
+  // that the Reporting API has been broadly supported across the latest
+  // browser versions since March 2026, which makes 2026 the year to standardise
+  // on this shape.
+  //
+  // The endpoint NAME `csp-endpoint` is arbitrary — it just has to match
+  // between this response header and the `report-to` directive on the CSP.
+  // We use a descriptive name so the same map can later carry
+  // `permissions-endpoint`, `coop-endpoint`, etc. without renaming.
+  const reportingEndpoints = `csp-endpoint="${CSP_REPORT_URL}"`;
+
   // Forwarded request headers — see (1) above. NextResponse.next() is the
   // one place these can be set in Next.js 16; on a redirect response we
   // can't forward request headers (there are no Server Components to read
@@ -188,6 +228,7 @@ function withStrictCsp(req: NextRequest, response: NextResponse): NextResponse {
   if (response.headers.has("location")) {
     // It's a redirect — only response CSP applies.
     response.headers.set("Content-Security-Policy", csp);
+    response.headers.set("Reporting-Endpoints", reportingEndpoints);
     return response;
   }
 
@@ -201,6 +242,7 @@ function withStrictCsp(req: NextRequest, response: NextResponse): NextResponse {
     headers: response.headers,
   });
   out.headers.set("Content-Security-Policy", csp);
+  out.headers.set("Reporting-Endpoints", reportingEndpoints);
   return out;
 }
 
@@ -251,9 +293,11 @@ export function proxy(req: NextRequest) {
  *   - `_next/static`, `_next/image`, `favicon.ico` — Next.js internal
  *     paths that serve compiled JS / images / icons. They never render
  *     HTML, so CSP has nothing to apply to.
- *   - `api/*` — Next.js API routes (none today; reserved for the future
- *     `/api/csp-report` endpoint per ARCHITECTURE.md §15 item 14).
- *     They return JSON, not HTML, and shouldn't carry a document CSP.
+ *   - `api/*` — Next.js API routes (none today; reserved for any future
+ *     in-process handler). They return JSON, not HTML, and shouldn't carry
+ *     a document CSP. The CSP violation report sink lives at
+ *     `${API_ORIGIN}/csp-report` on the backend, not here — see the
+ *     CSP_REPORT_URL constant and ARCHITECTURE.md §15 item 14.
  *   - Prefetch requests — `<Link>` prefetches RSC payloads, not full
  *     documents. The `missing` clauses filter those out so we don't
  *     generate nonces (and incur Node-runtime startup cost) for traffic

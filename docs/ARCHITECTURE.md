@@ -13,7 +13,7 @@
 > specification. Read that to learn *what* the shop does; this doc
 > covers *how* it's built.
 >
-> Last updated: 2026-05-24.
+> Last updated: 2026-05-25.
 
 ---
 
@@ -500,12 +500,17 @@ the matcher in the file), and on every request:
 2. Sets a forwarded `x-nonce` request header so any Server
    Component that needs to attach a nonce to `<Script>` can read
    it via `await headers()`.
-3. Sets a response `Content-Security-Policy` header:
+3. Sets a response `Content-Security-Policy` header AND a paired
+   `Reporting-Endpoints` header (the latter is the modern Reporting
+   API v1 mapping consumed by the `report-to` directive; the legacy
+   `report-uri` directive is also emitted as a fallback for older
+   browsers that didn't reach Reporting-API baseline until March
+   2026):
 
    ```
    default-src 'self';
-   script-src 'self' 'nonce-XXX' 'strict-dynamic';
-   style-src 'self' 'nonce-XXX';
+   script-src 'self' 'nonce-XXX' 'strict-dynamic' 'report-sample';
+   style-src 'self' 'nonce-XXX' 'report-sample';
    img-src 'self' blob: data: https://cdn.duda1.bg;
    font-src 'self' data:;
    connect-src 'self' https://shop-api.duda1.bg;
@@ -514,7 +519,19 @@ the matcher in the file), and on every request:
    form-action 'self';
    frame-ancestors 'none';
    upgrade-insecure-requests;
+   report-to csp-endpoint;
+   report-uri https://shop-api.duda1.bg/csp-report;
    ```
+
+   ```
+   Reporting-Endpoints: csp-endpoint="https://shop-api.duda1.bg/csp-report"
+   ```
+
+   The `'report-sample'` keyword on `script-src` / `style-src` is
+   what gets the browser to include a 40-char excerpt of the
+   violating content in the report body (CSP3 §6.6.4) — without
+   it, `sample` arrives empty and debugging "what tried to run" is
+   guesswork.
 
 `'strict-dynamic'` means: a script that carries the matching nonce
 is trusted to load further scripts; nothing else loads, period.
@@ -592,7 +609,7 @@ runs and no resource is fetched.
 
 | Practice | Why deferred | When to revisit |
 |---|---|---|
-| **CSP violation reporting** (`report-to` directive + `/api/csp-report` endpoint) | Adding the directive without an endpoint generates 404 noise; building the endpoint is the right scope for the security-depth slice (Roadmap item 14). Today the browser **blocks** violating loads — only the *visibility* of attempts is deferred. | Roadmap item 14. |
+| ~~CSP violation reporting~~ | ✅ **SHIPPED May 25, 2026** — `Reporting-Endpoints: csp-endpoint=…` + `report-to csp-endpoint` (modern) and `report-uri …` (legacy fallback) on every HTML document; `POST /csp-report` on the API accepts both `application/csp-report` and `application/reports+json`. See Roadmap item 14. | n/a — done |
 | **Trusted Types** (`require-trusted-types-for 'script'`) | MDN-Baseline as of 2026 on the latest browsers; meaningful XSS-sink hardening *after* CSP is in place. Not blocking today; modest implementation effort. | Roadmap item 14 follow-on. |
 | **`https://` / public-suffix `connect-src` entries** | The current `connect-src` only allows the configured `shop-api.duda1.bg` origin (or `localhost:3001` in dev). If new backend services are added the origin allow-list needs widening; treat that as part of the architecture review for any new service. | Per-service basis. |
 
@@ -672,7 +689,7 @@ slices):
   §5.1.1.2). Customer MFA is the only remaining gap (Roadmap 24,
   growth-stage)
 - A08 Software & Data Integrity Failures — ⚠️ no signed artifacts
-- A09 Security Logging Failures — ⚠️ no distributed tracing, no CSP report
+- A09 Security Logging Failures — ⚠️ CSP report endpoint ✅ (May 25, 2026); distributed tracing still pending
 - A10 Mishandling Exceptional Conditions (new) — ✅ (RFC 9457 + graceful degradation)
 
 ### 5.4 Compliance touchpoints
@@ -825,11 +842,15 @@ Five alarms is a good starting set. For A+:
   burn over 1 hour, escalate when 2× over 6 hours).
 - **Status page** (statup.fyi free, or self-hosted) for transparent
   external communication during incidents.
-- **CSP violation report endpoint** — currently CSP is set with
-  `strict-dynamic` and nonces but no `report-to` directive,
-  meaning XSS attempts the CSP defeats are invisible. A simple
-  endpoint at `/api/csp-report` writing into CloudWatch closes that
-  loop.
+- ✅ **CSP violation report endpoint** (shipped May 25, 2026) —
+  `POST /csp-report` on `shop-api`. The frontend CSP carries both
+  modern (`Reporting-Endpoints: csp-endpoint=…` + `report-to`)
+  and legacy (`report-uri`) directives, so every supported browser
+  has a sink. Structured Pino `csp_violation` events land in
+  CloudWatch and are queryable via Insights
+  (`filter event = "csp_violation" | stats count() by effectiveDirective`).
+  Browser-extension noise is downgraded to debug-level so alerts
+  don't fire on ad-blocker injections.
 
 ---
 
@@ -1446,7 +1467,7 @@ weeks. Don't re-litigate without a strong new constraint:
 | Pillar | Today | What's missing for A+ |
 |---|---|---|
 | Operational Excellence | B+ | Distributed tracing (OpenTelemetry/ADOT), formal SLOs + burn-rate alerting, DORA metrics, scheduled DR drills, incident postmortem template, status page |
-| Security | **A** (was A−, May 2026 supply-chain + auth-modernization slices shipped) | CSP violation reporting, customer MFA option |
+| Security | **A** (was A−, May 2026 supply-chain + auth-modernization + CSP-reporting slices shipped) | Customer MFA option |
 | Reliability | B | Formal RTO/RPO, SQS retry queue for SES, DR drill cadence, public status page |
 | Performance Efficiency | B+ | Synthetic monitoring (Lighthouse CI), RUM, query-latency SLOs per endpoint, additional image variants (800px, 2000px) |
 | Cost Optimization | B− | Cloudflare swap (the big one), CloudWatch retention to 14d |
@@ -1462,7 +1483,7 @@ weeks. Don't re-litigate without a strong new constraint:
 | OWASP Top 10 2025 — A03 Supply Chain | ✅ Met (SBOM + SLSA L2 + CodeQL) | — |
 | OWASP Top 10 2025 — A08 Integrity Failures | ✅ Met (Sigstore signing) | — |
 | OWASP Top 10 2025 — A02 Security Misconfiguration | ✅ Met | Uniform strict CSP shipped May 2026 (§5.2) |
-| OWASP Top 10 2025 — A09 Logging Failures | ⚠️ | Distributed tracing + CSP-report endpoint (blocking already works; only reporting visibility is deferred) |
+| OWASP Top 10 2025 — A09 Logging Failures | ⚠️ | CSP-report endpoint ✅ (shipped May 25, 2026). Distributed tracing still pending (Roadmap item 6) |
 | OWASP ASVS 6.0 L1 | ✅ Compliant | — |
 | OWASP ASVS 6.0 V6.2 (password lifecycle) | ✅ Met (May 22 2026) | Self-service change-password endpoint shipped with HIBP screening, same-password rejection, shared-with-/login lockout |
 | OWASP ASVS 6.0 L2 | ⚠️ Gaps | Customer MFA (SAST shipped via CodeQL) |
@@ -1686,11 +1707,40 @@ Ranked by `(impact ÷ effort)` — highest leverage first.
     client-only mock); the personal-data section is still a stub
     awaiting a separate `PATCH /auth/me` slice.
 
-### Week 3 — security depth (remaining)
+### Week 3 — security depth (CSP reporting SHIPPED May 25, 2026)
 
-14. **Add CSP violation report endpoint** (2 hours)
-    - `POST /api/csp-report` that writes the report into CloudWatch.
-    - Add `report-to` directive to the CSP header.
+14. ✅ **CSP violation report endpoint** — `POST /csp-report` on
+    `shop-api`. Accepts BOTH the modern Reporting API v1 payload
+    (`Content-Type: application/reports+json`, batched array of report
+    envelopes) AND the legacy `report-uri` payload (`Content-Type:
+    application/csp-report`, single wrapped object). The frontend
+    proxy (`frontend/src/proxy.ts`) now emits TWO sink declarations
+    on every HTML document — a `Reporting-Endpoints: csp-endpoint=…`
+    header paired with a `report-to csp-endpoint` directive on the
+    CSP (modern path), plus a `report-uri …` directive (legacy
+    fallback for older Firefox/Safari that didn't reach baseline
+    Reporting API support until March 2026). Each well-formed
+    violation produces one structured Pino `csp_violation` event at
+    warn-level (`effectiveDirective`, `blockedURL`, `documentURL`,
+    `sourceFile`, `lineNumber`, `sample`, etc.) — CloudWatch
+    Insights queries pivot on those fields. Browser-extension noise
+    (`chrome-extension://`, `moz-extension://`, `safari-extension://`,
+    `safari-web-extension://`, `webkit-masked-url://`, `about:`,
+    literal `"null"`) is downgraded to debug level so alerts don't
+    fire on ad-blocker injection attempts. In-memory per-IP token
+    bucket (60 reports/min/IP, max 10K tracked IPs) caps log spend
+    against a single chatty client; oversized bodies (>16 KiB) and
+    invalid JSON are silently dropped with an `info`-level
+    `csp_report_drop` event. Endpoint always returns `204 No
+    Content` — the W3C Reporting API spec treats any 2xx as success
+    and reporters do not retry on errors. The `'report-sample'`
+    keyword was added to `script-src` and `style-src` so violation
+    reports carry a 40-char excerpt of the violating content
+    (otherwise `sample` arrives empty, which makes debugging
+    guess-work). Closes the **OWASP A09 visibility gap** flagged in
+    §14 — the only remaining A09 item is distributed tracing
+    (Roadmap item 6).
+15. (already shipped — HIBP, listed in the auth modernization block)
 16. **Add a `THREAT_MODEL.md`** (2 hours)
     - STRIDE pass over each major data flow. Document mitigations.
 
