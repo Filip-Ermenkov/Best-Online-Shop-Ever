@@ -701,6 +701,127 @@ appears → click "Откажете се от договора тук" → submi
 receipt with the timestamp, plus the customer email + admin
 notification visible in `api:dev`.
 
+## CSP violation reporting
+
+The strict `'nonce-X' 'strict-dynamic'` CSP shipped in May 2026 is
+purely *blocking* — every XSS attempt the browser stops is invisible
+to the operator unless the policy also carries a report sink. The
+May 25, 2026 slice closes that visibility gap end-to-end without
+adding any AWS dependencies:
+
+- **Frontend** (`frontend/src/proxy.ts`) emits a per-document
+  `Reporting-Endpoints: csp-endpoint="<API_ORIGIN>/csp-report"`
+  response header plus a `report-to csp-endpoint` directive on the
+  CSP (the modern Reporting API v1 path, MDN-baseline as of March
+  2026). For browsers that didn't reach baseline support yet —
+  longer-tail Firefox/Safari versions — a legacy
+  `report-uri <API_ORIGIN>/csp-report` directive is emitted
+  alongside; the two coexist cleanly because every modern browser
+  honours `report-to` and ignores `report-uri`, and older browsers
+  do the reverse. `'report-sample'` was also added to `script-src`
+  and `style-src` so violation reports carry a 40-char excerpt of
+  the violating content (without it, `sample` arrives empty and
+  debugging "what script tried to run" becomes guesswork).
+
+- **Backend** (`backend/shop-api/src/routes/csp.ts` +
+  `lib/csp-report.ts`) wires `POST /csp-report` on the API,
+  intentionally OUTSIDE the `currentUser` / `requireAuth` chain
+  — reports must be reachable anonymously because the document
+  that triggered the violation might itself be a public landing
+  page. The handler accepts BOTH content types on the same route:
+  `application/csp-report` (legacy CSP1/2 single-object wrapper)
+  and `application/reports+json` (modern Reporting API v1 batch
+  array), normalises field names (kebab-case `blocked-uri` vs
+  camelCase `blockedURL` etc.) into a single internal shape, and
+  emits one structured Pino `csp_violation` event per violation
+  at `warn` level — `effectiveDirective`, `blockedURL`,
+  `documentURL`, `sourceFile`, `lineNumber`, `columnNumber`,
+  `sample`, `statusCode`, `referrer`, `format` (legacy vs
+  modern), plus `userAgent` and the client IP. CloudWatch
+  Insights queries pivot directly on those fields
+  (`fields @timestamp, effectiveDirective, blockedURL | filter
+  event = "csp_violation" | stats count() by effectiveDirective`).
+
+- **Browser-extension noise filter** — ad blockers, password
+  managers, dark-mode injectors all attempt to inject content
+  the strict CSP correctly blocks. Each of those generates a
+  violation report that is not an XSS attempt. The handler
+  recognises `chrome-extension://`, `moz-extension://`,
+  `safari-extension://`, `safari-web-extension://`,
+  `webkit-masked-url://`, `about:` and literal `"null"` blocked-
+  URI prefixes (checking BOTH `blockedURL` and `sourceFile`) and
+  downgrades those events to `debug` level so they don't trigger
+  alerts but stay discoverable in `LOG_LEVEL=debug` development
+  sessions.
+
+- **Rate limiting** — in-memory token-bucket per client IP
+  (60 reports per 60-second window per IP, max 10K tracked IPs
+  with LRU-style eviction). Reports above the per-window cap are
+  silently dropped — surfacing 429 to a browser would only
+  generate console noise without preventing the next violation.
+  Per-Lambda-container state is enough to throttle one buggy
+  extension or one abusive scanner; the real DDoS defence is the
+  WAF rate-limit rule upstream. Oversized bodies (>16 KiB) and
+  invalid JSON are also silently dropped with an `info`-level
+  `csp_report_drop` event noting the reason — useful when
+  investigating "why didn't we see report X" questions.
+
+- **Response semantics** — ALWAYS `204 No Content`, regardless of
+  whether the body was valid, parseable, rate-limited, or
+  oversized. The W3C Reporting API spec treats any 2xx as
+  success and reporters do not retry on errors. Surfacing 4xx
+  here would only generate browser-side console warnings without
+  stopping the next violation. The only thing the server can
+  usefully do is record what arrived and move on.
+
+- **No `admin_audit_log` row** — CSP reports are
+  unauthenticated, untrusted-source telemetry. They belong in
+  CloudWatch Logs (Pino structured events with 14-day
+  retention), not in the auditable database journal.
+
+In **local dev**, every violation lands in the `api:dev` terminal
+as a Pino JSON line at WARN level. Smoke flow:
+
+1. `npm run api:dev` (terminal A) and `npm run frontend:dev` (terminal B).
+2. Open http://localhost:3000/csp-test.html in a browser tab.
+3. Three intentionally-bad CSP inputs on the page should be
+   blocked + reported: an inline `<script>`, an `onclick=`
+   handler, and a `javascript:` URL.
+4. DevTools → Network → look for three `POST /csp-report` requests
+   to `http://localhost:3001/csp-report`. Each should return 204.
+5. In terminal A look for three matching `csp_violation` log lines
+   with `event: "csp_violation"`, `effectiveDirective: "script-src-elem"`
+   (or similar), and the offending `documentURL`.
+
+To verify the response headers manually:
+
+```bash
+curl -sI http://localhost:3000/ \
+  | grep -iE "content-security-policy|reporting-endpoints"
+# Expect:
+#   Content-Security-Policy: ... report-to csp-endpoint; report-uri http://localhost:3001/csp-report
+#   Reporting-Endpoints: csp-endpoint="http://localhost:3001/csp-report"
+```
+
+To exercise the endpoint directly without a browser:
+
+```bash
+curl -i -X POST http://localhost:3001/csp-report \
+  -H "Content-Type: application/csp-report" \
+  -d '{"csp-report":{"document-uri":"http://localhost:3000/","blocked-uri":"inline","violated-directive":"script-src","effective-directive":"script-src-elem","disposition":"enforce","original-policy":"default-src self"}}'
+# Expect HTTP/1.1 204 No Content, empty body, csp_violation entry in api:dev.
+
+curl -i -X POST http://localhost:3001/csp-report \
+  -H "Content-Type: application/reports+json" \
+  -d '[{"type":"csp-violation","age":0,"url":"http://localhost:3000/","user_agent":"curl/8","body":{"blockedURL":"eval","effectiveDirective":"script-src","disposition":"enforce"}}]'
+# Same: 204, empty body, csp_violation entry.
+```
+
+To verify the noise filter — re-run the first curl above but with
+a `chrome-extension://...` blocked-uri; the entry should land at
+`debug` level (invisible at the default `LOG_LEVEL=info`; visible
+if you start the API with `LOG_LEVEL=debug npm run api:dev`).
+
 ## Documentation
 
 Read the docs in this order:
@@ -1197,11 +1318,29 @@ have to be re-derived when extending the codebase.
     `/problems/withdrawal-not-accepted` and
     `/problems/withdrawal-window-expired`)
   - `/health`, `/openapi.json`
-  - 140+ integration tests (catalog, categories, auth, cart, orders,
-    verification, password reset, email change, and withdrawal slices)
-    against `shop_test` DB. The vitest config forces
-    `EMAIL_TRANSPORT=stub` so tests can assert on what was "sent" without
-    hitting AWS; `per-test.ts` resets the recorder before every test.
+  - `POST /csp-report` — CSP violation sink. Anonymous (intentionally
+    OUTSIDE `currentUser` / `requireAuth`). Accepts both
+    `application/csp-report` (legacy single-object wrapper) and
+    `application/reports+json` (modern Reporting API v1 batched
+    array) on the same route; normalises both into a single
+    internal shape; emits one structured Pino `csp_violation` event
+    per well-formed report at `warn` level; downgrades browser-
+    extension noise (`chrome-extension://`, `moz-extension://`,
+    `safari-(web-)extension://`, `webkit-masked-url://`, `about:`,
+    literal `"null"`) to `debug`. In-memory per-IP token bucket
+    (60/min, 10K tracked IPs max). Body size cap 16 KiB. ALWAYS
+    returns `204 No Content` (W3C Reporting API spec: reporters
+    don't retry on 4xx, so surfacing them only produces console
+    noise). Closes the OWASP A09 visibility gap from
+    ARCHITECTURE.md §15 item 14. See the "CSP violation reporting"
+    section above for the full design + smoke-test recipe.
+  - 155+ integration tests (catalog, categories, auth, cart, orders,
+    verification, password reset, email change, withdrawal, and
+    CSP-report slices) against `shop_test` DB. The vitest config
+    forces `EMAIL_TRANSPORT=stub` so tests can assert on what was
+    "sent" without hitting AWS; `per-test.ts` resets the email
+    recorder and the CSP-report rate-limit bucket before every
+    test.
   - `PublicUser` response includes `fullName` resolved from
     `customer_profiles` / `corporate_profiles` (null for admins).
 
@@ -1410,7 +1549,19 @@ have to be re-derived when extending the codebase.
   the auth-flip mode switch in `CartContext` are currently suppressed
   with rationale comments. The proper fix is a data-fetching layer
   (TanStack Query / SWR / Suspense + `use()`) — separate slice.
-- **14-day right-of-withdrawal button** — required by EU Directive
-  2023/2673 from June 19 2026. The `complaints` table already carries
-  a `withdrawal` enum value; only the customer-facing button + admin
-  workflow are missing.
+- **Address book CRUD** — spec at `docs/README.md §8 line 625`. The
+  `addresses` table already exists in `@shop/db`; only the customer-
+  facing API endpoints + UI screens are missing. ~1 day, no AWS
+  required.
+- **ADOT distributed tracing on the three Lambdas** —
+  `ARCHITECTURE.md §15 item 6`. Closes the remaining OWASP A09 +
+  NIST CSF Detect gaps (CSP-report shipped May 25 2026 closed the
+  XSS-visibility half of A09). ~1 day, needs the AWS Lambda layer.
+- **SQS retry queue between Lambda and SES** —
+  `ARCHITECTURE.md §15 item 7`. Closes the EU 2023/2673 Art. 11a(2)
+  durable-medium-on-email-failure gap. ~4 hours, needs AWS SQS.
+- **`infra/` Terraform directory** — `ARCHITECTURE.md §15`. The
+  `COMPLIANCE.md` Pillar 1 row claims IaC is ✅ but the folder
+  doesn't exist yet. Either downgrade the row (30 min docs-only
+  honesty fix) or do the actual `terraform import` of the live AWS
+  resources (~1–2 days).
