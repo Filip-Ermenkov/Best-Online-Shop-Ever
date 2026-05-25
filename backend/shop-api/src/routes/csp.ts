@@ -55,12 +55,28 @@ import {
  * belong in CloudWatch Logs, not in the auditable database journal.
  */
 
-type CspApp = OpenAPIHono;
+/**
+ * Variables this sub-router reads from the request context. We type the
+ * OpenAPIHono with this map so `c.get("logger")` returns
+ * `Logger | undefined` at compile time — without the type parameter, Hono's
+ * default ContextVariableMap is empty and TS rejects the key with
+ * "Argument of type '"logger"' is not assignable to parameter of type
+ * 'keyof ContextVariableMap'" (caught by CI on 2026-05-25). The same
+ * pattern is used by authRoutes / cartRoutes / ordersRoutes elsewhere in
+ * this file tree.
+ *
+ * We don't import the parent app's AppVariables here — that would create
+ * a circular import (app.ts imports cspRoutes). The minimal sub-set this
+ * route actually reads is enough.
+ */
+type CspVariables = {
+  logger?: Logger;
+};
 
-export const cspRoutes: CspApp = new OpenAPIHono();
+export const cspRoutes = new OpenAPIHono<{ Variables: CspVariables }>();
 
 cspRoutes.post("/", async (c) => {
-  const log: Logger = (c.get("logger") as Logger | undefined) ?? baseLogger;
+  const log: Logger = c.get("logger") ?? baseLogger;
   const ip = clientIp(c);
 
   // 1. Rate limit. Drop silently above the per-window cap.
