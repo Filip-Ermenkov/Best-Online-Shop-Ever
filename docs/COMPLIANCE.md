@@ -11,7 +11,15 @@
 >   `ARCHITECTURE.md` §15
 > - N/A — out of scope for this product (justified below the table)
 >
-> Last updated: 2026-05-25.
+> **Important framing.** As of 2026-05-26 the codebase is not yet
+> deployed to production AWS. Some controls below are met by
+> in-repo code that runs locally but will not be *operationally*
+> verifiable until the deployment exists. Where this distinction
+> matters the "Notes" column is explicit; the bare ✅/⚠️/❌ refers to
+> whether the *control* is in place, not whether it is running in
+> production.
+>
+> Last updated: 2026-05-26.
 
 ---
 
@@ -40,14 +48,14 @@ The product is:
 - A B2C and B2B e-commerce shop in Bulgaria (EU member state).
 - Selling physical goods, cash on delivery or pay at the physical
   store. **No card data is processed.**
-- Hosted in AWS Frankfurt (`eu-central-1`).
+- Intended for hosting in AWS Frankfurt (`eu-central-1`).
 - Single-administrator, single-tenant.
 
 This brings the following standards into scope:
 
 | Standard | Why it applies |
 |---|---|
-| AWS Well-Architected Framework | The project is hosted on AWS |
+| AWS Well-Architected Framework | Project's intended hosting is AWS |
 | NIST CSF 2.0 | Universal cybersecurity baseline; adopted by EU/USA regulators |
 | OWASP Top 10 2025 | Web application vulnerability baseline |
 | OWASP ASVS 6.0 | Application security verification standard |
@@ -56,12 +64,12 @@ This brings the following standards into scope:
 | SLSA v1.1 | Build provenance and supply-chain integrity |
 | CIS Controls v8.1 IG1 | Small-business cybersecurity baseline |
 | GDPR | EU personal data processing |
-| EU CRA (debatable scope) | Vulnerability reporting baseline |
 | EU Directive 2023/2673 | 14-day right of withdrawal, mandatory June 19, 2026 |
 | WCAG 2.2 AA / European Accessibility Act | Mandatory for EU e-commerce since June 2025 |
 
 Out of scope (with justification in §14): PCI-DSS, NIS2, SOC 2,
-ISO 27001, HIPAA, EU AI Act.
+ISO 27001, HIPAA, EU AI Act, **EU CRA** (SaaS exemption — voluntary
+hygiene is still in §11).
 
 ---
 
@@ -70,119 +78,123 @@ ISO 27001, HIPAA, EU AI Act.
 Six pillars from the November 6, 2024 framework revision plus the
 April 2025 best-practices update.
 
+Many Pillar rows below are about deployed AWS infrastructure that
+does not yet exist (see `README.md` "Deployment status"). Where the
+control is met by code-in-repo but will not be operationally
+exercised until deployment, the cell is annotated.
+
 ### Pillar 1 — Operational Excellence
 
 | Best practice | Status | Notes |
 |---|---|---|
-| Infrastructure as Code (Terraform) | ✅ | Documented in `infra/` (planned); decision recorded in `ARCHITECTURE.md` §13 |
-| Automated CI/CD | ✅ | GitHub Actions, 5 parallel jobs |
-| Atomic blue/green deployments | ✅ | AWS Amplify atomic deploys |
-| Structured JSON logs | ✅ | Pino + PII redaction |
+| Infrastructure as Code (Terraform) | ❌ | `infra/` directory does not yet exist. Roadmap item 14 |
+| Automated CI/CD | ✅ | GitHub Actions, 5 parallel jobs in ci.yml + CodeQL + SBOM workflows |
+| Atomic blue/green deployments | N/A today | Target: AWS Amplify atomic deploys once deployed |
+| Structured JSON logs | ✅ | Pino + PII redaction. Runs locally; lands in CloudWatch once deployed |
 | Per-request correlation IDs | ✅ | `X-Request-Id` |
-| CloudWatch alarms on key metrics | ✅ | 5 alarms in always-free tier |
-| Cron via managed service | ✅ | EventBridge Scheduler |
-| Runbooks documented | ⚠️ | DB restore + Lambda rollback + SES production request, but no incident response playbook |
-| **Distributed tracing** | ❌ | X-Ray listed as "optional" — fix: add ADOT (§15 item 6) |
-| **Formal SLO definitions** | ❌ | Targets exist informally; fix: §15 item 8 |
-| **DORA metrics tracked** | ❌ | Fix: instrument deployment frequency, lead time, MTTR, CFR |
-| **DR drill cadence** | ❌ | Procedure documented; never tested. Fix: §15 item 10 |
-| **Incident postmortem template** | ❌ | Fix: §15 item 21 |
-| **Status page** | ❌ | Fix: §15 item 20 |
+| CloudWatch alarms on key metrics | ❌ Today | Target: 5 alarms (5xx rate, admin logins, p99 duration, scheduler failure, SES bounces). Not deployed |
+| Cron via managed service | ❌ Today | Target: EventBridge Scheduler invoking `scheduler-fn`. Scheduler Lambda not built |
+| Runbooks documented | ⚠️ | DR procedure + MFA recovery documented in ARCHITECTURE.md §12. No incident response playbook yet |
+| **Distributed tracing** | ❌ | Not yet added. Roadmap item 15 (ADOT) |
+| **Formal SLO definitions** | ❌ | Targets exist informally in ARCHITECTURE.md §7.2. Roadmap item 23 |
+| **DORA metrics tracked** | ❌ | Not yet instrumented |
+| **DR drill cadence** | ❌ | Procedure documented; never tested. Roadmap item 16 |
+| **Incident postmortem template** | ❌ | Roadmap item 30 |
+| **Status page** | ❌ | Roadmap item 29 |
 
 ### Pillar 2 — Security
 
 | Best practice | Status | Notes |
 |---|---|---|
-| Defence in depth | ✅ | WAF → CloudFront → Lambda → Neon |
-| TLS 1.3 + HSTS preload | ✅ | CloudFront managed |
+| Defence in depth | ⚠️ | Code-side ✅ (CSP, RFC 9457, two-tier auth, etc.). Target WAF + CloudFront layer not yet deployed |
+| TLS 1.3 + HSTS preload | ⚠️ Code ready | HSTS header emitted in production builds via `next.config.ts`. Operational verification requires deployment behind CloudFront/ACM |
 | Argon2id password hashing | ✅ | `m=19456, t=2, p=1`, RFC 9106 |
-| Constant-time login | ✅ | Defeats enumeration via timing |
-| MFA for admin | ✅ | TOTP mandatory |
-| IAM least privilege per Lambda | ✅ | Three separate execution roles |
-| Secrets in Parameter Store | ✅ | No hardcoded secrets |
+| Constant-time login | ✅ | Defeats enumeration via timing — DUMMY_PASSWORD_HASH fallback for unknown emails |
+| **MFA for admin** | ❌ | Admin auth flow not built. Schema has `totp_secret` columns; no enrolment / verify routes exist. Roadmap item 34 |
+| IAM least privilege per Lambda | N/A today | Target: three separate execution roles once deployed |
+| Secrets in Parameter Store | N/A today | Target: SSM Parameter Store. Today: `.env` files for local dev |
 | Parametrized queries (no SQLi vector) | ✅ | Drizzle ORM |
 | Zod schema validation on every endpoint | ✅ | |
-| WAF managed rules (Common + SQLi) | ✅ | Until Cloudflare swap |
-| `__Host-`-prefixed session cookies | ✅ | Production only |
-| Brute-force defence (per-email) | ✅ | 5 fails / 15 min |
-| Account enumeration resistance | ✅ | Identical responses for known/unknown emails |
+| WAF managed rules | N/A today | Target: AWS WAF Common + SQLi managed rules, or Cloudflare equivalent |
+| `__Host-`-prefixed session cookies | ✅ Code ready | Switches on `NODE_ENV=production` |
+| Brute-force defence (per-email) | ✅ | 5 fails / 15 min lockout |
+| Account enumeration resistance | ✅ | Identical responses for known/unknown emails on register, login, forgot-password, email-change/request |
 | RFC 9457 Problem Details | ✅ | No internal-state leakage |
-| Encryption at rest | ✅ | Neon + S3 SSE |
-| Idempotency on orders | ✅ | `Idempotency-Key` UNIQUE |
-| Email-verified gate on order placement | ✅ | |
-| **Content Security Policy — uniform strict** | ✅ | Single `'nonce-X' 'strict-dynamic'` policy on every HTML document via `frontend/src/proxy.ts`; strictest possible (`default-src 'none'`) on the Hono JSON API via `hono/secure-headers`. (Previous hybrid attempt was bypassed by SPA soft navigation — rejected design recorded in `ARCHITECTURE.md` §5.2.) |
-| **Baseline security headers** (`X-Content-Type-Options`, `Referrer-Policy`, `Permissions-Policy`, `X-Frame-Options`, `COOP`, `CORP`, `HSTS`) | ✅ | `frontend/next.config.ts` + `backend/shop-api/src/app.ts` |
+| Encryption at rest | N/A today | Target: Neon-managed encryption + S3 SSE |
+| Idempotency on orders | ✅ | `Idempotency-Key` UNIQUE on orders row |
+| Email-verified gate on order placement | ✅ | `/problems/email-not-verified` 403 |
+| **Content Security Policy — uniform strict** | ✅ | `'nonce-X' 'strict-dynamic'` on every HTML document via `frontend/src/proxy.ts`. JSON API gets `default-src 'none'` via `hono/secure-headers`. Earlier hybrid attempt and bypass documented in ARCHITECTURE.md §5.2 |
+| **Baseline security headers** | ✅ | `X-Content-Type-Options`, `Referrer-Policy`, `Permissions-Policy`, `X-Frame-Options`, COOP, CORP, HSTS |
 | Dependabot + `npm audit` (SCA) | ✅ | |
 | **SAST in CI** (CodeQL `security-extended` + `actions` queries) | ✅ | `.github/workflows/codeql.yml`; weekly cron catches drift |
 | **SBOM generation** (CycloneDX 1.6 per workspace) | ✅ | `.github/workflows/sbom.yml`; attached to releases |
 | **SLSA L2 signed provenance** | ✅ | Sigstore keyless via `actions/attest-build-provenance@v4.1.0` |
 | **`security.txt`** (RFC 9116) | ✅ | `frontend/public/.well-known/security.txt`; policy at `/security` |
-| **Branch protection on `main`** | ✅ | Runbook: ARCHITECTURE.md §9.4 (one-time UI setup, verified quarterly) |
-| **CSP violation reporting** | ✅ | `POST /csp-report` (May 2026); accepts both legacy `application/csp-report` and modern `application/reports+json` payloads; structured Pino `csp_violation` log at warn level (CloudWatch Insights queryable); browser-extension noise filter downgrades chrome/moz/safari-extension origins to debug; in-memory per-IP token bucket (60/min) caps log spend. Frontend CSP emits `Reporting-Endpoints: csp-endpoint=…` + `report-to csp-endpoint` (modern) and `report-uri …` (legacy fallback) on every HTML document |
-| **HIBP breach-list check** | ✅ | `backend/auth/src/breached-password.ts`; wired into `/auth/register` and `/auth/reset-password`. Fail-open with structured warning log on HIBP unreachable |
+| **Branch protection on `main`** | ⚠️ | Runbook ARCHITECTURE.md §9.4; not yet applied in GitHub UI |
+| **CSP violation reporting** | ✅ | `POST /csp-report` accepts both legacy and modern wire formats; Pino `csp_violation` structured log at warn; browser-extension noise downgraded to debug; per-IP rate limit (60/min) |
+| **HIBP breach-list check** | ✅ | `backend/auth/src/breached-password.ts`; wired into `/auth/register`, `/auth/reset-password`, `/auth/change-password`. Fail-open with warning log |
 | **NIST SP 800-63B-4 password rules (length-only ≥12)** | ✅ | `PasswordSchema` in `backend/shop-api/src/routes/auth.ts`; composition rules removed |
-| **Customer MFA option** | ❌ | Fix: ARCHITECTURE.md §15 item 24 (growth-stage) |
-| **STRIDE threat model document** | ❌ | Fix: ARCHITECTURE.md §15 item 16 |
+| **Customer MFA option** | ❌ | Roadmap item 33 (growth-stage) |
+| **STRIDE threat model document** | ❌ | Roadmap item 32 |
 
 ### Pillar 3 — Reliability
 
 | Best practice | Status | Notes |
 |---|---|---|
-| Multi-AZ (Lambda, CloudFront, S3) | ✅ | AWS-managed by default |
-| Atomic deployments | ✅ | Amplify |
+| Multi-AZ (Lambda, CloudFront, S3) | N/A today | Target: AWS-managed by default once deployed |
+| Atomic deployments | N/A today | Target: Amplify |
 | Idempotent operations | ✅ | `POST /orders` |
 | Optimistic locking | ✅ | `version` column on orders |
-| Graceful degradation | ✅ | 503 + alarm on DB outage |
-| Daily catalog backups | ✅ | 90-day retention + Glacier |
-| PITR | ⚠️ | 7d on Launch, 30d on Scale — but project still on Free |
+| Graceful degradation | ✅ | RFC 9457 errors; best-effort emails; `currentUser` does not clear cookies on DB outage |
+| Daily catalog backups | ❌ Today | Target: scheduler-fn → S3 daily, 90-day retention + Glacier. Scheduler not built |
+| PITR | N/A today | Target: 7d on Neon Launch, 30d on Scale |
 | Expand-contract migration discipline | ✅ | Documented + practised |
-| Honest SPOF acknowledgement | ✅ | Neon Free/Launch documented as SPOF |
-| **Formal RTO/RPO targets** | ❌ | Fix: §15 item 8 |
-| **SQS retry queue for SES** | ❌ | Withdrawal-receipt durable-medium gap. Fix: §15 item 7 |
-| **DR drill cadence** | ❌ | Fix: §15 item 10 |
-| **Public status page** | ❌ | Fix: §15 item 20 |
-| **Multi-region failover** | ❌ | Deferred to Milestone 4 — acceptable |
+| Honest SPOF acknowledgement | ✅ | Neon Free/Launch documented as SPOF in ARCHITECTURE.md §6 |
+| **Formal RTO/RPO targets** | ❌ | Targets documented in ARCHITECTURE.md §6.2; not yet operationalised |
+| **SQS retry queue for SES** | ❌ | Withdrawal-receipt durable-medium audit margin. Roadmap item 18 |
+| **DR drill cadence** | ❌ | Roadmap item 16 |
+| **Public status page** | ❌ | Roadmap item 29 |
+| **Multi-region failover** | ❌ | Roadmap item 36 (deferred until contractual SLA) |
 | **99.95% SLA-backed DB** | ❌ | Requires Neon Scale upgrade — defer until contractual |
 
 ### Pillar 4 — Performance Efficiency
 
 | Best practice | Status | Notes |
 |---|---|---|
-| Global CDN | ✅ | CloudFront 600+ PoPs |
-| HTTP/3 (QUIC) | ✅ | Enabled |
-| Pre-optimised images | ✅ | Sharp.js at upload, not request |
-| ISR + PPR | ✅ | Next.js 16 |
-| Connection pooling | ✅ | Neon PgBouncer |
+| Global CDN | N/A today | Target: CloudFront once deployed |
+| HTTP/3 (QUIC) | N/A today | Target: enabled by Amplify / CloudFront |
+| Pre-optimised images | N/A today | Target: Sharp.js at upload, not request. Today: no upload path exists (admin Lambda not built) |
+| ISR + PPR | ❌ | Next.js 16 supports both, but every route in this app is dynamic because `getServerUser()` reads cookies on SSR. Documented in ARCHITECTURE.md §5.2 |
+| Connection pooling | ✅ Code ready | Each Lambda container: 3-connection pool, opened outside the handler |
 | Cursor pagination | ✅ | O(1) regardless of page |
 | ETag middleware | ✅ | On cacheable routes |
-| Core Web Vitals targets defined | ✅ | LCP <2.5s, INP <200ms, CLS <0.1 |
-| **Synthetic monitoring (Lighthouse CI)** | ❌ | Fix: §15 item 18 |
-| **Real User Monitoring (RUM)** | ❌ | Fix: §15 item 19 |
-| **Per-endpoint p95 latency budget** | ❌ | Fix: §15 item 9 (burn-rate alarms) |
-| **Image variants for 800px / 2000px** | ❌ | Optional |
+| Core Web Vitals targets defined | ✅ | LCP <2.5s, INP <200ms, CLS <0.1. Not measured continuously |
+| **Synthetic monitoring (Lighthouse CI)** | ❌ | Roadmap item 27 |
+| **Real User Monitoring (RUM)** | ❌ | Roadmap item 28 |
+| **Per-endpoint p95 latency budget** | ❌ | Roadmap item 24 (burn-rate alarms) |
+| **Image variants for 800px / 2000px** | N/A today | Optional once image upload exists |
 
 ### Pillar 5 — Cost Optimization
 
 | Best practice | Status | Notes |
 |---|---|---|
-| Pay-per-use | ✅ | Lambda, CloudFront, SES, S3 |
-| AWS free tier utilised | ✅ | Lambda free tier covers Tier 0–4 |
-| S3 lifecycle to Glacier | ✅ | Backups >90 days |
-| CloudWatch retention 30 days | ⚠️ | Generous; 14 days suffices. Fix: §15 item 12 |
-| AWS Budgets alarm at $30 | ✅ | |
-| **AWS WAF + Route 53 vs Cloudflare** | ⚠️ | Unforced overpayment. Fix: §15 item 11 (Path A1+A2) |
-| **Lambda → Fargate upgrade path** | ⚠️ | Historical roadmap entry; would be the wrong destination at the relevant traffic. Removed from roadmap. |
+| Pay-per-use | ✅ Architectural | Lambda, CloudFront, SES, S3 all pay-per-use once deployed |
+| AWS free tier utilised | N/A today | Target: Lambda free tier covers Tier 0–4 |
+| S3 lifecycle to Glacier | N/A today | Target: backups >90 days |
+| CloudWatch retention 14 days | N/A today | Will be set on deployment per Roadmap item 26 |
+| AWS Budgets alarm at $30 | N/A today | Target |
+| **AWS WAF + Route 53 vs Cloudflare** | ⚠️ | Pre-deployment decision. Roadmap item 25 (Path A1+A2 recommended) |
 | **AWS Customer Carbon Footprint review** | ❌ | Quarterly cadence suggested |
 
 ### Pillar 6 — Sustainability
 
 | Best practice | Status | Notes |
 |---|---|---|
-| Zero idle compute | ✅ | All serverless |
-| Edge caching | ✅ | Reduces origin traffic |
-| Multi-tenant infrastructure | ✅ | Lambda + Amplify + CloudFront |
+| Zero idle compute | ✅ Architectural | All serverless in target state |
+| Edge caching | N/A today | Target: CloudFront |
+| Multi-tenant infrastructure | ✅ Architectural | Lambda + Amplify + CloudFront |
 | Region chosen for low-carbon mix | ✅ | eu-central-1 Frankfurt — largely renewables since 2024 |
-| **Quarterly carbon footprint review** | ❌ | AWS provides the tool free; suggest documenting cadence |
+| **Quarterly carbon footprint review** | ❌ | AWS provides the tool free; documenting cadence suggested |
 
 ---
 
@@ -197,52 +209,52 @@ gaps.
 | Category | Status | Notes |
 |---|---|---|
 | GV.OC — Organizational context | ✅ | Solo project; documented in README + ARCHITECTURE.md |
-| GV.RM — Risk management strategy | ⚠️ | Implicit in `ARCHITECTURE.md` §5–6; no separate risk register |
+| GV.RM — Risk management strategy | ⚠️ | Implicit in ARCHITECTURE.md §5–6; no separate risk register |
 | GV.RR — Roles, responsibilities, authorities | ⚠️ | Solo project; documented succession plan would help |
-| GV.PO — Policy | ❌ | No `SECURITY.md` / `PRIVACY.md` / disclosure policy |
-| GV.OV — Oversight | ⚠️ | Quarterly Well-Architected Review recommended |
-| GV.SC — Cybersecurity supply chain risk management | ✅ | Dependabot + CodeQL SAST + signed CycloneDX SBOMs (per workspace) + RFC 9116 disclosure policy. See ARCHITECTURE.md §9.1 |
+| GV.PO — Policy | ⚠️ | `/security` policy page shipped; SECURITY.md and PRIVACY.md not in repo |
+| GV.OV — Oversight | ⚠️ | Quarterly Well-Architected Review recommended once deployed |
+| GV.SC — Cybersecurity supply chain risk management | ✅ | Dependabot + CodeQL SAST + signed CycloneDX SBOMs + RFC 9116 disclosure policy |
 
 ### Identify (ID)
 
 | Category | Status | Notes |
 |---|---|---|
-| ID.AM — Asset management | ⚠️ | No formal asset inventory document. Fix: §15 item 22 |
-| ID.RA — Risk assessment | ⚠️ | Threat model exists implicitly in `ARCHITECTURE.md` §5. Fix: `ARCHITECTURE.md` §15 item 16 (formal STRIDE doc) |
+| ID.AM — Asset management | ⚠️ | No formal asset inventory document. Roadmap item 31 |
+| ID.RA — Risk assessment | ⚠️ | Threat model implicit in ARCHITECTURE.md §5.1. Formal STRIDE pass is Roadmap item 32 |
 | ID.IM — Improvement | ✅ | Continuous via CI/CD + per-slice retrospectives |
 
 ### Protect (PR)
 
 | Category | Status | Notes |
 |---|---|---|
-| PR.AA — Identity management, authentication, access control | ✅ | Strong: Argon2id, MFA admin, IAM least-privilege |
+| PR.AA — Identity management, authentication, access control | ✅ | Argon2id, customer auth, IAM-architectural |
 | PR.AT — Awareness and training | N/A | Solo project |
-| PR.DS — Data security | ✅ | Encryption at rest + in transit; pseudonymisation of session tokens |
-| PR.PS — Platform security | ✅ | Managed Lambda runtime, managed Postgres |
-| PR.IR — Infrastructure resilience | ⚠️ | Multi-AZ yes; multi-region no |
+| PR.DS — Data security | ⚠️ | Code-level controls ✅; encryption at rest depends on deployed Neon + S3 |
+| PR.PS — Platform security | ⚠️ | Managed Lambda runtime + managed Postgres in target state; not deployed |
+| PR.IR — Infrastructure resilience | ⚠️ | Multi-AZ in target state; multi-region deferred |
 
 ### Detect (DE)
 
 | Category | Status | Notes |
 |---|---|---|
-| DE.CM — Continuous monitoring | ⚠️ | CloudWatch alarms yes; CSP violation reporting yes (`POST /csp-report`, May 2026 — covers XSS-attempt visibility on the client side); distributed tracing no |
+| DE.CM — Continuous monitoring | ⚠️ | CSP violation reporting yes; CloudWatch alarms (target) and distributed tracing not yet |
 | DE.AE — Adverse event analysis | ⚠️ | Pino logs yes (incl. `csp_violation` structured event); tracing no |
 
 ### Respond (RS)
 
 | Category | Status | Notes |
 |---|---|---|
-| RS.MA — Incident management | ⚠️ | No playbook. Fix: §15 item 21 |
-| RS.AN — Incident analysis | ⚠️ | No postmortem template |
-| RS.CO — Incident response reporting and communication | ⚠️ | No status page; no notification SOP |
-| RS.MI — Incident mitigation | ✅ | Idempotency, graceful degradation, alarm-based detection |
+| RS.MA — Incident management | ❌ | No playbook. Roadmap item 30 |
+| RS.AN — Incident analysis | ❌ | No postmortem template |
+| RS.CO — Incident response reporting and communication | ❌ | No status page; no notification SOP |
+| RS.MI — Incident mitigation | ✅ | Idempotency, graceful degradation, alarm-based detection (once deployed) |
 
 ### Recover (RC)
 
 | Category | Status | Notes |
 |---|---|---|
-| RC.RP — Incident recovery plan execution | ⚠️ | Procedures documented; never drilled. Fix: §15 item 10 |
-| RC.CO — Incident recovery communication | ⚠️ | No public status page |
+| RC.RP — Incident recovery plan execution | ⚠️ | Procedures documented; never drilled. Roadmap item 16 |
+| RC.CO — Incident recovery communication | ❌ | No public status page |
 
 ---
 
@@ -253,22 +265,22 @@ Published 2024–2025 (eighth edition). Notable changes vs 2021:
 - **A03 was "Vulnerable and Outdated Components"; now "Software
   Supply Chain Failures"** — broader, includes build systems and
   distribution infrastructure.
-- **A10 is new: "Mishandling of Exceptional Conditions"** — failure-
-  mode handling, error paths, default behaviours.
+- **A10 is new: "Mishandling of Exceptional Conditions"** —
+  failure-mode handling, error paths, default behaviours.
 - SSRF was absorbed into A01 Broken Access Control.
 
 | # | Category | Status | Where it's defended |
 |---|---|---|---|
-| A01 | Broken Access Control (incl. SSRF) | ✅ | Two-tier middleware (`currentUser` + `requireAuth`); per-Lambda IAM least-privilege; same-origin API; explicit auth gate on order placement |
-| A02 | Security Misconfiguration | ✅ | No hardcoded secrets; SSM Parameter Store; `__Host-` cookies; HSTS; uniform strict CSP (`'nonce-X' 'strict-dynamic'` on every HTML document, `default-src 'none'` on the Hono API — see ARCHITECTURE.md §5.2); branch protection ruleset on `main` (§9.4) |
-| A03 | Software Supply Chain Failures | ✅ Met | SCA via Dependabot + `npm audit` ✅. CodeQL SAST ✅. CycloneDX SBOM per workspace ✅. SLSA L2 signed provenance ✅. See §8 and ARCHITECTURE.md §9 |
-| A04 | Cryptographic Failures | ✅ | TLS 1.3, Argon2id (RFC 9106), 32-byte CSPRNG tokens, SHA-256-at-rest, AES at rest (S3 + Neon) |
-| A05 | Injection | ✅ | Zod validation + Drizzle parametrized queries everywhere; WAF SQLi managed rules as backstop |
+| A01 | Broken Access Control (incl. SSRF) | ✅ | Two-tier middleware (`currentUser` + `requireAuth`); same-origin API; explicit auth gate on order placement; per-customer scoping returns generic 404 for someone else's order (no enumeration) |
+| A02 | Security Misconfiguration | ✅ | No hardcoded secrets; `__Host-` cookies; HSTS; uniform strict CSP (`'nonce-X' 'strict-dynamic'` on every HTML document, `default-src 'none'` on the Hono API — see ARCHITECTURE.md §5.2) |
+| A03 | Software Supply Chain Failures | ✅ | SCA via Dependabot + `npm audit`; CodeQL SAST `security-extended` weekly + on PR; CycloneDX SBOM per workspace; SLSA L2 signed provenance |
+| A04 | Cryptographic Failures | ⚠️ | TLS 1.3 + HSTS code-ready; AES at rest depends on deployed Neon/S3. Argon2id (RFC 9106), 32-byte CSPRNG tokens, SHA-256-at-rest all in code |
+| A05 | Injection | ✅ | Zod validation + Drizzle parametrized queries everywhere; WAF SQLi managed rules planned |
 | A06 | Insecure Design | ✅ | Idempotency, optimistic locking, line-item snapshots, expand-contract migrations, account-discount server-controlled |
-| A07 | Authentication Failures | ✅ | Argon2id RFC 9106, constant-time login, per-email lockout, NIST 800-63B-4 length-only password rules + HIBP breach screening (shipped May 2026). Customer MFA is the only L2 residual — Fix: §15 item 24 (growth-stage) |
-| A08 | Software and Data Integrity Failures | ✅ Met | Every SBOM signed via Sigstore Fulcio/Rekor (`actions/attest-build-provenance@v4.1.0`), keyless OIDC, transparency log. Verification procedure in ARCHITECTURE.md §9.5 |
-| A09 | Security Logging and Monitoring Failures | ⚠️ | Pino structured logs ✅; CSP violation reporting ✅ (`POST /csp-report` shipped May 2026; Reporting API v1 + legacy fallback; per-IP rate-limited; CloudWatch Insights queryable); distributed tracing ❌. Fix: §15 item 6 (ADOT) |
-| A10 | Mishandling of Exceptional Conditions (new) | ✅ | RFC 9457 Problem Details on every error; graceful degradation (DB outage → 503 + alarm, not silent failure); best-effort email never blocks |
+| A07 | Authentication Failures | ⚠️ | Customer-side ✅ (Argon2id RFC 9106, constant-time login, per-email lockout, NIST 800-63B-4 + HIBP). Admin MFA documented but **admin auth flow not built** (Roadmap item 34). Customer MFA is a growth-stage residual (Roadmap item 33) |
+| A08 | Software and Data Integrity Failures | ✅ | Every SBOM signed via Sigstore Fulcio/Rekor, keyless OIDC, transparency log. Verification in ARCHITECTURE.md §9.5 |
+| A09 | Security Logging and Monitoring Failures | ⚠️ | Pino structured logs ✅; CSP violation reporting ✅ (May 2026); distributed tracing ❌. Roadmap item 15 |
+| A10 | Mishandling of Exceptional Conditions (new) | ✅ | RFC 9457 Problem Details on every error; graceful degradation; best-effort emails never block |
 
 E-commerce-specific OWASP 2025 vulnerabilities flagged in research:
 
@@ -289,25 +301,23 @@ L3 (high-assurance / critical systems).
 
 | Chapter | L1 status | L2 status | Notes |
 |---|---|---|---|
-| V1 Architecture, Design and Threat Modeling | ⚠️ | ⚠️ | Architecture documented; STRIDE threat model missing |
-| V2 Authentication | ✅ | ⚠️ | L1 met; L2 needs customer MFA. V6.2 self-service password change shipped May 22 2026 — `POST /auth/change-password` with current-password re-auth, HIBP screening, same-password rejection, shared-with-`/login` lockout counter, other-sessions-dropped-but-this-one-kept fan-out |
-| V3 Session Management | ✅ | ✅ | 256-bit tokens, hashed at rest, all-session-drop on reset |
+| V1 Architecture, Design and Threat Modeling | ⚠️ | ⚠️ | Architecture documented; formal STRIDE threat model missing |
+| V2 Authentication | ✅ | ⚠️ | L1 met for customers; L2 needs customer MFA (Roadmap 33). V6.2 self-service password change shipped May 22, 2026 |
+| V3 Session Management | ✅ | ✅ | 256-bit tokens, hashed at rest, all-session-drop on reset/email-change/account-deletion |
 | V4 Access Control | ✅ | ✅ | Two-tier middleware; explicit gates |
-| V5 Validation, Sanitization, Encoding | ✅ | ✅ | Zod on every endpoint |
-| V6 Stored Cryptography | ✅ | ✅ | Argon2id, AES, encrypted-at-rest |
+| V5 Validation, Sanitization, Encoding | ✅ | ✅ | Zod `.strict()` on every endpoint |
+| V6 Stored Cryptography | ✅ | ✅ | Argon2id (RFC 9106). AES at rest depends on deployed environment |
 | V7 Error Handling and Logging | ✅ | ✅ | RFC 9457 + Pino + PII redaction |
 | V8 Data Protection | ✅ | ✅ | GDPR-aligned (Art. 32) |
-| V9 Communications Security | ✅ | ✅ | TLS 1.3, HSTS preload, uniform strict CSP per ARCHITECTURE.md §5.2 |
-| V10 Malicious Code | ⚠️ | ❌ | SCA yes; SAST no |
+| V9 Communications Security | ✅ | ✅ | TLS 1.3, HSTS preload (production builds), uniform strict CSP |
+| V10 Malicious Code | ✅ | ✅ | SAST via CodeQL `security-extended`; SCA via Dependabot |
 | V11 Business Logic | ✅ | ✅ | Idempotency, expand-contract, snapshots |
-| V12 Files and Resources | ✅ | ✅ | S3 presigned URLs, MIME validation, size caps |
+| V12 Files and Resources | N/A | N/A | No file upload path exists today (no admin Lambda); covered when image upload ships |
 | V13 API and Web Service | ✅ | ✅ | Hono + zod-openapi + RFC 9457 |
-| V14 Configuration | ✅ | ✅ | Parameter Store, no hardcoded secrets |
+| V14 Configuration | ⚠️ | ⚠️ | `.env` for local dev; Parameter Store planned for production |
 
-**Net:** L1-compliant today. **L2 gaps: customer MFA.** SAST closed
-via CodeQL (May 2026); breach-list screening closed via HIBP k-anonymity
-(May 2026); composition rules removed (May 2026). Customer MFA remains
-the residual gap, addressable per §15 item 24.
+**Net:** **L1-compliant** for customer-facing flows in code. **L2
+gaps:** customer MFA (Roadmap 33); admin auth flow (Roadmap 34).
 
 ---
 
@@ -319,17 +329,17 @@ breach-list checks.
 
 | Requirement | Status | Notes |
 |---|---|---|
-| Memorised secret minimum 8 characters | ✅ | Project enforces ≥12 — above NIST floor, below NIST's ≥15 recommendation for single-factor (justified in `backend/shop-api/src/routes/auth.ts` PasswordSchema comment; tradeoff is sign-up completion vs theft severity for a card-data-free CoD shop) |
+| Memorised secret minimum 8 characters | ✅ | Project enforces ≥12 — above NIST floor |
 | Memorised secret max 64+ characters | ✅ | 1024-char ceiling (cost protection only) |
 | Argon2id or equivalent for storage | ✅ | RFC 9106 compliant |
-| Composition rules (upper/lower/digit) DEPRECATED | ✅ Removed (May 2026) | Stripped from `PasswordSchema`; frontend register / reset-password copy updated to "≥12 chars; a long passphrase is stronger than a short symbol-heavy password" |
-| Breach-list check (HIBP k-anonymity) | ✅ Shipped (May 2026) | `backend/auth/src/breached-password.ts`. Padding header + UA per HIBP v3 spec. Fail-open on upstream outage; structured `breached_password_check_unavailable` warning log so the rate can be alerted on. Wired into `/auth/register`, `/auth/reset-password`, AND `/auth/change-password` |
-| §5.1.1.2 Subscribers SHALL be able to change their memorized secret | ✅ Shipped (May 22 2026) | `POST /auth/change-password` — authenticated, current-password re-auth, HIBP-screens new password before verify, rejects newPassword === currentPassword with `/problems/same-password`, shares lockout counter with `/auth/login` so a stolen-cookie attacker can't brute-force around the brute-force cap |
-| Single-use, time-bound recovery tokens | ✅ | 1-hour validity, SHA-256-hashed |
-| Drop sessions on password change | ✅ | `/auth/reset-password` drops ALL sessions (caller has no session — unauthenticated flow). `/auth/change-password` drops every OTHER session and KEEPS the initiating one (industry convention — the device just proved current-password knowledge, logging it out would be churn) |
+| Composition rules (upper/lower/digit) DEPRECATED | ✅ Removed (May 2026) | Stripped from `PasswordSchema` |
+| Breach-list check (HIBP k-anonymity) | ✅ Shipped (May 2026) | `backend/auth/src/breached-password.ts`. Wired into `/auth/register`, `/auth/reset-password`, `/auth/change-password`. Fail-open with structured `breached_password_check_unavailable` warning log |
+| §5.1.1.2 Subscribers SHALL be able to change their memorised secret | ✅ Shipped (May 22, 2026) | `POST /auth/change-password` |
+| Single-use, time-bound recovery tokens | ✅ | 1-hour validity for reset / email-change, 24h for signup. SHA-256-hashed at rest |
+| Drop sessions on password change | ✅ | `/auth/reset-password` drops ALL sessions (unauthenticated flow). `/auth/change-password` drops every OTHER session, keeps the initiating one |
 | Out-of-band notification at email change | ✅ | Old + new addresses notified |
 | AAL1 for customer accounts | ✅ | Password + cookie session |
-| AAL2 for admin via TOTP MFA | ✅ | RFC 6238 |
+| AAL2 for admin via TOTP MFA | ❌ | Admin auth flow not built. Schema has `totp_secret` columns. Roadmap item 34 |
 
 ---
 
@@ -341,16 +351,16 @@ tenets:
 | Tenet | Status | Notes |
 |---|---|---|
 | All data sources and computing services are considered resources | ✅ | API + DB treated as resources |
-| All communication is secured regardless of network location | ✅ | TLS 1.3 everywhere, including Lambda → Neon |
+| All communication is secured regardless of network location | ✅ Code-side | TLS 1.3 in target deployment; locally HTTP loopback |
 | Access to individual enterprise resources is granted on a per-session basis | ✅ | Cookies are short-lived; sessions revocable |
-| Access to resources is determined by dynamic policy | ⚠️ | Static IAM policies; no risk-adaptive auth |
-| The enterprise monitors and measures the integrity and security posture of all owned and associated assets | ⚠️ | CloudWatch alarms + Dependabot; no distributed tracing |
+| Access to resources is determined by dynamic policy | ⚠️ | Static IAM policies in target deployment; no risk-adaptive auth |
+| The enterprise monitors and measures the integrity and security posture of all owned and associated assets | ⚠️ | Dependabot + CodeQL; CloudWatch alarms once deployed; no distributed tracing |
 | All resource authentication and authorization are dynamic and strictly enforced before access is allowed | ✅ | Per-request `currentUser` / `requireAuth` |
 | The enterprise collects information about asset state, network/communications, and uses it to improve security posture | ⚠️ | Pino logs collected; not yet analysed at security-event level |
 
 **Net:** Zero Trust *spirit* respected; full ZTA tooling (policy
-decision point, policy enforcement point, identity-aware proxy)
-is overkill at solo-project scale.
+decision point, policy enforcement point, identity-aware proxy) is
+overkill at solo-project scale.
 
 ---
 
@@ -361,7 +371,7 @@ is overkill at solo-project scale.
 | Level 0 | No requirements | ✅ |
 | Level 1 | Provenance exists describing how the package was built | ✅ |
 | Level 2 | Provenance digitally signed by hosted build platform | ✅ Achieved May 2026 |
-| Level 3 | Build platform isolates runs; secrets are not accessible to user-defined steps | ❌ Not pursued (see below) |
+| Level 3 | Build platform isolates runs; secrets are not accessible to user-defined steps | ❌ Not pursued |
 
 **SLSA Level 2 — how achieved:**
 - `@cyclonedx/cyclonedx-npm@^2.0.0` produces a CycloneDX 1.6 JSON
@@ -371,15 +381,14 @@ is overkill at solo-project scale.
   Rekor transparency log. No long-lived keys.
 - SBOMs are attached to GitHub Releases as assets; their
   attestations are queryable via `gh attestation list`.
-- Verification procedure for downstream consumers is documented in
+- Verification procedure for downstream consumers in
   ARCHITECTURE.md §9.5.
 
 **Level 3 is intentionally not pursued.** It would require a
-reusable workflow with build-platform isolation (e.g. via
-`slsa-framework/slsa-github-generator`). The marginal security gain
-over L2 doesn't justify the operational complexity for a
-single-tenant e-commerce shop with no third-party consumers of
-build artifacts. Revisit when a customer contract requires it.
+reusable workflow with build-platform isolation. The marginal
+security gain over L2 doesn't justify the operational complexity
+for a single-tenant e-commerce shop. Revisit when a customer
+contract requires it.
 
 ---
 
@@ -391,23 +400,23 @@ families:
 
 | Control | Status |
 |---|---|
-| CIS 1 Inventory of Enterprise Assets | ⚠️ No formal inventory doc (ARCHITECTURE.md §15 item 22) |
+| CIS 1 Inventory of Enterprise Assets | ⚠️ No formal inventory doc. Roadmap item 31 |
 | CIS 2 Inventory of Software Assets | ✅ Signed CycloneDX SBOM per workspace, attached to releases |
-| CIS 3 Data Protection | ✅ |
-| CIS 4 Secure Configuration of Enterprise Assets and Software | ✅ |
+| CIS 3 Data Protection | ⚠️ Code controls ✅; at-rest encryption depends on deployment |
+| CIS 4 Secure Configuration of Enterprise Assets and Software | ⚠️ Code controls ✅; production hardening pending deployment |
 | CIS 5 Account Management | ✅ |
 | CIS 6 Access Control Management | ✅ |
 | CIS 7 Continuous Vulnerability Management | ✅ Dependabot + CodeQL `security-extended` weekly + on every PR |
 | CIS 8 Audit Log Management | ⚠️ Pino logs yes; SIEM no — acceptable at this scale |
-| CIS 9 Email and Web Browser Protections | N/A (no email clients) |
+| CIS 9 Email and Web Browser Protections | N/A (no email clients in scope) |
 | CIS 10 Malware Defenses | N/A (no end-user devices in scope) |
 | CIS 11 Data Recovery | ⚠️ Procedures yes; drill cadence no |
-| CIS 12 Network Infrastructure Management | ✅ |
-| CIS 13 Network Monitoring and Defense | ⚠️ WAF yes; full IDS no — acceptable |
+| CIS 12 Network Infrastructure Management | N/A today (no production network yet) |
+| CIS 13 Network Monitoring and Defense | N/A today (no production network yet) |
 | CIS 14 Security Awareness and Skills Training | N/A (solo project) |
-| CIS 15 Service Provider Management | ✅ |
+| CIS 15 Service Provider Management | ✅ AWS shared-responsibility model + Neon contract terms |
 | CIS 16 Application Software Security | ✅ CodeQL SAST + signed SBOM + RFC 9116 VDP |
-| CIS 17 Incident Response Management | ❌ No playbook |
+| CIS 17 Incident Response Management | ❌ No playbook. Roadmap item 30 |
 | CIS 18 Penetration Testing | N/A at this scale |
 
 ---
@@ -418,25 +427,25 @@ Bulgarian shop selling to EU residents — full GDPR scope.
 
 | Article | Requirement | Status |
 |---|---|---|
-| Art. 5 | Lawfulness, fairness, transparency | ✅ Privacy policy + cookie consent |
+| Art. 5 | Lawfulness, fairness, transparency | ✅ Privacy policy page at `/privacy`; cookie-consent schema (`cookie_consents` table) ready |
 | Art. 5(1)(c) | Data minimisation | ✅ Only collects required fields per account type |
-| Art. 5(1)(e) | Storage limitation | ⚠️ No formal retention sweep for old `login_attempts` |
+| Art. 5(1)(e) | Storage limitation | ⚠️ No retention sweep for old `login_attempts` (scheduler-fn not built — Roadmap item 22) |
 | Art. 6 | Lawful basis | ✅ Contract + legitimate interest + consent |
-| Art. 7 | Conditions for consent | ✅ Cookie consent UI, distinct refuse-all button |
+| Art. 7 | Conditions for consent | ⚠️ Cookie consent UI exists client-side (`frontend/src/components/layout/CookieBanner.tsx`, choice persisted to `localStorage`); server-side `cookie_consents` table is in schema but not yet wired |
 | Art. 12 | Transparent information | ✅ Privacy policy + clear UI copy |
-| Art. 15 | Right of access | ✅ JSON export from profile |
-| Art. 16 | Right to rectification | ✅ Self-service `/account/profile` wired to `PATCH /auth/me` (May 23, 2026). Account-type-aware: personal accounts edit fullName + phone; corporate accounts edit companyName + VAT + address + MOL + contact name/phone. Phone normalised to Bulgarian E.164 server-side. Audit trail via structured Pino `profile_updated` event (field NAMES only, never VALUES — satisfies Art. 30 records-of-processing without piling PII into log indexes). EIK / email / password / role / accountType have dedicated flows or are deliberately read-only |
-| Art. 17 | Right to erasure | ✅ `DELETE /auth/me` (May 24, 2026). Re-auth via current password + typed confirmation phrase (`z.literal("ИЗТРИЙ")`). Active-order check returns `422 /problems/active-orders-block-deletion` for orders in `processing` / `shipped` / `ready_for_pickup` / `delivered` (Art. 6(1)(b) "contract performance" supersedes Art. 17 while shipping is in flight). Single-transaction execution (`backend/shop-api/src/lib/account-deletion.ts`): **hard-deletes** `customer_profiles` / `corporate_profiles` / `addresses` / `carts` (+ cart_items) / `discounts` / `mfa_recovery_codes` / all `sessions` / `email_verification_tokens` / `password_reset_tokens` / `login_attempts` (matched by email — Art. 5(1)(c) data minimisation); **pseudonymises** the `users` row (email → `deleted-<uuid>@deleted.invalid`, password_hash → non-Argon2 sentinel, deletedAt + anonymizedAt set), `orders` row (customerId NULL + customer_email/name/phone → "[deleted]"; financial columns + order_items snapshots intact for the 10-year Bulgarian Accountancy Act retention required by Art. 17(3)(b)), `order_delivery_address` (street + apartment blanked; city + postalCode preserved as coarse-grained tax-territory data), `order_corporate_data` (only contactName blanked — companyName / EIK / VAT / registeredAddress / MOL are LEGALLY REQUIRED invoice content under Bulgarian VAT law and stay intact), `complaints` (customer contact fields blanked; reason + description kept for the Art. 11a durable-medium audit trail). Email freed for re-registration (the sentinel preserves the `users_email_unique` index; register handler already filters by `isNull(deletedAt)`). Adjacent endpoints already enumeration-resistant against deleted users. Best-effort `auth.account-deleted` notification email (Bulgarian) to the ORIGINAL address. Audit trail via structured Pino `account_deleted` log (userId + pseudonymizedAt + IP + UA — never the original email value). Admin self-deletion via this endpoint returns 403 — single admin account has its own MFA-recovery runbook (ARCHITECTURE.md §12.4). |
-| Art. 17(3)(b) | Legal-obligation retention exemption | Bulgarian Accountancy Act (Закон за счетоводството) requires 10-year retention of invoices and accounting documents. Orders + order_items + order_delivery_address (city/postalCode) + order_corporate_data (invoice party fields) are kept in pseudonymised form. Complaints retained for the EU 2011/83/EU Art. 11a + 2023/2673 statutory-period audit-trail requirement. The retention is documented to the data subject in the post-deletion notification email so the disclosure is concurrent with the action (Art. 12 + Art. 13(2)(a)). |
-| Art. 18 | Right to restriction | ⚠️ No explicit "freeze processing" flow |
-| Art. 20 | Right to data portability | ✅ JSON export |
-| Art. 21 | Right to object | ⚠️ Marketing-consent rejection works; broader object-to-processing flow not built |
+| Art. 15 | Right of access | ❌ Self-service data export endpoint not built. Roadmap item 35 |
+| Art. 16 | Right to rectification | ✅ Self-service `/account/profile` wired to `PATCH /auth/me` (May 23, 2026). Account-type-aware. Phone normalised to Bulgarian E.164 server-side. Audit trail via structured Pino `profile_updated` event (field NAMES only — never values). EIK / email / password / role / accountType are deliberately read-only or have dedicated flows |
+| Art. 17 | Right to erasure | ✅ `DELETE /auth/me` (May 24, 2026). Current-password re-auth + typed confirmation `z.literal("ИЗТРИЙ")`. Active-order check returns `422 /problems/active-orders-block-deletion`. Single-transaction execution in `backend/shop-api/src/lib/account-deletion.ts` balances Art. 17(1) immediate erasure with the Bulgarian Accountancy Act's 10-year invoice retention via Art. 17(3)(b). Hard-deletes profiles, addresses, cart, discounts, MFA codes, sessions, tokens, login_attempts matched by email. Pseudonymises `users` (email → `deleted-<uuid>@deleted.invalid`, password_hash → non-Argon2 sentinel). Orders kept with customer fields blanked, financial columns + line-item snapshots intact. Email freed for re-registration |
+| Art. 17(3)(b) | Legal-obligation retention exemption | ✅ Bulgarian Accountancy Act 10-year invoice retention; EU 2011/83/EU + 2023/2673 complaint retention. Disclosed concurrently in the post-deletion notification email |
+| Art. 18 | Right to restriction | ❌ No explicit "freeze processing" flow |
+| Art. 20 | Right to data portability | ❌ Self-service export not built. Roadmap item 35 |
+| Art. 21 | Right to object | ⚠️ Marketing-consent rejection not yet wired; broader object-to-processing flow not built |
 | Art. 25 | Privacy by design | ✅ PII redaction in logs; pseudonymised session tokens |
-| Art. 32 | Security of processing | ✅ Encryption at rest + in transit + audit log |
-| Art. 33 | Breach notification to supervisory authority within 72h | ⚠️ No playbook documented |
-| Art. 34 | Communication of breach to data subject | ⚠️ No playbook documented |
-| Art. 35 | Data Protection Impact Assessment | N/A (low-risk processing of basic identifying info) |
-| Art. 44 | Data residency | ✅ All processing in `eu-central-1` |
+| Art. 32 | Security of processing | ⚠️ Code-level controls ✅; encryption at rest depends on deployment |
+| Art. 33 | Breach notification to supervisory authority within 72h | ❌ No playbook documented. Roadmap item 30 |
+| Art. 34 | Communication of breach to data subject | ❌ No playbook documented |
+| Art. 35 | Data Protection Impact Assessment | N/A (low-risk processing) |
+| Art. 44 | Data residency | ✅ Architectural — all production processing intended for `eu-central-1` |
 
 ---
 
@@ -449,42 +458,50 @@ Effective dates:
 - **December 11, 2027** — full compliance deadline (SBOM,
   vulnerability handling, security updates for 5 years).
 
-The CRA targets "products with digital elements." Pure SaaS is
-**arguably out of scope** — the regulation specifically applies to
-physical or downloadable products placed on the market. The
-Commission has signalled SaaS will be addressed separately.
+**The CRA does not apply to this product.** The CRA covers
+"products with digital elements." Pure SaaS distributed via a web
+browser is **out of scope** per the European Commission's own
+guidance — software offered via SaaS is not covered unless it
+qualifies as a "remote data processing solution" essential to a
+physical product. This shop sells physical goods but does not ship
+software, firmware, or downloadable products of any kind.
 
-**Recommended posture:** adopt CRA-style hygiene even though it
-likely doesn't apply legally. The reputational and customer-trust
-benefits are real, and the technical requirements (SBOM, vuln
-disclosure policy, 24h reporting practice) are also driven by
-NIST CSF 2.0 and OWASP Top 10 2025.
+**The shop voluntarily maintains CRA-style hygiene** as general
+supply-chain defence and as an investment in NIST CSF 2.0 /
+OWASP Top 10 2025 alignment. The reputational and customer-trust
+benefits are real even when the legal mandate doesn't apply.
 
-| CRA-style practice | Status | Driven by |
+| CRA-style practice | Status | Voluntarily driven by |
 |---|---|---|
 | SBOM published | ✅ CycloneDX 1.6 per workspace, signed, attached to releases | NIST CSF, OWASP 2025 |
 | Vulnerability disclosure policy (`security.txt`) | ✅ `frontend/public/.well-known/security.txt` + bilingual `/security` policy page | RFC 9116 |
 | Vulnerability handling process | ✅ Dependabot + CodeQL + 72h-ack / 90d-fix commitment in VDP | OWASP, NIST |
-| Documented 24h breach reporting | ⚠️ Playbook still pending (ARCHITECTURE.md §15 item 21) | GDPR Art. 33 |
-| Security updates available for 5+ years | ⚠️ Yes for managed AWS; OS not applicable | CRA |
+| Documented 24h breach reporting | ⚠️ Playbook pending (Roadmap item 30) | GDPR Art. 33 |
+| Security updates available for 5+ years | ⚠️ Managed AWS services covered by their respective vendor lifecycles | — |
 
 ---
 
 ## 12. EU Directive 2023/2673 — 14-day right of withdrawal
 
-Mandatory in all EU member states from **June 19, 2026**.
+Mandatory in all EU member states from **June 19, 2026**. This shop
+ships in compliance ahead of the deadline.
 
 | Requirement | Status |
 |---|---|
 | "Withdrawal button" clearly labelled | ✅ "Откажете се от договора тук" |
-| Easy to find | ✅ Linked from order detail, footer, /terms, /delivery |
-| Confirmation receipt on durable medium (Art. 11a(2)) | ✅ On-screen receipt + email |
+| Easy to find | ✅ Linked from order detail, footer, /terms, /delivery, withdrawal page header |
+| Confirmation receipt on durable medium (Art. 11a(2)) | ✅ On-screen receipt is the primary durable medium per recital 37; email is defence in depth |
 | Receipt includes date/time of withdrawal | ✅ Sofia timezone, second precision |
 | No dark patterns (recital 37) | ✅ No double-confirm, no countdown, no upsell |
 | Optional reason | ✅ Marked "по избор" |
-| Penalty for missing button | Window extends to 12 months + 14 days |
+| Email send-failure does not break the audit trail | ⚠️ On-screen receipt is independent of email; SQS retry queue (Roadmap item 18) closes the formal audit margin |
+| Penalty for missing button | (Window extends to 12 months + 14 days) |
 
-Implemented in the May 2026 withdrawal slice. Full coverage.
+Implemented in the May 2026 withdrawal slice. Three routes:
+`GET /orders/:n/withdrawal/eligibility`, `GET /orders/:n/withdrawal`,
+`POST /orders/:n/withdrawal`. Idempotent at the DB level via a
+partial unique index on `complaints.order_id WHERE
+reason='withdrawal'`.
 
 ---
 
@@ -495,14 +512,15 @@ e-commerce serving EU residents.
 
 | WCAG 2.2 Principle | Status |
 |---|---|
-| Perceivable (alt text, contrast 4.5:1, info not by colour alone) | ✅ In scope per docs/README §13 |
-| Operable (keyboard nav, focus indicators, 24×24 touch targets, skip nav) | ✅ |
-| Understandable (labels, error messages, autocomplete, predictable navigation) | ✅ |
-| Robust (semantic HTML, ARIA, screen-reader compatibility) | ✅ |
+| Perceivable (alt text, contrast 4.5:1, info not by colour alone) | ⚠️ Design intent in scope per docs/README §13; not continuously audited |
+| Operable (keyboard nav, focus indicators, 24×24 touch targets, skip nav) | ⚠️ |
+| Understandable (labels, error messages, autocomplete, predictable navigation) | ⚠️ |
+| Robust (semantic HTML, ARIA, screen-reader compatibility) | ⚠️ |
 
 WCAG 2.2 AA is the European Accessibility Act baseline. The
-functional spec commits to it; ongoing audit (via tools like axe-
-core in CI) is the gap, not the design intent.
+functional spec commits to it; **the gap is continuous audit** —
+adding axe-core or Pa11y to CI (Roadmap item 27 area) would
+operationalise the commitment.
 
 ---
 
@@ -512,19 +530,19 @@ core in CI) is the gap, not the design intent.
 |---|---|
 | **PCI-DSS** | No PAN (cardholder data) is received, stored, or transmitted. Payment is cash on delivery / pay at store only. |
 | **NIS2 Directive** | Applies to "important entities" defined by revenue/employee thresholds. The shop's scale is below those thresholds. Reassess if annual revenue exceeds ~€10M or employee count exceeds ~50. |
-| **SOC 2 Type 2** | Audit framework primarily relevant for B2B SaaS with enterprise customers requiring attestation. Not relevant for B2C e-commerce. Would become relevant if the project pivoted to multi-tenant SaaS. |
+| **SOC 2 Type 2** | Audit framework for B2B SaaS with enterprise customers requiring attestation. Not relevant for B2C e-commerce. Would become relevant if the project pivoted to multi-tenant SaaS. |
 | **ISO 27001** | Information security management certification. Useful for organisations with employees and physical premises; overhead exceeds value for a solo project. |
 | **HIPAA** | US healthcare. No medical data. |
-| **EU AI Act** | No AI / ML systems in the architecture as of May 2026. |
+| **EU AI Act** | No AI / ML systems in the architecture. |
 | **PSD2** | Payment services regulation. Payment is cash-on-delivery / pay-at-store — out of scope. |
+| **EU CRA** | Pure SaaS exemption per European Commission guidance — see §11. Hygiene voluntarily maintained. |
 
-If any of these become in-scope (e.g., project pivots, scale
-crosses NIS2 thresholds, B2B customer requires SOC 2 attestation),
-update this matrix and add the relevant gaps to
-`ARCHITECTURE.md` §15.
+If any of these become in-scope (project pivots, scale crosses NIS2
+thresholds, B2B customer requires SOC 2 attestation), update this
+matrix and add the relevant gaps to `ARCHITECTURE.md` §15.
 
 ---
 
-*Auditor-facing reference. The narrative explanation of each
-gap and its remediation lives in `ARCHITECTURE.md` (§14
-"Honest assessment" and §15 "Roadmap to A+").*
+*Auditor-facing reference. The narrative explanation of each gap
+and its remediation lives in `ARCHITECTURE.md` (§14 "Honest
+assessment" and §15 "Roadmap to A+").*
