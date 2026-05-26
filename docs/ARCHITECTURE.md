@@ -1,8 +1,9 @@
 # Architecture — Best Online Shop Ever
 
-> The single technical doc that explains how the system is built, how
-> it runs, what it costs, and what's standing between today's state and
-> A+ on every relevant 2026 standard.
+> The single technical doc that explains how the system is built today,
+> what its intended production posture looks like, the decisions
+> behind each choice, the gaps between in-repo and intended-production
+> state, and the roadmap to close them.
 >
 > Companion doc: `COMPLIANCE.md` — the standards-by-standards matrix
 > (NIST CSF 2.0, OWASP Top 10 2025, OWASP ASVS 6.0, NIST SP 800-63B-4,
@@ -13,7 +14,8 @@
 > specification. Read that to learn *what* the shop does; this doc
 > covers *how* it's built.
 >
-> Last updated: 2026-05-25.
+> Last updated: 2026-05-26. Reality-aligned: this revision corrects
+> claims that previously implied the deployment was live.
 
 ---
 
@@ -34,47 +36,56 @@
 13. [Architecture decisions locked in](#13-architecture-decisions-locked-in)
 14. [Honest assessment vs A+ target](#14-honest-assessment-vs-a-target)
 15. [Roadmap to A+](#15-roadmap-to-a)
-16. [Glossary](#16-glossary)
+16. [Forward-looking design considerations](#16-forward-looking-design-considerations)
+17. [Glossary](#17-glossary)
 
 ---
 
 ## 1. What this product is
 
-A Bulgarian-language B2C and B2B e-commerce shop, hosted in AWS
-Frankfurt (`eu-central-1`) for GDPR data-residency. Sells physical
+A Bulgarian-language B2C and B2B e-commerce shop. Intended hosting:
+AWS Frankfurt (`eu-central-1`) for GDPR data residency. Sells physical
 goods only. Payment is **cash on delivery** or **pay at the physical
 store** — no card numbers are ever received, stored, or transmitted.
 That one fact removes PCI-DSS from scope and makes "production-grade"
 reachable without a payment-processor audit.
 
-Three actors in the code:
+Three actors are present in the codebase:
 
-- **Guests** — browse and order without registering; cart stored per
-  browser tab.
-- **Customers** — registered users, individuals or corporate (with
-  VAT/EIK fields).
-- **Administrator** — exactly one account, on a separate subdomain
-  (`admin.domain.bg`), gated by mandatory TOTP MFA.
+- **Guests** — browse and order without registering; cart stored
+  per browser tab via `sessionStorage`.
+- **Customers** — registered users, individuals (`accountType =
+  personal`) or corporate (`accountType = corporate` with VAT/EIK
+  fields).
+- **Administrator** — exactly one role per the spec, on a separate
+  subdomain. **The admin auth flow and the admin Lambda are not yet
+  built.** The frontend `/admin/*` pages currently render mock data
+  only.
 
-Functional scope is in `docs/README.md`. Technical scope is this doc.
+Functional scope is in `docs/README.md`. Deployment status is in
+`README.md` ("Deployment status" section).
 
 ---
 
 ## 2. Architecture at a glance
 
+The diagram below is the **target** posture. Every box marked **[T]**
+exists in the repo and can run locally; every box marked **[P]** is
+planned but not yet provisioned. As of 2026-05-26 only the **[T]**
+components are real; the AWS plumbing is documented design, not
+running infrastructure.
+
 ```
                               Internet
                                   │
                       ┌───────────▼────────────┐
-                      │   DNS                  │
-                      │   (Route 53 today,     │
-                      │    Cloudflare planned) │
+                      │   DNS                  │  [P] Route 53 (planned)
+                      │   (or Cloudflare)      │
                       └───────────┬────────────┘
                                   │
                       ┌───────────▼────────────┐
-                      │   Edge protection      │
-                      │   (AWS WAF + Shield;   │
-                      │    Cloudflare planned) │
+                      │   Edge protection      │  [P] AWS WAF + Shield
+                      │                        │      Cloudflare (alt.)
                       └───────────┬────────────┘
                                   │
               ┌───────────────────┴───────────────────┐
@@ -83,93 +94,106 @@ Functional scope is in `docs/README.md`. Technical scope is this doc.
               │                                       │
               ▼                                       ▼
    ┌──────────────────────┐                ┌──────────────────────┐
-   │  AWS Amplify          │                │  AWS Amplify          │
-   │  Next.js 16 PPR+ISR   │                │  Next.js 16 (admin)   │
-   │  CloudFront CDN       │                │  CloudFront CDN       │
+   │  AWS Amplify         │  [P]           │  AWS Amplify         │  [P]
+   │  Next.js 16          │  [T] (code)    │  (admin)             │  [P]
    └──────────┬───────────┘                └──────────┬───────────┘
               │                                       │
               ▼                                       ▼
    ┌──────────────────────┐                ┌──────────────────────┐
-   │  Lambda shop-api     │                │  Lambda admin-api    │
-   │  Hono + Drizzle      │                │  Hono + Drizzle      │
-   │  Function URL        │                │  Function URL        │
-   └──────────┬───────────┘                └──────────┬───────────┘
-              │                                       │
-              └──────────────────┬────────────────────┘
-                                 │
-                                 ▼
-                       ┌──────────────────┐
-                       │  Neon PostgreSQL │
-                       │  HTTP driver +   │
-                       │  PgBouncer       │
-                       └────────┬─────────┘
-                                │
-                                ▼
-                       ┌──────────────────┐
-                       │  Amazon S3       │
-                       │  images, backups │
-                       │  → R2 planned    │
-                       └──────────────────┘
+   │  Lambda shop-api     │  [P] (deploy)  │  Lambda admin-api    │  [P]
+   │  Hono + Drizzle      │  [T] (code)    │  Not yet written     │  [P]
+   └──────────┬───────────┘                └──────────────────────┘
+              │
+              ▼
+   ┌──────────────────┐
+   │  PostgreSQL      │  [T] Docker Postgres 17 locally
+   │  (Neon planned)  │  [P] Neon in production
+   └────────┬─────────┘
+            │
+            ▼
+   ┌──────────────────┐
+   │  Amazon S3       │  [P] images + backups
+   └──────────────────┘
 
-   EventBridge ──► Lambda scheduler-fn (3 cron rules)
-   Lambda * ──► Amazon SES (8 transactional templates)
-   Lambda * ──► CloudWatch Logs / Metrics / 5 Alarms
-   Lambda * ──► SSM Parameter Store (runtime secrets)
-   ACM ──► CloudFront + Amplify (auto-renew TLS)
+   [P] EventBridge ──► [P] Lambda scheduler-fn (3 cron rules) — not yet written
+   [T] Lambda * ──► [T] Amazon SES (code), 9 transactional templates
+   [P] Lambda * ──► [P] CloudWatch Logs / Metrics / 5 Alarms
+   [P] Lambda * ──► [P] SSM Parameter Store (runtime secrets)
+   [P] ACM ──► [P] CloudFront + Amplify (auto-renew TLS)
 ```
 
-The shortest description: **Next.js frontend on Amplify; Hono backend
-on Lambda; Neon Postgres; AWS WAF + CloudFront + S3 + SES +
-EventBridge + CloudWatch + Parameter Store gluing it together.**
-Everything below is detail.
+The shortest target description: **Next.js frontend on Amplify; Hono
+backend on Lambda; Neon Postgres; AWS WAF + CloudFront + S3 + SES +
+EventBridge + CloudWatch + Parameter Store gluing it together.** The
+shortest honest description of today's state: **the codebase is
+ready for that deployment; the deployment hasn't happened.**
 
 ---
 
 ## 3. Layer by layer
 
+Each subsection states what exists in the repo today and what the
+target production posture looks like. Sections marked "Target" are
+design, not running infrastructure.
+
 ### 3.1 DNS
 
-Route 53 hosted zone, $0.50/mo. Planned move to Cloudflare Free DNS —
-see §10 and the recommendation in §15.
+**Target:** Route 53 hosted zone (~$0.50/mo) or Cloudflare Free DNS.
+A planned cost-and-security swap to Cloudflare is documented in §10.
+
+**Today:** No production DNS. The shop is reachable only on
+`localhost:3000`.
 
 ### 3.2 Edge protection
 
-**AWS WAF + AWS Shield Standard** in the current configuration. The
-WAF runs:
+**Target:** AWS WAF + AWS Shield Standard. WAF would run:
 
-- `AWSManagedRulesCommonRuleSet` (OWASP Top 10 baseline — XSS, path
-  traversal, bad inputs)
-- `AWSManagedRulesSQLiRuleSet` (SQL injection)
-- Custom rate-limiting rules on `/auth/login`, `/auth/resend-
-  verification`, `/track/:token`
-- Stricter rules attached only to `admin.domain.bg`
+- `AWSManagedRulesCommonRuleSet` (OWASP baseline)
+- `AWSManagedRulesSQLiRuleSet`
+- Custom rate-limit rules on `/auth/login`,
+  `/auth/resend-verification`, `/track/:token`
+- Stricter rules attached to `admin.domain.bg`
 
-**AWS Shield Standard** is free L3/L4 DDoS protection that ships with
-every CloudFront distribution. **Cloudflare's free tier provides
-materially stronger DDoS coverage (unmetered L3/L4/L7).** This is one
-of the few places the current architecture is genuinely under-
-protected vs cheaper alternatives.
+**Cloudflare alternative:** Cloudflare Free's L3/L4/L7 DDoS coverage
+is materially stronger than AWS Shield Standard for this scale; this
+is the documented preferred path for production (see §10).
 
-Cost today: $5/mo WebACL + $2/mo for two managed rule packs + $0.60
-per million requests.
+**Today:** No edge protection. Local dev runs against `localhost`
+without WAF.
 
-### 3.3 Frontend — Next.js 16 on AWS Amplify
+### 3.3 Frontend — Next.js 16
 
-Two Amplify apps, two CloudFront distributions, two Next.js 16 builds
-(the shop and the admin).
+**Today (code, runs locally):**
 
-- **PPR (Partial Prerendering)** — static shell (header, footer,
-  product images) renders at build time; dynamic islands (price,
-  stock, cart count) render at request time.
-- **ISR (Incremental Static Regeneration)** — product and category
-  pages rebuild every 60 seconds in the background.
-- **Server Components** — `getServerUser()` reads auth identity
-  before first paint, avoiding the logged-in-flicker.
+- React 19 + Next.js 16 application under `frontend/`.
+- Server Components for initial paint, including `getServerUser()`
+  which reads the session cookie via `next/headers` and embeds the
+  user into the SSR response (no auth flicker).
+- Thin proxy at `frontend/src/proxy.ts` does cookie-presence checks
+  and emits the strict CSP headers + Reporting-Endpoints on every
+  HTML response.
+- Pages around auth (`/account/login`, `/account/register`,
+  `/account/profile`, `/account/email-change`,
+  `/account/reset-password`, `/account/delete`), cart, and orders are
+  all real and wired to `@shop/api`.
+- Pages still on mock data: home banners, `/products/[...path]`
+  category browsing, `/search`, every `/admin/*` page.
+
+**Target (deployment):** AWS Amplify Hosting, two apps (shop + admin)
+on two CloudFront distributions.
 
 **Known constraint:** Amplify does NOT support on-demand revalidation
-(`revalidateTag` / `revalidatePath`). Only time-based ISR works. This
-is the single feature that would push us off Amplify if it became
-critical; today it doesn't.
+(`revalidateTag` / `revalidatePath`); only time-based ISR works. If
+on-demand revalidation becomes critical, Vercel or a self-hosted
+Node server behind CloudFront becomes the deployment target.
+
+**On PPR / ISR:** Next.js 16's Partial Prerendering is production-
+stable, but **this codebase does not use it today**. Every route
+reads cookies on the SSR pass via `getServerUser()`, which forces
+dynamic rendering. The earlier ARCHITECTURE.md claim of "ISR for
+catalog pages" was technically incorrect; that has been corrected in
+§5.2. PPR / ISR can be re-enabled later by moving auth hydration to
+a client `useEffect` (at the cost of a small auth flicker).
 
 The frontend talks to the backend via **Hono RPC** — a typed-fetch
 client generated from the Hono `AppType`. End-to-end TypeScript types
@@ -177,73 +201,78 @@ without a separate codegen step.
 
 ### 3.4 Backend — Hono on AWS Lambda
 
-Three Lambda functions:
+**Today (code):** **one** Hono application in `backend/shop-api/`,
+runnable locally via `@hono/node-server`. Routes mounted in
+`backend/shop-api/src/app.ts`:
 
-- **`shop-api`** — customer-facing. Product catalog, search, cart,
-  orders, auth (10 endpoints across login/register/verify/reset/
-  email-change/change-password/profile-update), 14-day withdrawal,
-  GDPR data export.
-- **`admin-api`** — admin panel backend. Order/product/category/
-  customer/discount CRUD, banner management, content versioning,
-  backup orchestration.
-- **`scheduler`** — three cron rules: daily catalog backup, hourly
-  expired-pickup check, daily unverified-account cleanup.
+- `/products`, `/categories`, `/auth/*`, `/cart/*`, `/orders/*`,
+  `/csp-report`, `/health`, `/openapi.json`.
 
-All three are **Hono** — portable across Lambda, Workers, Bun, Deno,
-and Node. **Drizzle** is the ORM. **`@hono/zod-openapi`** auto-
-generates the OpenAPI 3.1 contract from the typed routes.
+**Target (three Lambdas):**
 
-Authentication lives in `@shop/auth`:
+- **`shop-api`** — customer-facing. The Hono app already in the repo.
+- **`admin-api`** — admin panel backend. Order / product / category /
+  customer / discount CRUD, banner management, content versioning,
+  backup orchestration. **Not yet written.**
+- **`scheduler-fn`** — three cron rules: daily catalog backup, hourly
+  expired-pickup check, daily unverified-account cleanup. **Not yet
+  written.**
+
+All three would be **Hono** (portable across Lambda, Workers, Bun,
+Deno, Node). **Drizzle** is the ORM. **`@hono/zod-openapi`**
+auto-generates the OpenAPI 3.1 contract from the typed routes.
+
+Authentication primitives live in `@shop/auth`:
+
 - **Argon2id** with `m=19456, t=2, p=1` (the OWASP-recommended low-
-  memory profile, RFC 9106 compliant)
+  memory profile, RFC 9106 compliant).
 - 32-byte CSPRNG session tokens, SHA-256-hashed at rest in
-  `sessions.id_hash`
+  `sessions.id_hash`.
 - Constant-time login (`argon2.verify` against `DUMMY_PASSWORD_HASH`
-  for unknown emails)
+  for unknown emails).
 - **NIST SP 800-63B Rev. 4** password policy (shipped May 2026):
   ≥12 chars, ≤1024 chars, no composition rules, screened against
   the Have I Been Pwned breach corpus at registration, password
-  reset, AND authenticated password change via the k-anonymity API.
-  HIBP failure-mode is open (a warning log, not a hard block) — we
-  don't couple signup availability to a single-vendor free service.
+  reset, AND authenticated password change via the k-anonymity
+  API. HIBP failure-mode is open (a warning log, not a hard block).
   Login is NOT gated by the HIBP check, so existing customers
-  cannot be locked out retroactively if their once-acceptable
-  password later turns up in a breach. See §5.2 below.
-- **Authenticated password change** (shipped May 2026): `POST
+  cannot be locked out retroactively.
+- **Authenticated password change** (shipped May 22, 2026): `POST
   /auth/change-password`. Requires the current password as re-auth
-  proof (defeats the walked-away-from-shared-computer threat per
-  OWASP Authentication Cheat Sheet "Change Password Feature").
-  Closes OWASP ASVS V6.2 / NIST SP 800-63B-4 §5.1.1.2 ("subscribers
-  SHALL be able to change their memorized secret"). On success the
-  hash rotates, every OTHER session for the user is dropped, the
-  initiating session is preserved (industry convention — the
-  device just proved it knows the current password, so logging it
-  out would be pure churn), and a best-effort notification email
-  fires to the account address. The current-password verify shares
-  the same per-email lockout counter as `/auth/login`, so a
-  stolen-cookie attacker cannot brute-force the password through
-  this endpoint without tripping the same 5-fails-in-15-min cap.
+  proof. Closes OWASP ASVS V6.2 / NIST SP 800-63B-4 §5.1.1.2. On
+  success the hash rotates, every OTHER session for the user is
+  dropped (the initiating session is preserved), and a best-effort
+  notification email fires.
 
-Errors follow **RFC 9457 Problem Details**. Logs use **Pino with PII
-redaction**, structured JSON, per-request child logger keyed on
+Errors follow **RFC 9457 Problem Details**. Logs use **Pino with
+PII redaction**, structured JSON, per-request child logger keyed on
 `X-Request-Id`.
 
-### 3.5 Database — Neon PostgreSQL
+### 3.5 Database — Neon PostgreSQL (target) / Docker Postgres (today)
 
-Neon is a managed Postgres that scales to zero (suspends after ~5
-minutes idle; next query takes 300–800ms to wake). Schema today:
-**30 tables, 32 FKs, 44 indexes, 10 enums**, all managed by Drizzle
-migrations.
+**Today:** A local Docker Postgres 17 instance brought up via
+`npm run db:up`. The Drizzle schema in `backend/db/src/schema/` is
+applied via `npm run db:migrate` and a deterministic seed at
+`npm run db:seed`. Migrations: `0000_initial.sql`,
+`0001_orders_sequence.sql`, `0002_complaints_withdrawal.sql`.
+
+**Schema scope:** 30 tables, 32 FKs, 44 indexes, 10 enums.
+
+**Target:** Neon Postgres. `createDb()` picks the Neon HTTP driver
+in prod and the node-pg driver in dev. **Neon Scale** is the
+contractually-acceptable production tier; **Neon Launch (~€18/mo)**
+is the practical entry tier; **Neon Free** is an SPOF and acceptable
+only for dev branches (it auto-suspends after ~5 minutes idle).
 
 Design choices that are load-bearing:
 
 - **Money as integer cents** via `numeric(10,0)` — never floats.
 - **All timestamps `timestamptz`.**
 - **UUIDs via `gen_random_uuid()`** — server-generated.
-- **Soft delete via `deleted_at`**.
+- **Soft delete via `deleted_at`** on `users` and adjacent tables.
 - **Optimistic locking** via `version` on orders.
 - **`idempotency_key` UNIQUE** on orders — retries return the
-  original order, never a duplicate.
+  original order verbatim.
 - **Order line items snapshotted** at checkout — product name, code,
   image, unit price frozen onto each line so future catalog edits
   cannot rewrite history.
@@ -252,140 +281,189 @@ Connection pool: each Lambda container holds up to 3 connections,
 initialised outside the handler so warm invocations reuse them. Neon
 PgBouncer handles multiplexing on the database side.
 
-**Tier today: Neon Free** (acceptable as SPOF caveat — see §6).
-**Recommended for production: Neon Launch (~€18/mo, always-on,
-7-day PITR, no auto-suspend cold start).**
+### 3.6 Object storage — Amazon S3 (planned)
 
-### 3.6 Object storage — Amazon S3 (planned migration to R2)
+**Today:** No S3 integration. The `images.ts` helper builds URLs
+against a configured base; locally that's a `cdn.duda1.bg`-style
+placeholder. There is no admin upload path (the admin Lambda doesn't
+exist yet).
 
-S3 holds:
+**Target:** S3 with three roles —
+
 1. **Original product images** in a `temp/` prefix (deleted after
    processing).
 2. **Three pre-optimised WebP variants** per image (1200×1200,
    400×400, 150×150 — about 2 MB per product total).
 3. **Daily catalog backups** (full categories+products JSON snapshot
-   with 90-day retention; >90 day backups move to Glacier).
+   with 90-day retention; >90d moves to Glacier Instant Retrieval).
 
-CloudFront sits in front of the image bucket. Images are served
-exclusively from edge cache.
-
-**Sharp.js processes at UPLOAD time, not at request time.** Admin
-uses an S3 presigned PUT URL (15-minute TTL, 10 MB cap, JPG/PNG only)
-to bypass Lambda's 6 MB payload cap, then triggers
+CloudFront would sit in front of the image bucket. **Sharp.js
+processes at UPLOAD time, not at request time.** Admin would use an
+S3 presigned PUT URL (15-min TTL, 10 MB cap, JPG/PNG only) to bypass
+Lambda's 6 MB payload cap, then trigger
 `POST /admin/process-image` to run Sharp.
 
-**Planned migration to Cloudflare R2** for free egress and to
+**Possible migration to Cloudflare R2** for free egress and to
 eliminate one AWS lock-in point. See §10.
 
 ### 3.7 Email — Amazon SES
 
-SES has 8 transactional templates today: registration verification,
-password reset, password changed, email change request/verify, order
-confirmation, status update, withdrawal receipt + admin alert. All
-Bulgarian, all rendered server-side by `@shop/email`.
+**Today (code):** `@shop/email` exposes an `EmailTransport`
+interface with three implementations (`ses`, `console`, `stub`),
+selected via `EMAIL_TRANSPORT`. **Nine** Bulgarian templates are
+rendered server-side:
 
-Transport is an interface (`send(email)`) with three implementations:
-`ses` (production, eu-central-1), `console` (dev), `stub` (tests).
+1. Registration verification (`verification`)
+2. Password reset (`password-reset`)
+3. Post-reset / post-change security notice (`password-changed`)
+4. Email-change verify, sent to NEW address (`email-change-verify`)
+5. Email-change alert, sent to OLD address at request time
+   (`email-change-alert`)
+6. Email-changed notice, sent to OLD address after rotation
+   (`email-changed`)
+7. Withdrawal acknowledgement to customer (`withdrawal-received`)
+8. Withdrawal admin notification (`withdrawal-admin-notification`)
+9. Account-deletion notification (`account-deleted`)
+
+**Not yet written:** order-confirmation email and order-status-update
+email. The order placement endpoint currently sends zero emails. An
+earlier copy of this doc claimed these existed; that was incorrect.
 
 **Critical: email sending is best-effort, never blocking.** A failed
-verification email at registration time creates the account anyway
-and tells the user to use "resend verification." Same for password
+verification email at registration creates the account anyway and
+tells the user to use "resend verification." Same for password
 reset, email change, and the 14-day withdrawal receipt.
 
 **The withdrawal-receipt case is the only real reliability gap.**
 EU Directive 2023/2673 Art. 11a(2) requires the receipt as a
 "durable medium" — an SES outage that drops the receipt is
-technically a compliance problem. The fix is an SQS retry queue
-between the Lambda creating the withdrawal record and the Lambda
-sending emails. Deferred but real.
+technically a compliance margin issue. The on-screen receipt
+rendered immediately after submission is the primary durable medium
+per recital 37, and is independent of email; the SQS retry queue
+described in Roadmap item 7 closes the audit margin formally.
 
-### 3.8 Background jobs — Amazon EventBridge Scheduler
+**Production SES prerequisites** (must be completed before flipping
+`EMAIL_TRANSPORT=ses` in production, per the Google/Yahoo/Microsoft
+2026 bulk-sender rules):
 
-Three cron rules:
-- `0 3 * * *` Sofia — daily catalog backup to S3
-- `0 * * * *` — hourly expired-pickup-deadline check
-- `0 4 * * *` Sofia — daily unverified-account cleanup (>7 days old)
+- DKIM verified (3 CNAMEs in the SES console).
+- Custom MAIL FROM subdomain so SPF aligns with the visible `From:`.
+- DMARC record at `_dmarc.shop.example.com` (start `p=none`, tighten
+  to `p=quarantine` once clean).
+- Move the SES account out of sandbox via Service Quotas.
+
+### 3.8 Background jobs — Amazon EventBridge Scheduler (planned)
+
+**Today:** Not built. None of the cron rules run.
+
+**Target:** Three cron rules driven by EventBridge Scheduler invoking
+a `scheduler-fn` Lambda —
+
+- `0 3 * * *` Sofia — daily catalog backup to S3.
+- `0 * * * *` — hourly expired-pickup-deadline check.
+- `0 4 * * *` Sofia — daily unverified-account cleanup (>7 days old).
 
 Cost: $0 (14M-invocation free tier).
 
-### 3.9 Secrets — AWS Systems Manager Parameter Store
+### 3.9 Secrets — AWS Systems Manager Parameter Store (planned)
 
-Holds: `NEON_DATABASE_URL`, `JWT_SECRET` (currently unused),
-`SES_FROM_ADDRESS`, `ADMIN_MFA_CONFIG`. Read by Lambda at cold-start
-via the AWS SDK. No hardcoded secrets anywhere.
+**Today:** `.env` files for local dev. No production secrets.
 
-Standard tier is free. The shop's needs fit comfortably in the
-limits (10K parameters, 4 KB each).
+**Target:** Parameter Store holds `NEON_DATABASE_URL`,
+`SES_FROM_ADDRESS`, `ADMIN_MFA_CONFIG`. Read by Lambda at cold-start.
+No hardcoded secrets anywhere. Standard tier is free; the shop's
+needs fit comfortably in the limits (10K parameters, 4 KB each).
 
-### 3.10 Logs and alarms — Amazon CloudWatch
+### 3.10 Logs and alarms — Amazon CloudWatch (planned)
 
-Every Lambda writes Pino JSON logs to a dedicated CloudWatch Log
-Group with 30-day retention (recommend cut to 14 days — see §10).
+**Today:** Pino JSON logs land on `stdout` in dev. No CloudWatch.
 
-Five alarms in the always-free 10-alarm tier:
-- 5xx rate > 1% over 5 minutes → admin email
-- Failed admin logins > 5/hour → admin email
-- Lambda p99 duration > 5 seconds → admin email
-- EventBridge scheduler failure → admin email
-- SES bounce rate > 5% → admin email
+**Target:** Each Lambda would write Pino JSON to a dedicated
+CloudWatch Log Group with 14-day retention. Five alarms in the
+always-free 10-alarm tier:
 
-**Gap:** no distributed tracing. The 2026 industry standard is
-OpenTelemetry via AWS Distro for OpenTelemetry (ADOT). See §8.
+- 5xx rate > 1% over 5 minutes
+- Failed admin logins > 5/hour
+- Lambda p99 duration > 5 seconds
+- EventBridge scheduler failure
+- SES bounce rate > 5%
 
-### 3.11 Certificates — AWS Certificate Manager (ACM)
+**Gap:** no distributed tracing today *or* in the target. The 2026
+industry standard is OpenTelemetry via ADOT — see §8 and Roadmap
+item 6.
 
-Free TLS certs, auto-renewed, attached to CloudFront. Zero
-maintenance.
+### 3.11 Certificates — AWS Certificate Manager (planned)
+
+**Target:** ACM cert attached to CloudFront, auto-renewed. **Today:**
+not provisioned.
 
 ### 3.12 CI/CD — GitHub Actions
 
-Five parallel jobs on every push:
-1. `typecheck --workspaces --if-present`
-2. `lint` (frontend)
-3. `@shop/auth` tests
-4. `@shop/email` tests
-5. `@shop/api` tests
+**Today:** Three workflows in `.github/workflows/` —
 
-On `main` push: Amplify auto-deploys the two frontends; planned
-GitHub Actions job runs `terraform apply` and
-`aws lambda update-function-code`.
+- **`ci.yml`** — five parallel jobs (`typecheck`, `lint`,
+  `auth-tests`, `email-tests`, `api-tests`) on every PR and push to
+  `main`. `api-tests` uses a Postgres 17 service container.
+- **`codeql.yml`** — CodeQL `security-extended` query suite on
+  JavaScript / TypeScript + the `actions` query pack on workflow
+  YAML. Runs on PRs, push to `main`, and a Sunday 03:00 UTC weekly
+  cron.
+- **`sbom.yml`** — generates a CycloneDX 1.6 SBOM per workspace via
+  `@cyclonedx/cyclonedx-npm`, signs each via
+  `actions/attest-build-provenance` (GitHub OIDC → Sigstore Fulcio
+  → Rekor), attaches to releases.
 
-**Gaps:**
-- No frontend `tsc --noEmit` in CI (cross-workspace type tangles).
-- No branch protection enforcing the 5 checks.
-- No SAST (CodeQL / Semgrep) — only SCA via Dependabot + `npm audit`.
-- No SBOM generation (CycloneDX).
-- No SLSA build provenance (Sigstore cosign).
+All three workflows pin third-party actions to commit SHAs, run
+with top-level `permissions: contents: read`, set
+`persist-credentials: false` on checkouts, and use
+`concurrency.cancel-in-progress: true`.
 
-These all become deal-breakers at OWASP Top 10 2025's new A03 line
-(Software Supply Chain Failures). See §9.
+**Gaps (deferred):**
+
+- No frontend `tsc --noEmit` in CI (cross-workspace AppType inference
+  issue documented in `README.md`).
+- No `next build` in CI (would require API + seeded Postgres
+  alongside the build).
+- No branch protection enforcing the checks (one-time UI action, see
+  §9.4).
+
+**Future deployment automation:** on `main` push, Amplify would auto-
+deploy the frontends; a planned GitHub Actions job would run
+`terraform apply` and `aws lambda update-function-code` once
+`infra/` exists.
 
 ---
 
 ## 4. The life of a request
 
-Concrete walk-through. A customer named Иван places an order.
+Concrete walk-through against today's code, run locally. (For a
+production walk-through against the target deployment, mentally
+substitute "CloudFront" for "localhost" and "Lambda warm-invoke" for
+"Node dev server"; the request shape is identical.)
 
-1. Browser → DNS → CloudFront IP.
-2. CloudFront receives the GET, AWS WAF evaluates (no block), edge
-   cache hits for the pre-rendered homepage (<50ms response).
-3. Next.js hydrates on the client. `getServerUser()` already ran on
-   the SSR pass and embedded "anonymous" into the response — no
-   auth flicker.
-4. Иван clicks a product. The product detail page is served from
-   CloudFront (60s ISR cache). The "Add to cart" button is a client
+A customer named Иван places an order:
+
+1. Browser → `http://localhost:3000`. Next.js dev server returns the
+   SSR'd home page.
+2. The thin proxy at `frontend/src/proxy.ts` attaches a fresh nonce
+   to the CSP and emits the Reporting-Endpoints header.
+3. `getServerUser()` ran on the SSR pass, embedded "anonymous" into
+   the response — no auth flicker. Home banners render from
+   `frontend/src/lib/mock-data/banners.ts` (still mock).
+4. Иван clicks a product. `/products/[...path]` renders from
+   mock-data today; in target state it calls `/products` and
+   `/categories` on `shop-api`. The "Add to cart" button is a client
    component.
-5. He clicks Add. `POST /cart/items` to `shop-api.domain.bg`. WAF
-   evaluates. Lambda warm-invokes (~10ms cold-start budget left
-   from prior invocation). Hono routes to the cart handler. Drizzle
-   runs `INSERT ... ON CONFLICT DO UPDATE` with `LEAST(qty+1, 99)`.
-   Total wall-clock <100ms.
+5. He clicks Add. `POST /cart/items` to `http://localhost:3001`. The
+   API runs `INSERT … ON CONFLICT DO UPDATE` with `LEAST(qty+1, 99)`.
+   Optimistic UI in `CartContext` updates first; rollback on a
+   problem-type response.
 6. He registers. `POST /auth/register`. Argon2id hashes
    (~150ms — intentional). Verification token generated
-   (`crypto.randomBytes(32)`) and stored SHA-256-hashed. SES
-   accepts the email. He clicks the link, hits
-   `POST /auth/verify-email`. Token hashed, looked up,
-   `users.email_verified_at` set, cookie issued.
+   (`crypto.randomBytes(32)`) and stored SHA-256-hashed. The
+   `console` transport prints a `VERIFY URL ⇒` line to `api:dev`'s
+   stdout. He clicks it, hits `POST /auth/verify-email`. Token
+   hashed, looked up, `users.email_verified_at` set, cookie issued.
 7. He checks out. UI generates an `Idempotency-Key` UUID, sends
    `POST /orders` with that header.
 8. `shop-api` opens a Drizzle transaction:
@@ -393,26 +471,32 @@ Concrete walk-through. A customer named Иван places an order.
    - re-check stock + prices
    - look up account discount
    - INSERT order header
-   - INSERT line-item snapshots (frozen product name/code/image/
-     unit-price per line)
+   - INSERT line-item snapshots (productCode / productName /
+     productImageS3Key / unitPriceCents)
    - seed status history
    - snapshot delivery address
    - clear the cart
-9. Transaction commits. Two emails fire via `Promise.allSettled` —
-   confirmation to Иван, admin alert. Best-effort. Failures logged
-   but order stands.
+9. Transaction commits. **No emails fire today** — order-confirmation
+   and admin-notification email templates don't exist yet. (Order
+   placement is otherwise complete and persisted; this is on the
+   roadmap as a quick follow-up.)
 10. He sees the success page. Order number formatted
-    `2026-05-00042`.
-11. Admin sees the new order in the dashboard.
-12. Days later, admin marks the order "accepted." That starts the
-    14-day withdrawal clock; `accepted_at` gets a timestamp.
-13. An hour later, Иван decides to withdraw. He clicks "Откажете се
-    от договора тук." Page POSTs to `/orders/:n/withdrawal`. Server
-    inserts a `complaints` row (idempotently — partial unique
-    index on `(order_id) WHERE reason='withdrawal'`). Two more
-    emails fire.
-14. A week passes. Иван never sees a cold-start, never gets logged
-    out spuriously, never sees a 5xx page. The system is working.
+    `2026-05-00042` from a Postgres sequence + Sofia-month prefix.
+11. *(Target only)* Admin sees the new order in the dashboard —
+    admin-api not built today.
+12. *(Target only)* Days later, admin marks the order "accepted."
+    That starts the 14-day withdrawal clock; `accepted_at` gets a
+    timestamp.
+13. Иван decides to withdraw. He clicks "Откажете се от договора
+    тук." Page POSTs to `/orders/:n/withdrawal`. Server inserts a
+    `complaints` row (idempotently — partial unique index on
+    `(order_id) WHERE reason='withdrawal'`). Two emails fire via
+    `Promise.allSettled` — customer ack and admin notification.
+    Both are best-effort.
+
+Today, step 12 requires manual psql (`UPDATE orders SET
+status='accepted', accepted_at=now() WHERE order_number=…`). That's
+not a defect of the architecture, just an unbuilt admin slice.
 
 ---
 
@@ -421,6 +505,7 @@ Concrete walk-through. A customer named Иван places an order.
 ### 5.1 Threat model
 
 Out-of-scope (the system does NOT defend against):
+
 - Cardholder data exfiltration — there is none.
 - Insider sabotage of the database — admin can run any query.
 - AWS account root takeover — one hardware MFA away from total
@@ -430,82 +515,68 @@ In-scope threats and primary defences:
 
 | Threat | Primary defence | Backstop |
 |---|---|---|
-| SQL injection | Drizzle parametrized queries everywhere | AWS WAF SQLi managed rules |
-| Stored XSS | Next.js auto-escape + uniform strict CSP (`'nonce-X' 'strict-dynamic'`, see §5.2) + Hono `secureHeaders` on the API | AWS WAF Common managed rules |
+| SQL injection | Drizzle parametrized queries everywhere | (Target) AWS WAF SQLi managed rules |
+| Stored XSS | Next.js auto-escape + uniform strict CSP (`'nonce-X' 'strict-dynamic'`, see §5.2) + Hono `secureHeaders` on the API | (Target) WAF Common managed rules |
 | CSRF | `SameSite=Lax` + `__Host-` cookie prefix + same-origin API | None needed |
 | Session hijack | `HttpOnly` + `Secure` + 32-byte CSPRNG + SHA-256-at-rest | TLS 1.3 + HSTS preload |
-| Credential stuffing | Per-email 5-fail / 15-min lockout + Argon2id timing wall | WAF rate-limit rules on `/auth/login` |
-| Account enumeration | Constant-time login + identical 400 for registration "email in use" + identical 200 for forgot-password | RFC 9457 errors (no internal-state leakage) |
-| Email-link phishing | Single-use, 1-hour tokens, SHA-256-hashed at rest; password reset drops all sessions; out-of-band notification to old email at change time | None |
-| DDoS L3/L4 | AWS Shield Standard (free) | None |
-| DDoS L7 | WAF rate-limit rules + Lambda 1,000-concurrent ceiling | None |
+| Credential stuffing | Per-email 5-fail / 15-min lockout + Argon2id timing wall | (Target) WAF rate-limit rules |
+| Account enumeration | Constant-time login + identical 400 for "email in use" + identical 200 for forgot-password | RFC 9457 (no internal-state leakage) |
+| Email-link phishing | Single-use, 1h tokens, SHA-256-hashed; reset drops all sessions; out-of-band notification | None |
+| DDoS L3/L4 | (Target) AWS Shield Standard | None |
+| DDoS L7 | (Target) WAF rate-limit rules + Lambda concurrency ceiling | None |
 | Stolen cookie | Drop-all-sessions on reset/email-change; orphaned-cookie cleanup on `/auth/me` | Idle timeout (2h without "Remember me") |
-| Admin compromise | TOTP MFA mandatory + separate subdomain + stricter WAF | 30-min idle timeout, 5-fail 30-min lockout |
+| Admin compromise | (Target) TOTP MFA mandatory + separate subdomain + stricter WAF | (Target) 30-min idle timeout, 5-fail 30-min lockout |
 | Order replay | `Idempotency-Key` UNIQUE | None needed |
-| Data-at-rest exfiltration | Neon encryption + S3 SSE | Tokens hashed; password hashes can't be reversed |
+| Data-at-rest exfiltration | (Target) Neon encryption + S3 SSE | Tokens hashed; password hashes can't be reversed |
 | Data-in-transit interception | TLS 1.3 + HSTS preload | CSP `upgrade-insecure-requests` |
-| Supply-chain (malicious npm dep) | `package-lock.json` + Dependabot + `npm audit` in CI | None today — gap |
-| Business logic abuse (price manipulation, discount escalation — OWASP 2025) | Server-side recalculation on every order | Account-discount is server-controlled, not client-supplied |
+| Supply-chain (malicious npm dep) | `package-lock.json` + Dependabot + `npm audit` in CI | CodeQL SAST + SBOM transparency |
+| Business logic abuse (price manipulation) | Server-side recalculation on every order | Account-discount server-controlled, not client-supplied |
 
 ### 5.2 Content Security Policy
 
 The May 2026 CSP slice shipped *twice* before landing on the right
-design. The first attempt missed a subtle property of single-page
-applications; the second attempt corrects it. This section
-documents the corrected design and notes the rejected approach so
-the reasoning isn't relearned the hard way.
+design. This section documents the corrected design and notes the
+rejected approach so the reasoning isn't relearned the hard way.
 
 **Two-and-a-half facts about CSP in Next.js 16.**
 
 1. A document's `Content-Security-Policy` is **fixed at HTML
    document load**. There is no specified way to change it on a
-   running document. Soft navigation in an SPA reuses the
-   document, so the CSP that applied at first load applies to
-   every subsequent route the user navigates to via `<Link>`.
+   running document. Soft navigation in an SPA reuses the document,
+   so the CSP that applied at first load applies to every subsequent
+   route the user navigates to via `<Link>`.
 2. Next.js 16's official guide is explicit that **nonce-based CSP
    requires dynamic rendering**. Static / ISR / PPR pages are
    generated at build time when there is no request, so no nonce
-   can be injected — a nonce-based CSP would block the page's own
-   framework scripts.
+   can be injected.
 3. The shop's root layout reads cookies via `getServerUser()` to
    bootstrap auth identity without flicker. Reading cookies forces
    dynamic rendering. **Every route in this app is therefore
-   already dynamic.** The "ISR for catalog pages" claim in earlier
-   revisions of this doc was technically inaccurate.
+   already dynamic.** Earlier revisions of this doc that claimed
+   "ISR for catalog pages" were technically inaccurate.
 
-**The rejected hybrid design (May 16, 2026).** The first shipped
-revision applied a strict nonce-based CSP only to `/account/*` and
-`/admin/*` via the proxy, and a permissive `'unsafe-inline'`
-baseline to the catalog via `next.config.ts`. This works correctly
-on hard navigations — both `curl` and direct URL entry show the
-intended policy per route. But because the catalog uses `<Link>`
-to route into the account section, a typical user wanders
-`/ → /products/123 → /account/login` via soft navigation. The
-document's CSP never changes after that first load on `/`, so
-inline-script protection on `/account/login` was silently bypassed
-in the most common traffic pattern. A `document.createElement('script')`
-test from the DevTools console confirmed this — the script
-executed on `/account/login` because the document still carried
-`/`'s permissive CSP.
+**The rejected hybrid design (May 16, 2026).** The first revision
+applied a strict nonce-based CSP only to `/account/*` and `/admin/*`
+via the proxy, and a permissive `'unsafe-inline'` baseline to the
+catalog via `next.config.ts`. This works on hard navigations but
+because the catalog uses `<Link>` to route into the account section,
+a typical user wanders `/ → /products/123 → /account/login` via soft
+navigation; the document's CSP never changes after that first load
+on `/`, so inline-script protection on `/account/login` was silently
+bypassed in the most common traffic pattern.
 
-**The shipped design (May 19, 2026).** A single uniform strict
-CSP applied to every HTML document via `frontend/src/proxy.ts`.
-The proxy now matches every route (excluding only Next.js
-internals, `/api`, `/.well-known/`, and prefetch requests, per
-the matcher in the file), and on every request:
+**The shipped design (May 19, 2026).** A single uniform strict CSP
+applied to every HTML document via `frontend/src/proxy.ts`. The
+proxy now matches every route (excluding Next.js internals, `/api`,
+`/.well-known/`, and prefetch requests), and on every request:
 
 1. Generates a 128-bit random nonce via
-   `Buffer.from(crypto.randomUUID()).toString('base64')` — the
-   pattern from the Next.js 16 official CSP guide.
-2. Sets a forwarded `x-nonce` request header so any Server
-   Component that needs to attach a nonce to `<Script>` can read
-   it via `await headers()`.
+   `Buffer.from(crypto.randomUUID()).toString('base64')`.
+2. Sets a forwarded `x-nonce` request header so any Server Component
+   that needs a nonce on `<Script>` can read it via `await
+   headers()`.
 3. Sets a response `Content-Security-Policy` header AND a paired
-   `Reporting-Endpoints` header (the latter is the modern Reporting
-   API v1 mapping consumed by the `report-to` directive; the legacy
-   `report-uri` directive is also emitted as a fallback for older
-   browsers that didn't reach Reporting-API baseline until March
-   2026):
+   `Reporting-Endpoints` header:
 
    ```
    default-src 'self';
@@ -527,56 +598,33 @@ the matcher in the file), and on every request:
    Reporting-Endpoints: csp-endpoint="https://shop-api.duda1.bg/csp-report"
    ```
 
-   The `'report-sample'` keyword on `script-src` / `style-src` is
-   what gets the browser to include a 40-char excerpt of the
-   violating content in the report body (CSP3 §6.6.4) — without
-   it, `sample` arrives empty and debugging "what tried to run" is
-   guesswork.
+`'strict-dynamic'` means a script that carries the matching nonce is
+trusted to load further scripts; nothing else loads, period. The
+`'report-sample'` keyword on `script-src` / `style-src` gets the
+browser to include a 40-char excerpt of the violating content in
+the report body. In `NODE_ENV=development`, the policy adds
+`'unsafe-eval'` to script-src and `'unsafe-inline'` to style-src for
+React HMR — gated on dev only.
 
-`'strict-dynamic'` means: a script that carries the matching nonce
-is trusted to load further scripts; nothing else loads, period.
-`'self'`, `'unsafe-inline'`, and `https:` allow-list entries are
-all ignored in its presence per CSP3 — that's the point. Next.js
-auto-attaches the nonce to framework and page-bundle scripts when
-it sees the CSP header on the request (see Next.js CSP guide §"How
-nonces work in Next.js"). In `NODE_ENV=development`, the policy
-adds `'unsafe-eval'` to script-src and `'unsafe-inline'` to
-style-src because React debugging and HMR depend on both — these
-are gated on dev only and never emitted in production.
-
-**Why uniform-strict isn't expensive here.** Because every route
-is already dynamic (point 3 above), there is no ISR / PPR cache
-benefit being thrown away. Every render goes through Lambda SSR
-regardless. The proxy adds a UUID generation, three header
-operations, and ~1 ms per request. At Tier 5 (2M PV/mo) the
-cumulative cost is roughly $0.10 of Lambda time per month. Free.
-
-**The soft-navigation trap that motivated the rewrite is now
-neutralised.** Every document the user can land on (catalog or
-account) ships with the same strict policy. Clicking a `<Link>`
-between them doesn't cross a security boundary because both sides
-*are* the boundary.
+The soft-navigation trap is neutralised because every document
+(catalog or account) ships with the same strict policy.
 
 #### 5.2.1 Baseline security headers on every response
 
 `frontend/next.config.ts` continues to set the rest of the
 security-header set via `headers()`. CSP is intentionally **not**
-set here — that would re-create the hybrid pattern this section
-rejects. The headers `next.config.ts` does set:
+set there. The non-CSP headers:
 
 - `X-Content-Type-Options: nosniff`
 - `Referrer-Policy: strict-origin-when-cross-origin`
 - `Permissions-Policy:` — empty allow-list for every browser
-  feature the shop doesn't use (camera, mic, geolocation, payment,
-  browsing-topics, interest-cohort, USB, sensors, ...)
+  feature the shop doesn't use
 - `X-Frame-Options: DENY` (redundant with `frame-ancestors 'none'`
-  but covers ancient browsers that don't honour CSP3)
+  but covers ancient browsers)
 - `Cross-Origin-Opener-Policy: same-origin`
 - `Cross-Origin-Resource-Policy: same-site`
-- `Strict-Transport-Security: max-age=63072000; includeSubDomains; preload`
-  (production builds only — pinning HSTS on http://localhost
-  forces the browser to refuse plain HTTP to localhost for
-  max-age seconds, a nasty dev footgun)
+- `Strict-Transport-Security: max-age=63072000; includeSubDomains;
+  preload` (production builds only)
 
 #### 5.2.2 The Hono API gets its own (stricter) CSP
 
@@ -590,33 +638,43 @@ base-uri 'none';
 form-action 'none';
 ```
 
-Plus `X-Content-Type-Options: nosniff`,
-`Referrer-Policy: no-referrer`, `Cross-Origin-Resource-Policy:
-same-site` (allows the legitimate `shop.duda1.bg → shop-api.duda1.bg`
-cross-subdomain fetch but blocks unrelated origins from `<img src>`
-or `<script src>` of an API response),
-`Strict-Transport-Security: max-age=63072000; includeSubDomains; preload`,
-and `X-Frame-Options: DENY`. CORS allow-listing in the `cors()`
-middleware remains the authoritative gate for the fetch path.
+Plus `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`,
+`Cross-Origin-Resource-Policy: same-site`, HSTS, and
+`X-Frame-Options: DENY`. This is defence-in-depth: meaningful only
+if a browser ever evaluates the response as HTML (content-type
+confusion). CORS in the `cors()` middleware remains the
+authoritative gate for the fetch path.
 
-This is pure defence-in-depth: CSP on a JSON response is meaningful
-only if a browser ever evaluates the response as HTML (content-type
-confusion, MIME sniffing on a legacy browser, etc.).
-`default-src 'none'` ensures that in that scenario nothing inline
-runs and no resource is fetched.
+#### 5.2.3 CSP violation reporting (shipped May 25, 2026)
 
-#### 5.2.3 What's intentionally NOT here yet
+`POST /csp-report` on `shop-api`. Accepts BOTH the modern Reporting
+API v1 payload (`application/reports+json`, batched array of report
+envelopes) AND the legacy `report-uri` payload
+(`application/csp-report`, single wrapped object). The frontend
+proxy emits TWO sink declarations on every HTML document — a
+`Reporting-Endpoints: csp-endpoint=…` header paired with a
+`report-to csp-endpoint` directive on the CSP (modern path), plus a
+`report-uri …` directive (legacy fallback for older Firefox/Safari
+that didn't reach baseline Reporting API support until March 2026).
 
-| Practice | Why deferred | When to revisit |
-|---|---|---|
-| ~~CSP violation reporting~~ | ✅ **SHIPPED May 25, 2026** — `Reporting-Endpoints: csp-endpoint=…` + `report-to csp-endpoint` (modern) and `report-uri …` (legacy fallback) on every HTML document; `POST /csp-report` on the API accepts both `application/csp-report` and `application/reports+json`. See Roadmap item 14. | n/a — done |
-| **Trusted Types** (`require-trusted-types-for 'script'`) | MDN-Baseline as of 2026 on the latest browsers; meaningful XSS-sink hardening *after* CSP is in place. Not blocking today; modest implementation effort. | Roadmap item 14 follow-on. |
-| **`https://` / public-suffix `connect-src` entries** | The current `connect-src` only allows the configured `shop-api.duda1.bg` origin (or `localhost:3001` in dev). If new backend services are added the origin allow-list needs widening; treat that as part of the architecture review for any new service. | Per-service basis. |
+Each well-formed violation produces one structured Pino
+`csp_violation` event at warn level (`effectiveDirective`,
+`blockedURL`, `documentURL`, `sourceFile`, `lineNumber`, `sample`,
+etc.). Browser-extension noise (`chrome-extension://`,
+`moz-extension://`, `safari-extension://`,
+`safari-web-extension://`, `webkit-masked-url://`, `about:`, literal
+`"null"`) is downgraded to debug level so alerts don't fire on
+ad-blocker injection attempts. In-memory per-IP token bucket
+(60/min, 10K tracked IPs max). Oversized bodies (>16 KiB) and
+invalid JSON are silently dropped with an `info`-level
+`csp_report_drop` event. Endpoint always returns `204 No Content`
+(W3C Reporting API spec: any 2xx is success; reporters don't retry
+on errors).
+
+Closes the OWASP A09 visibility gap. The last remaining A09 item is
+distributed tracing (Roadmap item 6).
 
 #### 5.2.4 Verifying the policy is live
-
-Every test below is identical on every route — that's the
-property we wanted.
 
 ```bash
 # Catalog homepage
@@ -627,93 +685,73 @@ curl -sI http://localhost:3000/account/login | grep -iE "content-security-policy
 
 # API
 curl -sI http://localhost:3001/health | grep -iE "content-security-policy|cross-origin|strict-transport"
-
-# Production (replace with your domain)
-curl -sI https://duda1.bg/ | grep -iE "content-security-policy|nonce"
-curl -sI https://shop-api.duda1.bg/health | grep -i "content-security-policy"
 ```
 
-Every shop response (whether `/`, `/products/...`, or
-`/account/...`) should contain `'nonce-X' 'strict-dynamic'`. Each
-request gets a different nonce — run twice and diff to confirm.
-The API's CSP should be `default-src 'none'`. Drift between this
-section and the live headers is a fix-now issue.
+Every shop response should contain `'nonce-X' 'strict-dynamic'`;
+each request gets a different nonce. The API's CSP should be
+`default-src 'none'`.
 
-In the browser:
+Browser-side: open `http://localhost:3000/csp-test.html`. The page
+contains three intentionally-bad CSP inputs (a parser-inserted
+inline script, an `onclick=` attribute, a `javascript:` URL) — all
+three should be blocked, three `POST /csp-report` requests should
+fire and each should 204, and three `csp_violation` log lines should
+appear in `api:dev`.
 
-1. Open a fresh tab, type `http://localhost:3000/csp-test.html`,
-   hit Enter. (This is a permanent diagnostic page in
-   `frontend/public/csp-test.html`.) The page contains three
-   intentionally-bad CSP inputs (a parser-inserted inline script,
-   an `onclick=` attribute, a `javascript:` URL). All three
-   should be blocked by the strict policy. The page text describes
-   the expected outcome inline so anyone running the test can
-   verify it without re-reading this doc.
-2. Open DevTools → Network → click the document request for any
-   page → Headers. The `Content-Security-Policy` header should
-   contain `'nonce-...' 'strict-dynamic'` and **no**
-   `'unsafe-inline'` except on `style-src` in dev.
-
-**Why the DevTools console isn't a valid test surface.** The
-classic "paste `document.createElement('script')` + `appendChild`
-into the console" test gives a false negative under
-`'strict-dynamic'`. The console is treated as a trusted script
-source by Chrome, so anything it dynamically inserts into the DOM
-inherits trust via strict-dynamic — that's exactly the case the
-directive is meant to allow (so framework bundles can lazy-load
-chunks). To actually exercise CSP blocking, you need parser-
-inserted inline scripts in the served HTML, which is what
-`/csp-test.html` provides and what real stored-XSS payloads look
-like.
+The DevTools console isn't a valid test surface: pasting
+`document.createElement('script')` + `appendChild` gives a false
+negative under `'strict-dynamic'` because the console is treated as
+a trusted script source.
 
 ### 5.3 What this maps onto
 
 OWASP Top 10 2025, full coverage matrix, lives in `COMPLIANCE.md`.
-Quick summary (now reflecting the May 2026 supply-chain + CSP
-slices):
+Quick summary:
 
 - A01 Broken Access Control — ✅ (two-tier middleware)
-- A02 Security Misconfiguration (newly #2) — ✅ (hybrid CSP +
-  baseline security headers shipped; branch protection runbook
-  documented in §9.4)
+- A02 Security Misconfiguration (newly #2) — ✅ (uniform strict CSP
+  + baseline security headers shipped)
 - A03 Software Supply Chain Failures (expanded) — ✅ (SCA via
   Dependabot + `npm audit`; SAST via CodeQL `security-extended`;
   SBOM CycloneDX 1.6 per workspace; SLSA L2 signed provenance)
 - A04 Cryptographic Failures — ✅
 - A05 Injection — ✅
-- A06 Insecure Design — ✅ (idempotency, snapshots)
-- A07 Authentication Failures — ✅ for admin, ✅ for customers on
-  password hygiene (NIST 800-63B-4 length-only + HIBP breach
-  screening shipped May 2026 + authenticated change-password
-  endpoint shipped May 22 2026 closing ASVS V6.2 / NIST 800-63B-4
-  §5.1.1.2). Customer MFA is the only remaining gap (Roadmap 24,
-  growth-stage)
-- A08 Software & Data Integrity Failures — ⚠️ no signed artifacts
-- A09 Security Logging Failures — ⚠️ CSP report endpoint ✅ (May 25, 2026); distributed tracing still pending
-- A10 Mishandling Exceptional Conditions (new) — ✅ (RFC 9457 + graceful degradation)
+- A06 Insecure Design — ✅
+- A07 Authentication Failures — ✅ for customers on password hygiene
+  (NIST 800-63B-4 + HIBP + authenticated change-password). Admin
+  MFA is documented but the admin Lambda isn't built yet — see §1.
+  Customer MFA is a growth-stage roadmap item
+- A08 Software & Data Integrity Failures — ✅ (Sigstore signing)
+- A09 Security Logging Failures — ⚠️ CSP report endpoint ✅;
+  distributed tracing pending
+- A10 Mishandling Exceptional Conditions (new) — ✅ (RFC 9457 +
+  graceful degradation)
 
 ### 5.4 Compliance touchpoints
 
 Brief; full mapping in `COMPLIANCE.md`:
 
-- **GDPR Art. 32** (security of processing): ✅ encryption + audit log
-  + documented retention
-- **GDPR Art. 17** (right to erasure): ✅ profile-page deletion flow
-- **GDPR Art. 20** (data portability): ✅ JSON export
+- **GDPR Art. 32** (security of processing): ✅
+- **GDPR Art. 16** (rectification): ✅ shipped May 23, 2026
+- **GDPR Art. 17** (right to erasure): ✅ shipped May 24, 2026
+- **GDPR Art. 20** (data portability): ⚠️ documented intent, not
+  implemented; would need a `GET /auth/me/export` endpoint
 - **GDPR Art. 33–34** (breach notification 72h): ⚠️ no playbook
 - **EU Directive 2023/2673** (14-day withdrawal): ✅ shipped
-- **WCAG 2.2 Level AA / European Accessibility Act**: ✅ in scope
-- **PCI-DSS**: n/a
+- **WCAG 2.2 Level AA / European Accessibility Act**: ⚠️ in scope;
+  no continuous accessibility audit running
+- **PCI-DSS**: n/a (no card data)
 - **NIS2**: n/a at current scale
-- **EU CRA**: 24h vulnerability-reporting deadline Sept 11, 2026 —
-  technically targets products not SaaS, but adopting CRA-style
-  hygiene (SBOM, vuln disclosure policy) is becoming baseline
+- **EU CRA**: **out of scope** — pure SaaS is exempt per the
+  European Commission's own guidance; the shop has voluntarily
+  adopted CRA-style hygiene (SBOM, RFC 9116 disclosure policy) as
+  general supply-chain defence
 
 ---
 
 ## 6. Reliability model
 
-### 6.1 Failure modes
+### 6.1 Failure modes (target deployment)
 
 | Failure | What the system does | What you do |
 |---|---|---|
@@ -722,17 +760,17 @@ Brief; full mapping in `COMPLIANCE.md`:
 | Neon auto-suspend (Free) | First query 300–800ms wakeup | Upgrade to Launch in prod |
 | Neon outage (Free/Launch) | DB calls fail; `currentUser` deliberately does NOT clear cookies on DB errors; WAF + alarm + email | Wait or upgrade to Scale |
 | Neon outage (Scale) | Automatic failover, sub-10s impact | Nothing — that's what you pay for |
-| SES outage | Email failures logged; account/order ops still complete | Manually re-trigger after recovery; long-term fix is SQS retry |
+| SES outage | Email failures logged; account/order ops still complete | Manually re-trigger; long-term fix is SQS retry (Roadmap 7) |
 | CloudFront degradation | Edge misses fall through to multi-AZ origin | Nothing — AWS handles |
 | Amplify build failure | Atomic deploy: old version stays live | Fix and redeploy |
 | Mass session compromise | `UPDATE sessions SET revoked_at=now()` via `db:psql` | Force server-side invalidation, notify customers |
 | Logical data loss (DROP TABLE) | Neon PITR rolls back (7d on Launch, 30d on Scale) | Use Neon branch-and-restore |
-| Catalog mistake (admin deletes category) | Daily S3 backup + admin-UI restore flow | Use admin "Restore from backup" |
-| AWS regional outage | Hard down — no multi-region today | Wait (Milestone 4) |
+| Catalog mistake | (Target) Daily S3 backup + admin-UI restore flow | (Target) Use admin "Restore from backup" |
+| AWS regional outage | Hard down — no multi-region today | Wait (deferred Roadmap 25) |
 
 ### 6.2 RTO / RPO targets
 
-These are not yet formalised in code or alarms. They should be:
+Not yet formalised in code or alarms. Targets to adopt:
 
 **At Neon Launch (recommended production posture):**
 - RTO 1 hour
@@ -744,10 +782,12 @@ These are not yet formalised in code or alarms. They should be:
 
 ### 6.3 Backup discipline
 
-- **Daily catalog backup** at 03:00 Sofia, S3 versioned, 90-day
-  retention, >90d moves to Glacier Instant Retrieval.
-- **Neon PITR** is continuous — 7 days on Launch, 30 days on Scale.
-- **DR drill cadence:** none today. Recommended quarterly. See §12.
+- **Target:** Daily catalog backup at 03:00 Sofia, S3 versioned,
+  90-day retention. **Today:** not running (scheduler-fn not built).
+- **Neon PITR** is continuous on Neon — 7 days on Launch, 30 days on
+  Scale.
+- **DR drill cadence:** **never run.** Recommended quarterly once
+  the production deployment exists. See §12.
 
 ---
 
@@ -757,16 +797,15 @@ These are not yet formalised in code or alarms. They should be:
 
 | Metric | Target | Status |
 |---|---|---|
-| LCP (Largest Contentful Paint) | <2.5s | Achievable today |
-| INP (Interaction to Next Paint) | <200ms | Achievable today |
-| CLS (Cumulative Layout Shift) | <0.1 | Achievable today |
+| LCP (Largest Contentful Paint) | <2.5s | Achievable; not measured continuously |
+| INP (Interaction to Next Paint) | <200ms | Achievable; not measured continuously |
+| CLS (Cumulative Layout Shift) | <0.1 | Achievable; not measured continuously |
 
-These are aspirational; they are not currently measured continuously.
 Gap: no Lighthouse CI / WebPageTest synthetic monitoring.
 
 ### 7.2 Service-level targets (proposed)
 
-These do not yet exist in the project. Recommend adopting them:
+These do not yet exist as code. Recommended:
 
 | SLI | SLO | Window | Error budget |
 |---|---|---|---|
@@ -774,16 +813,11 @@ These do not yet exist in the project. Recommend adopting them:
 | Availability (admin-api) | 99.5% | 30 days | 3.6 hr/mo |
 | p95 latency (shop-api) | <200ms | 30 days | n/a |
 | p95 latency (search autocomplete) | <100ms | 30 days | n/a |
-| Order placement success rate | 99.95% | 30 days | 15 min/mo of placement failures |
+| Order placement success rate | 99.95% | 30 days | 15 min/mo |
 
-Google's SRE error-budget policy:
-- **Green** (>50% budget remaining) — ship features at normal velocity
-- **Yellow** (20–50%) — reduce deployment frequency
-- **Orange** (1–20%) — freeze non-critical deployments
-- **Red** (0%) — feature freeze, reliability-only changes
-
-Stored in `OpenSLO` YAML files alongside source code is the 2026
-best practice.
+Google's SRE error-budget policy (green → yellow → orange → red)
+applies. Stored in `OpenSLO` YAML files alongside source code is the
+2026 best practice.
 
 ### 7.3 Connection pooling
 
@@ -799,11 +833,12 @@ concurrent invocations without exhausting it.
 ### 8.1 Current state
 
 - **Structured Pino logs** with PII redaction, per-request child
-  logger keyed on `X-Request-Id`.
-- **CloudWatch Logs** with 30-day retention.
-- **5 CloudWatch alarms** in the always-free tier.
-- **AWS X-Ray** is not enabled. (Was originally treated as optional in
-  the infrastructure design; in 2026 that is a real gap — see §8.2.)
+  logger keyed on `X-Request-Id`. Works locally; lands in CloudWatch
+  in target state.
+- **(Target) CloudWatch Logs** with 14-day retention. Not deployed.
+- **(Target) 5 CloudWatch alarms** in the always-free tier. Not
+  deployed.
+- **No distributed tracing** in either current or target state today.
 
 ### 8.2 Target state (2026 industry standard)
 
@@ -813,60 +848,38 @@ via **AWS Distro for OpenTelemetry (ADOT)**:
 - Distributed tracing across `Amplify → shop-api → Neon → SES` so
   you can see a single request's whole life as one trace.
 - Standardised semantic conventions (HTTP, database, FaaS, messaging
-  per OpenTelemetry semconv 1.41.0, all production-stable).
+  per OpenTelemetry semconv 1.41.0).
 - Backend of choice (CloudWatch X-Ray, Grafana Tempo, Honeycomb,
-  Datadog, etc.) — ADOT makes the backend swappable.
+  Datadog) — ADOT makes the backend swappable.
 
-**Effort to add:** 1 day. ADOT ships as a Lambda layer; the
+**Effort to add:** ~1 day. ADOT ships as a Lambda layer; the
 instrumentation libraries auto-instrument the AWS SDK + HTTP +
-`pg` + Hono with one config change.
+`pg` + Hono with one config change. Roadmap item 6.
 
 ### 8.3 Metrics that should exist but don't
 
 - **DORA metrics**: deployment frequency, lead time for changes,
-  MTTR, change failure rate. Solo project so MTTR is "however long
-  it takes you to wake up," but the discipline of measuring matters
-  the moment a second contributor lands.
+  MTTR, change failure rate.
 - **Custom business metrics**: orders/hour, conversion-rate by
-  funnel stage, withdrawal-rate. Currently none.
+  funnel stage, withdrawal-rate.
 - **RUM (Real User Monitoring)**: actual user Core Web Vitals from
-  browsers. Cloudflare Web Analytics (free), Vercel Analytics
-  (Hobby restriction), or self-hosted Plausible/Umami are all
-  options.
+  browsers. Cloudflare Web Analytics (free, no cookie), Vercel
+  Analytics, or self-hosted Plausible/Umami are all options.
 
-### 8.4 Alarm-rule maturity
+### 8.4 CSP violation reporting
 
-Five alarms is a good starting set. For A+:
-
-- **Burn-rate alerting** on the proposed SLOs above (page when 4×
-  burn over 1 hour, escalate when 2× over 6 hours).
-- **Status page** (statup.fyi free, or self-hosted) for transparent
-  external communication during incidents.
-- ✅ **CSP violation report endpoint** (shipped May 25, 2026) —
-  `POST /csp-report` on `shop-api`. The frontend CSP carries both
-  modern (`Reporting-Endpoints: csp-endpoint=…` + `report-to`)
-  and legacy (`report-uri`) directives, so every supported browser
-  has a sink. Structured Pino `csp_violation` events land in
-  CloudWatch and are queryable via Insights
-  (`filter event = "csp_violation" | stats count() by effectiveDirective`).
-  Browser-extension noise is downgraded to debug-level so alerts
-  don't fire on ad-blocker injections.
+Shipped May 25, 2026 — see §5.2.3.
 
 ---
 
 ## 9. Supply-chain security
 
-After the May 2026 supply-chain hardening slice, this section now
-describes production practice rather than aspiration.
-
 ### 9.1 What exists today
 
 **Software Composition Analysis (third-party deps):**
 - `package-lock.json` committed, reproducible installs.
-- Dependabot alerts enabled (GitHub free).
+- Dependabot alerts enabled.
 - `npm audit` runs in CI on every PR.
-- Single `package.json` per workspace, no spurious globally-installed
-  tools at build time.
 
 **Static Application Security Testing (first-party code):**
 - **GitHub CodeQL** in `.github/workflows/codeql.yml`.
@@ -874,11 +887,11 @@ describes production practice rather than aspiration.
   - `actions` query pack on workflow YAML (catches the
     tj-actions-style supply-chain compromise pattern).
   - Runs on every PR, every push to `main`, and a Sunday 03:00 UTC
-    weekly cron (catches issues that newer query packs find in
-    code that hasn't changed).
+    weekly cron.
 
 **Software Bill of Materials (SBOM):**
-- **CycloneDX 1.6 JSON** per workspace, in `.github/workflows/sbom.yml`.
+- **CycloneDX 1.6 JSON** per workspace, in
+  `.github/workflows/sbom.yml`.
 - Generated via `@cyclonedx/cyclonedx-npm@^2.0.0` with
   `--package-lock-only --omit dev` (production bundle only).
 - One per deployment unit: `sbom-frontend.cdx.json`,
@@ -888,38 +901,31 @@ describes production practice rather than aspiration.
   attached to GitHub Releases on every published tag.
 
 **Build provenance & artifact signing (SLSA Level 2):**
-- Each SBOM is signed via `actions/attest-build-provenance@v4.1.0`,
-  which produces an in-toto SLSA v1.0 build-provenance attestation
-  using GitHub OIDC → Sigstore Fulcio → Rekor transparency log.
+- Each SBOM is signed via
+  `actions/attest-build-provenance@v4.1.0`, producing an in-toto
+  SLSA v1.0 build-provenance attestation using GitHub OIDC →
+  Sigstore Fulcio → Rekor transparency log.
 - No long-lived signing keys. The signing identity IS the GitHub
-  Actions workflow execution context, bound by the OIDC token
-  Fulcio issued the short-lived (10-minute) X.509 cert against.
+  Actions workflow execution context.
 
 **Vulnerability disclosure (RFC 9116):**
-- `frontend/public/.well-known/security.txt` published at
-  `https://duda1.bg/.well-known/security.txt`.
-- Bilingual policy page at `https://duda1.bg/security`
-  (Bulgarian + English), aligned with ISO/IEC 29147:2018 and the EU
-  CRA Annex I, Part II §5 coordinated-disclosure requirements
-  effective 11 September 2026.
+- `frontend/public/.well-known/security.txt` published.
+- Bilingual policy page at `/security` (Bulgarian + English),
+  aligned with ISO/IEC 29147:2018.
 
 **CI workflow security:**
-- All third-party actions pinned to 40-char commit SHAs (no version
-  tags). The `# vX.Y.Z — DD MMM YYYY` comment next to each pin
-  documents the verified version.
-- Top-level `permissions: contents: read` on every workflow;
-  individual jobs override to `write` only where strictly needed.
+- All third-party actions pinned to 40-char commit SHAs.
+- Top-level `permissions: contents: read`.
 - `persist-credentials: false` on every checkout.
-- `concurrency.cancel-in-progress: true` on every workflow.
+- `concurrency.cancel-in-progress: true`.
 
 ### 9.2 What's intentionally NOT here
 
 | Practice | Why deferred | When to revisit |
 |---|---|---|
-| **Signed commits** (GPG / SSH) | Single-committer repo. Branch protection on `main` + CodeQL on PRs covers the integrity surface. Signed commits add per-developer key management with marginal additional defence at this scale. | When a second human commits to `main`. |
-| **SLSA Level 3** (hardened build platform) | Requires reusable workflow with build-platform isolation. Overkill for an e-commerce shop with no third-party consumers of build artifacts. | If a customer ever requires a contractual provenance SLA. |
-| **Dependency Track / OWASP DC server** | The SBOMs are produced and signed; an external scanner can ingest them on demand. Self-hosting Dependency Track costs more in ops time than it saves at this dep-graph size. | When dep count > ~500 transitive or compliance specifically asks for one. |
-| **CSP violation reporting** | Tracked separately in §15 item 14 (security depth slice). | Roadmap item 14. |
+| **Signed commits** (GPG / SSH) | Single-committer repo. Branch protection on `main` + CodeQL on PRs covers integrity. | When a second human commits to `main`. |
+| **SLSA Level 3** | Requires reusable workflow with build-platform isolation. Overkill for a shop with no third-party consumers of build artifacts. | If a customer requires a contractual provenance SLA. |
+| **Dependency Track / OWASP DC server** | SBOMs are produced and signed; an external scanner can ingest them on demand. | When dep count > ~500 transitive or compliance asks for one. |
 
 ### 9.3 SLSA status
 
@@ -928,43 +934,26 @@ platform (L2 build platform requirement), and every artifact carries
 a signed in-toto provenance attestation queryable via Rekor (L2
 provenance requirement).
 
-**Level 3** would require:
-- Reusable workflow that runs the build in an isolated context
-  the calling workflow can't tamper with.
-- Hermetic builds (declared inputs, no network at build time).
-- Build platform that produces non-falsifiable provenance — i.e.,
-  attestations the build platform signs, not the calling workflow.
-
-GitHub Actions can supply Level 3 via the `slsa-framework/slsa-github-generator`
-reusable workflow. Defer until contractual need (Roadmap item 27).
+**Level 3** would require a reusable workflow in an isolated
+context, hermetic builds, and build-platform-signed provenance. Defer
+until contractual need (Roadmap item 27).
 
 ### 9.4 Branch protection runbook (one-time setup)
 
-Branch protection is the only Week 1 item that can't be checked into
-the repo — it's a GitHub repository setting. Run this once per
-repository; verify quarterly that nothing's drifted.
+Branch protection is the only Week 1 item that can't be checked
+into the repo. Run this once per repository; verify quarterly.
 
-**Two rule sets** are documented below. Use the **solo-committer**
-set today; switch to the **multi-committer** set the first day a
-second human (or bot) gains push access.
+**Solo-committer rules (today):**
 
-#### Solo-committer rules (current)
-
-**Settings → Branches → Branch protection rules → Add rule**, branch
-name pattern `main`:
-
-- ☑ **Require a pull request before merging**
+- ☑ Require a pull request before merging
   - **Require approvals: 0** ← critical. GitHub forbids approving
-    your own PR, so any non-zero value deadlocks a solo-committer
-    repo (every change blocked, with no way to unblock from the UI
-    short of disabling protection). The PR requirement itself still
-    gives you the diff view, CI signal, and a record of intent —
-    that's the actual gate, not the LGTM number.
-  - ☑ Dismiss stale pull request approvals when new commits are pushed
+    your own PR; any non-zero value deadlocks a solo-committer repo.
+  - ☑ Dismiss stale pull request approvals when new commits are
+    pushed
   - ☑ Require conversation resolution before merging
-- ☑ **Require status checks to pass before merging**
+- ☑ Require status checks to pass before merging
   - ☑ Require branches to be up to date before merging
-  - Required status checks (search and select each):
+  - Required status checks:
     - `Typecheck (all workspaces)`
     - `Lint (frontend)`
     - `Auth tests`
@@ -977,78 +966,28 @@ name pattern `main`:
     - `SBOM (backend-auth)`
     - `SBOM (backend-email)`
     - `SBOM (backend-api)`
-- ☐ **Require signed commits** — defer (see §9.2).
-- ☑ **Require linear history** — keeps `git log` bisectable.
-- ☐ **Do not allow bypassing the above settings** ← leave UNCHECKED
-  in solo mode. The repository admin (you) retains an emergency
-  override for the rare "production is down, revert NOW" case. This
-  is a deliberate trade — slightly weaker integrity guarantee in
-  exchange for a working escape hatch when no second human exists
-  to unblock you.
-- ☐ **Allow force pushes** — leave unchecked.
-- ☐ **Allow deletions** — leave unchecked.
+- ☐ Require signed commits — defer (see §9.2).
+- ☑ Require linear history — keeps `git log` bisectable.
+- ☐ Do not allow bypassing the above settings — leave UNCHECKED in
+  solo mode to retain an emergency override.
+- ☐ Allow force pushes — leave unchecked.
+- ☐ Allow deletions — leave unchecked.
 
-**Workflow this creates (works in GitHub Desktop):**
+**Multi-committer rules (when a second human commits):**
 
-1. In GitHub Desktop: **Current Branch** dropdown → **New Branch** →
-   name it (e.g. `fix/sbom-workspace-flag`).
-2. Make changes, commit, **Push origin**.
-3. GitHub Desktop shows a "Create Pull Request" button — click it
-   (opens github.com). Or: `gh pr create --fill`.
-4. Wait for the 12 status checks to go green.
-5. Click **Merge pull request** on github.com (the merge button is
-   enabled once checks pass).
-6. Back in GitHub Desktop: **Fetch origin**, then switch back to
-   `main`.
+- ☑ Require approvals: 1 (now the second-pair-of-eyes gate works).
+- ☑ Require signed commits.
+- ☑ Do not allow bypassing the above settings.
+- ☑ Require review from Code Owners if you add a `CODEOWNERS` file.
 
-The "you can no longer push directly to `main`" surprise the first
-time is the point — every change now goes through the diff +
-CI gate.
+**Required-status-check deadlock — the "skipped check" gotcha:** do
+not add a `paths:` or `paths-ignore:` filter to the `pull_request:`
+trigger of any workflow whose status checks are marked as required.
+If such a workflow doesn't fire on a given PR, the required checks
+never report, and the PR sits in "Waiting for status." We hit this
+once with `sbom.yml` having a paths filter; removed.
 
-#### Multi-committer rules (when you add a second human)
-
-Switch all of the above on the day someone else commits:
-
-- ☑ **Require approvals: 1** (now the second-pair-of-eyes gate works).
-- ☑ **Require signed commits** (now key management has someone
-  to coordinate with).
-- ☑ **Do not allow bypassing the above settings** (no more
-  emergency-override carve-out; the second admin can unblock you).
-- ☑ **Require review from Code Owners** if you add a `CODEOWNERS`
-  file.
-
-#### Required-status-check deadlock — the "skipped check" gotcha
-
-**Do not add a `paths:` or `paths-ignore:` filter to the
-`pull_request:` trigger of any workflow whose status checks are
-marked as required in branch protection.** If such a workflow
-doesn't fire on a given PR (because no path matches the filter),
-the required checks never report, and the PR will sit forever in
-"Expected — Waiting for status to be reported" with no way to merge
-short of admin override or temporarily un-requiring the check.
-
-We hit this once when `sbom.yml` had a paths filter restricting it
-to PRs that touched `package.json` / `package-lock.json` / the
-workflow itself. A PR that only changed React components and Markdown
-deadlocked all 5 `SBOM (...)` required checks. Filter removed —
-SBOM now runs on every PR unconditionally. The cost is ~10
-minute-runners per PR; free tier absorbs it.
-
-If you genuinely need conditional execution to save runner minutes
-(only relevant at high PR volume), the correct pattern is the
-**skippable-required-check sentinel**: a downstream job that
-`needs:` the matrix, runs with `if: always()`, reports success when
-the matrix was skipped, and is the ONLY name marked as required.
-Then the matrix jobs can have all the conditional `if:` they want.
-Not implemented today — not worth the complexity at this scale.
-
-The same constraint applies to `codeql.yml` — note its `paths-ignore`
-only applies to `**.md` / `docs/**`, files that fundamentally can't
-contain executable code CodeQL would analyse. Safe.
-
-#### Verification
-
-Try to push to `main` directly from a clean clone (any branch):
+**Verification:**
 
 ```bash
 git checkout main
@@ -1057,14 +996,10 @@ git push
 # Expect: ! [remote rejected]   main -> main (protected branch hook declined)
 ```
 
-If the push succeeds, the rule didn't save — go back to Settings
-and re-check the "Require a pull request before merging" box.
-
 ### 9.5 Verification (downstream consumer view)
 
 Anyone — auditor, customer, security researcher — can independently
-verify the integrity of any published SBOM without trusting the
-project's CI:
+verify any published SBOM:
 
 ```bash
 # Using GitHub's CLI (easiest):
@@ -1080,65 +1015,56 @@ cosign verify-blob sbom-backend-api.cdx.json \
     https://token.actions.githubusercontent.com
 ```
 
-Either command succeeds only if:
-1. The SBOM byte-for-byte matches what was signed.
-2. The signing identity is a workflow in this repository.
-3. The signature appears in the Sigstore Rekor transparency log
-   (anyone can audit Rekor for unexpected signatures from this repo).
-
-Failure of any of those is a tampering signal.
+Either command succeeds only if the SBOM byte-for-byte matches what
+was signed, the signing identity is a workflow in this repository,
+and the signature appears in the Sigstore Rekor transparency log.
 
 ---
 
 ## 10. Cost model
 
-### 10.1 Today's pricing
+### 10.1 Target pricing
 
-| Tier | PV/mo | Cost (Neon Free) | Cost (Neon Launch) |
+| Tier | PV/mo | Cost (Neon Free, dev) | Cost (Neon Launch, prod) |
 |---|---|---|---|
 | 0 — Idle | 0 | €6.90 | €24.62 |
 | 1 — Start | 2K | €6.92 | €24.64 |
 | 2 — Small | 20K | €7.10 | €24.83 |
-| 3 — Growth | 100K | €7.92 ⚠️ | €25.64 |
+| 3 — Growth | 100K | €7.92 | €25.64 |
 | 4 — Busy | 400K | n/a | €28.64 |
 | 5 — Big | 2M | n/a | €70.00 |
 
-**Decomposition of the Tier 4 (€28.64) bill:** Neon Launch is 62%
-($19.26); AWS WAF + Route 53 is 34% ($10.60 between fixed + per-
-request); everything else (CloudFront, Lambda, Amplify SSR, S3) is
-free at this scale.
+**Decomposition of Tier 4 (€28.64):** Neon Launch is 62% ($19.26);
+AWS WAF + Route 53 is 34% ($10.60 between fixed + per-request);
+everything else (CloudFront, Lambda, Amplify SSR, S3) is free at
+this scale.
+
+**Today's actual cost:** €0/mo — nothing is deployed.
 
 ### 10.2 Recommended swap: Cloudflare edge
 
-The single biggest unforced overpayment is **AWS WAF + Route 53**.
-Cloudflare's Free tier provides:
-- Unmetered L3/L4/L7 DDoS protection (stronger than AWS Shield
-  Standard)
+The single biggest unforced overpayment in the target topology is
+**AWS WAF + Route 53**. Cloudflare's Free tier provides:
+- Unmetered L3/L4/L7 DDoS (stronger than AWS Shield Standard)
 - Free TLS certs
 - Free DNS
-- Cloudflare-managed Free WAF ruleset (basic but real)
-- Bot Fight Mode (blocks scrapers / credential stuffers)
+- Cloudflare-managed Free WAF ruleset
+- Bot Fight Mode
 - Unlimited CDN bandwidth for static assets
 - HTTP/3 / QUIC
 
 Migration paths:
 
 **A1 — DNS-only + R2 for images.** Half a day. Saves €0.50/mo.
-Eliminates two AWS lock-in points. **No-regret. Do this first.**
+Eliminates two AWS lock-in points. No-regret. Do this first.
 
 **A2 — Cloudflare Free proxy (also replaces WAF).** One day. Saves
-€7–10/mo at Tier 0–3, €10/mo at Tier 4, €42/mo at Tier 5. The
-trade-off is Cloudflare Free's narrower managed WAF rule coverage
-(no OWASP CRS, no custom rules) — defensible for this shop's threat
-model (no PAN data, strong app-layer defences) while still small,
-**upgrade to A3 as soon as you're attracting real traffic.**
+€7–10/mo at Tier 0–3, €10/mo at Tier 4, €42/mo at Tier 5.
 
-**A3 — Cloudflare Pro proxy ($25/mo).** Strictly stronger security
-than the current AWS setup: full Cloudflare Managed Ruleset + OWASP
-CRS + 5 custom WAF rules + 5 rate-limit rules + image polish + ML
-bot scoring + Page Shield (CSP enforcement at edge). Costs €13–16/
-mo more than today at Tier 0–4, **€19/mo less at Tier 5.** Pays
-back at scale.
+**A3 — Cloudflare Pro proxy ($25/mo).** Strictly stronger security:
+full Cloudflare Managed Ruleset + OWASP CRS + custom WAF rules +
+rate-limit rules + ML bot scoring + Page Shield. €13–16/mo more at
+Tier 0–4, €19/mo less at Tier 5.
 
 ### 10.3 Recommended tier table (after A1+A2)
 
@@ -1146,34 +1072,30 @@ back at scale.
 |---|---|---|---|---|---|
 | 0 — Idle | 0 | 0 | 0 | 0 | **€0/mo** |
 | 1 — Start | 50 | 500 | 2K | 10 | **€0/mo** |
-| 2 — Small | 250 | 5,000 | 20K | 100 | **€18/mo** (Neon Launch starts) |
+| 2 — Small | 250 | 5,000 | 20K | 100 | **€18/mo** (Neon Launch) |
 | 3 — Growth | 1,000 | 25,000 | 100K | 500 | **€18/mo** |
 | 4 — Busy | 3,000 | 100,000 | 400K | 2,000 | **€19/mo** |
 | 5 — Big | 5,000+ | 500,000 | 2M | 10,000 | **€28/mo** |
 
-If on A3 instead, add ~€23/mo flat (which becomes a saving at
-Tier 5).
-
 ### 10.4 Other cost optimisations
 
-- **CloudWatch Logs retention** — cut from 30 to 14 days. Saves
-  $0–7/mo depending on log volume.
-- **Cost alerts via AWS Budgets** at $30/mo — already done per
-  EU-wide ambition or an explicit second-region requirement.
-- **AWS Customer Carbon Footprint Tool** — quarterly review;
-  documents the Sustainability pillar.
+- **CloudWatch Logs retention** — set to 14 days from the start.
+- **Cost alerts via AWS Budgets** at $30/mo.
+- **AWS Customer Carbon Footprint Tool** — quarterly review.
 
 ---
 
 ## 11. Day-to-day operations
 
-### Daily (automated)
+**None of this runs today.** This section describes the target
+operational cadence for after the production deployment.
+
+### Daily (automated, target)
 
 - 03:00 Sofia — catalog backup runs
 - Hourly — expired-pickup-deadline check
 - 04:00 Sofia — unverified accounts older than 7 days deleted
-- Continuous — CloudWatch alarms watch 5xx, admin logins, Lambda
-  duration, SES bounces
+- Continuous — CloudWatch alarms
 
 ### Weekly (5–10 min)
 
@@ -1183,8 +1105,7 @@ Tier 5).
 ### Monthly (~30 min)
 
 - CloudWatch Logs Insights query for 4xx/5xx patterns
-- Check Neon usage dashboard — Free plan CU-hour ceiling, Launch
-  cost trajectory
+- Check Neon usage dashboard
 - SES reputation: bounce rate < 5%, complaint rate < 0.1%
 
 ### Quarterly (~1–2 hours)
@@ -1199,16 +1120,16 @@ Tier 5).
 - Postgres major upgrade if Neon prompts
 - Rotate admin AWS user's hardware MFA
 - Re-run threat model (§5.1)
-- Re-run a Well-Architected Review using AWS' tool (free,
-  self-service)
+- Re-run AWS Well-Architected Review
 
 ### On-incident triage order
 
-1. Is it the database? `db:psql`; `SELECT 1`; check `status.neon.tech`
-2. Specific Lambda? CloudWatch Logs → filter by `X-Request-Id`
-3. Frontend? Amplify build history
-4. Edge? CloudFront status, WAF rule firing rate
-5. Email? SES Console reputation tab
+1. Is it the database? `db:psql`; `SELECT 1`; check
+   `status.neon.tech`.
+2. Specific Lambda? CloudWatch Logs → filter by `X-Request-Id`.
+3. Frontend? Amplify build history.
+4. Edge? CloudFront status, WAF rule firing rate.
+5. Email? SES Console reputation tab.
 
 Document every incident — even 5-minute ones. The first incident
 with no postmortem is the start of a culture of forgetting.
@@ -1221,18 +1142,15 @@ with no postmortem is the start of a culture of forgetting.
 
 - **Database** — recoverable to any point in the last 7d (Launch)
   or 30d (Scale) via Neon PITR.
-- **Catalog structure** — recoverable from daily S3 backup
-  (90 days, then Glacier).
+- **Catalog structure** — (target) recoverable from daily S3 backup.
 - **Customer accounts and orders** — recoverable from Neon PITR.
-  No daily catalog backup contains them (intentional — orders are
-  considered transactional, not structural).
-- **Order line snapshots** — frozen onto each order row at
-  checkout. Survive any catalog edit or restore.
+- **Order line snapshots** — frozen onto each order row at checkout.
+  Survive any catalog edit or restore.
 
 ### 12.2 Procedure (Neon PITR)
 
 ```
-1. Identify target timestamp (e.g., "10 minutes before the bad migration").
+1. Identify target timestamp.
 2. In Neon console: create a new branch from PITR at that timestamp.
 3. Run a verification query — confirm row counts, sample data.
 4. Switch NEON_DATABASE_URL in SSM Parameter Store to the new branch.
@@ -1241,189 +1159,84 @@ with no postmortem is the start of a culture of forgetting.
 7. (Optional) Promote the new branch to "main" in Neon, archive old.
 ```
 
-Run this drill quarterly. Document each run in `RUNBOOK.md` (or
-this section). The first run with no rehearsal is the wrong time to
-discover that step 4 takes 20 minutes longer than you expected.
+Drill quarterly. Document each run. **Never been drilled today.**
 
 ### 12.3 Procedure (catalog restore from S3 backup)
 
 ```
 1. Admin panel → Archive → Choose a date → Preview → Restore
-2. Confirm warning ("This overwrites current categories and
-   products; orders are unaffected")
+2. Confirm warning
 3. Click Confirm
 4. Watch the audit log entry appear
 ```
 
-Tested every time a backup is taken (the system runs a checksum
-verification on the JSON immediately after upload).
+**Today:** no admin panel + no S3 backup means this procedure is
+documented intent only. Schema is ready (`catalog_backups` table
+exists); the admin Lambda and scheduler-fn would wire it up.
 
 ### 12.4 Procedure (admin MFA seed lost)
 
+**Today:** Admin MFA is documented but not built. This procedure
+applies once admin-api ships with TOTP.
+
 The shop has exactly one administrator account, gated by mandatory
-TOTP MFA on a separate subdomain. **Losing the TOTP seed without a
-documented recovery path is the single most likely catastrophic
-failure mode of this entire system** — more likely than a Neon
-outage or an AWS regional incident, and harder to recover from.
-This runbook makes that scenario boring.
+TOTP MFA on a separate subdomain (target state). Losing the TOTP
+seed without a documented recovery path would be the single most
+likely catastrophic failure mode.
 
 #### 12.4.1 Where the seed is stored (set up once)
 
-These three things must be true the day the admin account is
-provisioned. Verify them quarterly along with the DR drill (§11
-quarterly).
-
-1. **Primary copy: password manager vault.** The TOTP seed
-   (otpauth:// URI) is stored as a secure note in the admin's
-   personal password manager (1Password / Bitwarden / iCloud
-   Keychain — any vault with a strong master password and
-   cloud sync). Title the entry `Best-Online-Shop admin TOTP
-   seed`.
-2. **Off-vault backup: paper recovery codes.** When TOTP is first
-   provisioned, the authenticator app emits one-time recovery
-   codes (or, equivalently, you generate them yourself by
-   running TOTP against the seed at known counter offsets).
-   Print the codes on paper. Seal the paper in a tamper-evident
-   envelope and store it in a physical safe (home safe, bank
-   safety-deposit box, or in-laws' fireproof cabinet — the
-   point is "location distinct from where the password manager
-   lives").
-3. **Off-site copy of the cloud backup.** Confirm the password
-   manager itself has 2FA enabled, AND that you have its
-   recovery kit printed alongside the TOTP envelope above. If
-   the password manager goes down the same day the TOTP seed
-   does, you want both recovery paths.
+1. **Primary copy: password manager vault.** TOTP seed
+   (`otpauth://` URI) as a secure note in 1Password / Bitwarden /
+   iCloud Keychain.
+2. **Off-vault backup: paper recovery codes** in a tamper-evident
+   envelope in a physical safe.
+3. **Off-site copy of the cloud backup.** Password manager 2FA
+   enabled + recovery kit printed alongside the TOTP envelope.
 
 The seed file is **never** stored in: this repository, any
-unencrypted document, any chat history, any email, AWS Systems
-Manager Parameter Store, or any cloud service the admin account
-itself controls. Losing the AWS root means losing the shop; the
-TOTP recovery path must not also be lost in that scenario.
+unencrypted document, any chat history, any email, Parameter Store,
+or any cloud service the admin account itself controls.
 
 #### 12.4.2 Recovery — Scenario A: TOTP device lost, seed preserved
 
-This is the easy case. You forgot the device but the seed is
-intact.
+Easy case. Copy the URI from the password manager into a fresh
+authenticator app on a new device. Log in. Rotate the seed via
+Admin → Security → "Rotate TOTP seed." 5–15 minutes.
 
-```
-1. Open the password manager → copy the otpauth:// URI from the
-   "Best-Online-Shop admin TOTP seed" entry.
-2. Provision the seed into a fresh authenticator app on a new
-   device. Most authenticators accept the URI directly via the
-   "add account → paste setup URI" flow.
-3. Open the new authenticator, generate a code, log into
-   admin.duda1.bg.
-4. Optional but recommended: rotate the seed. Admin panel →
-   Security → "Rotate TOTP seed" → the system displays a new
-   QR code and otpauth:// URI. Save the new one into the
-   password manager (replacing the old). Print fresh paper
-   recovery codes and replace the envelope contents.
-```
+#### 12.4.3 Recovery — Scenario B: TOTP device + password manager both lost
 
-Wall-clock time: 5–15 minutes. No downtime to the shop —
-customer-facing routes are unaffected.
+Retrieve the paper envelope. Enter one unused recovery code. Rotate
+the seed. 15–30 minutes plus physical retrieval.
 
-#### 12.4.3 Recovery — Scenario B: TOTP device lost AND password manager unreachable
+#### 12.4.4 Recovery — Scenario C: everything lost
 
-You'd reach for the paper envelope.
+Break-glass. SSH into AWS (root credential is stored in a separate
+hardware-MFA-protected channel). Connect to Neon via the SSM
+connection string. Disable MFA in psql:
 
-```
-1. Retrieve the sealed paper envelope from the safe.
-2. Enter any one unused recovery code at the TOTP prompt on
-   admin.duda1.bg. Recovery codes are single-use; the system
-   marks the code consumed.
-3. Once logged in: Admin → Security → "Rotate TOTP seed". Save
-   the new seed into the password manager (recover that
-   separately if needed), generate fresh recovery codes, print
-   them, replace the envelope contents.
-4. Cross every used recovery code off the printed list before
-   re-sealing.
+```sql
+UPDATE users SET totp_secret = NULL, totp_verified_at = NULL
+  WHERE email = '<admin-email>';
 ```
 
-Wall-clock time: 15–30 minutes plus whatever it takes to physically
-reach the envelope.
+Log in with password only. Re-enrol TOTP. Audit-log the recovery.
+1–2 hours.
 
-#### 12.4.4 Recovery — Scenario C: everything is lost
+#### 12.4.5 Drill cadence
 
-TOTP device gone, password manager unreachable, paper recovery
-envelope destroyed (fire, flood, lost in a move). This is the
-"break glass" path; the shop is admin-locked until it completes.
-
-```
-1. SSH into AWS (root credentials are stored in their own
-   hardware-MFA-protected channel — see the asset inventory
-   document, Roadmap item 22).
-2. Connect to the production Neon branch via the SSM-stored
-   read/write connection string:
-     aws ssm get-parameter \
-       --name /shop/prod/NEON_DATABASE_URL \
-       --with-decryption \
-       --region eu-central-1
-3. Open psql against that URL.
-4. Either:
-     a. Disable MFA for the admin user:
-        UPDATE users
-          SET totp_secret = NULL,
-              totp_verified_at = NULL
-          WHERE email = '<admin-email>';
-        (One transaction. Confirm exactly one row affected.)
-     b. Or: rotate the seed to a known value by running the
-        provisioning helper from @shop/auth offline, then
-        UPDATE users SET totp_secret = '<new-encrypted-seed>'.
-5. Log in to admin.duda1.bg using only the password (MFA now
-   disabled).
-6. Re-enrol TOTP via Admin → Security → "Enable TOTP". Save
-   the new seed into a fresh password manager entry. Print
-   recovery codes. Reseal.
-7. Audit-log the recovery action manually — there's no
-   automated event for "admin recovered MFA from psql." Write
-   it in this doc (or in RUNBOOK.md once it exists), date-
-   stamped, with the reason.
-```
-
-Wall-clock time: 1–2 hours including the audit-log write-up. The
-shop's customer-facing functionality is unaffected throughout —
-only admin operations are blocked. This is the path that requires
-the AWS root credential, which is why the AWS root MFA is itself
-stored in a separate secure channel from the application MFA.
-
-#### 12.4.5 What this runbook depends on
-
-- The admin account remains a single user with exactly one TOTP
-  factor. If we add WebAuthn (Roadmap item 24 / customer MFA
-  expansion), revisit this with a second-factor-quorum approach.
-- The AWS root credential and the application TOTP seed are
-  stored in **physically and logically distinct** locations.
-  Storing both in the same password manager is a single-point-
-  of-failure; storing them in the same physical safe is also
-  one. The cost of this hygiene is a few minutes per
-  provisioning event.
-- The asset inventory document (Roadmap item 22) records
-  *where* the AWS root MFA seed lives and how to retrieve it.
-  This runbook assumes that document exists when Scenario C
-  fires.
-
-#### 12.4.6 Drill cadence
-
-Run Scenario A annually as part of the yearly checklist (§11) —
-specifically the "Rotate admin AWS user's hardware MFA" item.
-Confirm the password manager entry opens, the paper envelope is
-intact and legible, the recovery codes haven't been marked all-
-consumed in some forgotten incident, and the rotation flow on
-admin.duda1.bg still works. The whole drill is ~30 minutes.
-
-Do not run Scenario C as a drill against production — practice it
-against a Neon PITR branch instead so a typo in the UPDATE
-statement doesn't accidentally lock you out from a working shop.
+Run Scenario A annually with the yearly checklist (§11). Do not run
+Scenario C against production — practise it against a Neon PITR
+branch.
 
 ---
 
 ## 13. Architecture decisions locked in
 
-These are baked-in for good reasons; revisiting them costs you
-weeks. Don't re-litigate without a strong new constraint:
+These are baked-in for good reasons; revisiting them costs you weeks.
 
-- **Drizzle, not Prisma** — Lambda bundling + raw-SQL escape hatches.
+- **Drizzle, not Prisma** — Lambda bundling + raw-SQL escape hatches;
+  cold start under 500 ms versus Prisma's 1–3 s.
 - **Money as integer cents** — float arithmetic loses money.
 - **`timestamptz` always** — naïve timestamps are a bug magnet.
 - **Neon, not RDS** — RDS forces a VPC which adds NAT Gateway
@@ -1441,22 +1254,24 @@ weeks. Don't re-litigate without a strong new constraint:
 - **Constant-time login** — defeats email enumeration via timing.
 - **Per-email brute-force lockout, not per-IP** — IP-based lockout
   is bypassable from one mobile-tether reconnect.
-- **Two-tier auth middleware** (`currentUser` best-effort + `requireAuth`
-  gate) — anonymous-and-authenticated routes share paths.
+- **Two-tier auth middleware** (`currentUser` best-effort +
+  `requireAuth` gate) — anonymous-and-authenticated routes share
+  paths.
 - **Orphaned-cookie cleanup in `currentUser`** — prevents the
   `/login → /profile → /login` redirect loop.
 - **CORS with credentials, allowlist origins** — wildcard +
   credentials is rejected by browsers.
-- **Two-mode cart** (sessionStorage guest, server-persisted user) —
-  matches the industry pattern; merge endpoint sums on login.
+- **Two-mode cart** — `sessionStorage` guest, server-persisted user.
 - **Order line items snapshotted** — historical orders survive
   catalog edits.
-- **`Idempotency-Key` UNIQUE on orders** — the partial unique
-  index IS the idempotency boundary; no separate Redis needed.
+- **`Idempotency-Key` UNIQUE on orders** — partial unique index IS
+  the idempotency boundary; no separate Redis needed.
 - **`accepted_at` is the canonical withdrawal-window start**.
 - **Best-effort email sends** — registration / reset / withdrawal
   never roll back on email failure.
 - **Single admin account** — multi-admin is out of scope.
+- **Uniform strict CSP** — defends against the SPA-soft-navigation
+  bypass documented in §5.2.
 
 ---
 
@@ -1466,320 +1281,230 @@ weeks. Don't re-litigate without a strong new constraint:
 
 | Pillar | Today | What's missing for A+ |
 |---|---|---|
-| Operational Excellence | B+ | Distributed tracing (OpenTelemetry/ADOT), formal SLOs + burn-rate alerting, DORA metrics, scheduled DR drills, incident postmortem template, status page |
-| Security | **A** (was A−, May 2026 supply-chain + auth-modernization + CSP-reporting slices shipped) | Customer MFA option |
-| Reliability | B | Formal RTO/RPO, SQS retry queue for SES, DR drill cadence, public status page |
-| Performance Efficiency | B+ | Synthetic monitoring (Lighthouse CI), RUM, query-latency SLOs per endpoint, additional image variants (800px, 2000px) |
+| Operational Excellence | B | Production deploy, distributed tracing, formal SLOs + burn-rate alerting, DORA metrics, scheduled DR drills, incident postmortem template, status page |
+| Security | A | Customer MFA option (growth-stage); admin auth flow (not yet built) |
+| Reliability | B− | Production deploy, SQS retry queue, DR drill cadence, public status page |
+| Performance Efficiency | B+ | Synthetic monitoring, RUM, query-latency SLOs per endpoint |
 | Cost Optimization | B− | Cloudflare swap (the big one), CloudWatch retention to 14d |
 | Sustainability | A | Documented quarterly AWS CFT review |
+
+The Security A grade comes from the code-level posture (Argon2id,
+constant-time login, strict CSP, HIBP, SLSA L2, SBOM signing, RFC
+9116 disclosure, GDPR Art. 16 + 17 self-service). The B grade on
+Reliability and Operational Excellence reflects the fact that none
+of the AWS plumbing is provisioned yet.
 
 **Cross-checked against 2026 industry standards beyond AWS WA:**
 
 | Standard | Status | What's needed |
 |---|---|---|
-| NIST CSF 2.0 (Govern function) | ✅ Met (supply-chain policy + VDP shipped) | — |
+| NIST CSF 2.0 (Govern function) | ✅ Met | — |
 | NIST CSF 2.0 (Detect function) | ⚠️ Partial | Distributed tracing |
 | NIST CSF 2.0 (Respond function) | ⚠️ Partial | Incident playbook |
-| OWASP Top 10 2025 — A03 Supply Chain | ✅ Met (SBOM + SLSA L2 + CodeQL) | — |
-| OWASP Top 10 2025 — A08 Integrity Failures | ✅ Met (Sigstore signing) | — |
-| OWASP Top 10 2025 — A02 Security Misconfiguration | ✅ Met | Uniform strict CSP shipped May 2026 (§5.2) |
-| OWASP Top 10 2025 — A09 Logging Failures | ⚠️ | CSP-report endpoint ✅ (shipped May 25, 2026). Distributed tracing still pending (Roadmap item 6) |
+| OWASP Top 10 2025 — A03 Supply Chain | ✅ Met | — |
+| OWASP Top 10 2025 — A08 Integrity Failures | ✅ Met | — |
+| OWASP Top 10 2025 — A02 Security Misconfiguration | ✅ Met | — |
+| OWASP Top 10 2025 — A09 Logging Failures | ⚠️ | Distributed tracing |
 | OWASP ASVS 6.0 L1 | ✅ Compliant | — |
-| OWASP ASVS 6.0 V6.2 (password lifecycle) | ✅ Met (May 22 2026) | Self-service change-password endpoint shipped with HIBP screening, same-password rejection, shared-with-/login lockout |
-| OWASP ASVS 6.0 L2 | ⚠️ Gaps | Customer MFA (SAST shipped via CodeQL) |
-| NIST SP 800-63B-4 | ✅ Met (May 2026) | Length-only ≥12 + HIBP screening shipped; composition rules removed |
-| NIST SP 800-207 (Zero Trust) | ✅ Spirit | Already verifying every request; per-Lambda least-privilege IAM; no implicit subdomain trust |
-| SLSA v1.1 | ✅ Level 2 achieved (May 2026) | Level 3 only if contractual need (Roadmap 27) |
-| CIS Controls v8.1 IG1 | ✅ Met (VDP page + SBOM-as-inventory) | — |
-| GDPR Art. 32 / 17 / 20 | ✅ | — |
+| OWASP ASVS 6.0 V6.2 (password lifecycle) | ✅ Met | — |
+| OWASP ASVS 6.0 L2 | ⚠️ Gaps | Customer MFA |
+| NIST SP 800-63B-4 | ✅ Met | — |
+| NIST SP 800-207 (Zero Trust) | ✅ Spirit | — |
+| SLSA v1.1 | ✅ Level 2 | Level 3 only if contractual need |
+| CIS Controls v8.1 IG1 | ✅ Met | — |
+| GDPR Art. 32 / 16 / 17 | ✅ | — |
+| GDPR Art. 20 | ⚠️ | Self-service data export endpoint |
 | GDPR Art. 33–34 (72h breach) | ⚠️ | Playbook |
 | EU Directive 2023/2673 | ✅ Shipped | — |
-| EU CRA (Sep 2026 vuln reporting) | ✅ Ready (SBOM + RFC 9116 VDP shipped) | — |
-| WCAG 2.2 AA | ✅ In scope | Continuous audit |
+| EU CRA (Sep 2026) | N/A | Out of scope (SaaS); CRA-style hygiene voluntarily maintained |
+| WCAG 2.2 AA | ⚠️ | Continuous audit |
 
-**Verdict.** The architecture is meaningfully above 2026 industry
-median for a B2C shop of this profile. It exceeds typical
-standards in auth security, idempotency discipline, and structured
-logging. Reaching genuine A+ across the board needs roughly 4 days
-of focused work — concrete roadmap in §15.
+**Verdict.** Code-level posture is meaningfully above 2026 industry
+median for a B2C shop of this profile. The gap between today and a
+production-grade live shop is operational: deploy it, drill it,
+instrument it, document the actual running state. Concrete roadmap
+in §15.
 
-A side note on the "no compromise" framing the user asked for:
-there's no such thing in software architecture. Every choice trades
-something. What CAN exist is "no UNJUSTIFIED compromise" — every
-trade-off is explicit, intentional, and documented. The roadmap
-below gets the project to that state.
+A side note on the "no compromise" framing: there's no such thing in
+software architecture. Every choice trades something. What CAN exist
+is "no UNJUSTIFIED compromise" — every trade-off is explicit,
+intentional, and documented. The roadmap below gets the project to
+that state.
 
 ---
 
 ## 15. Roadmap to A+
 
-Ranked by `(impact ÷ effort)` — highest leverage first.
+Ranked by `(impact ÷ effort)` — highest leverage first. Items marked
+✅ have shipped; items marked ❌ have not and are recommended next.
 
-### Week 1 — supply-chain hardening (SHIPPED May 2026)
+### Already shipped (Week 1, May 2026)
 
-1. ✅ **Branch protection on `main`** — runbook in §9.4. One-time
-   GitHub UI action; verify quarterly.
-2. ✅ **`.well-known/security.txt`** — `frontend/public/.well-known/security.txt`,
-   policy page at `/security` (bilingual). Renew the `Expires:`
-   field annually (see §11 Yearly).
-3. ✅ **CodeQL SAST** — `.github/workflows/codeql.yml` on v4.35.1.
-   `security-extended` query suite + the `actions` query pack for
-   workflow YAML.
-4. ✅ **CycloneDX SBOM per workspace** — `.github/workflows/sbom.yml`.
-   CycloneDX 1.6 JSON via `@cyclonedx/cyclonedx-npm@^2.0.0`,
-   one per deployment unit, attached to releases.
-5. ✅ **Sigstore keyless signing** — `actions/attest-build-provenance@v4.1.0`
-   in the same workflow. SLSA Level 2 achieved. Verification
-   procedure in §9.5.
+1. ✅ **CodeQL SAST** — `.github/workflows/codeql.yml`.
+2. ✅ **CycloneDX SBOM per workspace** — `.github/workflows/sbom.yml`.
+3. ✅ **Sigstore keyless signing** — SLSA Level 2 achieved.
+4. ✅ **`.well-known/security.txt`** + bilingual `/security` policy
+   page.
+5. ✅ **Uniform strict CSP** with nonce + strict-dynamic + reporting.
+6. ✅ **HIBP k-anonymity** check on register, reset, change-password.
+7. ✅ **NIST SP 800-63B-4** length-only password rules.
+8. ✅ **Authenticated self-service password change** —
+   `POST /auth/change-password`.
+9. ✅ **GDPR Art. 16** — `PATCH /auth/me` for profile rectification.
+10. ✅ **GDPR Art. 17** — `DELETE /auth/me` for right-to-erasure.
+11. ✅ **EU Directive 2023/2673** — 14-day withdrawal flow.
+12. ✅ **CSP violation reporting** — `POST /csp-report` (modern +
+    legacy formats).
 
-### Week 1 — Content Security Policy (SHIPPED May 2026)
+### Next two weeks (do these in order)
 
-5a. ✅ **Uniform strict CSP rollout.** A single `'nonce-X' 'strict-dynamic'`
-    policy applied to every HTML document via `frontend/src/proxy.ts`
-    (every route except Next.js internals, `/api`, `/.well-known`, and
-    prefetch requests). The earlier hybrid attempt was found to be silently
-    bypassed by SPA soft navigation; the uniform model closes that gap.
-    Reasoning + rejected design recorded in §5.2. On the Hono JSON API,
-    the strictest possible `default-src 'none'` via `hono/secure-headers`
-    in `backend/shop-api/src/app.ts`. Plus baseline headers
-    (`X-Content-Type-Options`, `Referrer-Policy`, `Permissions-Policy`,
-    `X-Frame-Options`, `COOP`, `CORP`, `HSTS`) on every frontend response
-    via `frontend/next.config.ts`. Verification recipe in §5.2.4.
+13. ❌ **Reconcile docs to reality** (done in this revision —
+    2026-05-26). Downgrade IaC claim, downgrade admin-api claim,
+    downgrade scheduler claim, downgrade order-confirmation-email
+    claim, downgrade EU CRA claim.
+14. ❌ **First production deploy.** Create `infra/` with the
+    minimal Terraform that provisions the actual running shop.
+    1–2 days.
+15. ❌ **ADOT distributed tracing** on `shop-api`. Closes the OWASP
+    A09 + NIST CSF Detect gap. ~1 day.
+16. ❌ **First real DR drill** against a Neon PITR branch. Write
+    up the timestamped result. 2 hours.
 
-### Week 1 — observability (1 day total)
+### Next month
 
-6. **Add AWS Distro for OpenTelemetry to the three Lambdas** (1 day)
-   - ADOT Lambda layer + `OPENTELEMETRY_*` env vars.
-   - Choose backend: CloudWatch X-Ray (zero new vendor) or
-     Honeycomb / Grafana Tempo (better UX, free tier).
-   - Verify distributed traces show `shop-api → Neon → SES`.
+17. ❌ **Address book CRUD** — schema exists; ship API + UI.
+    1 day.
+18. ❌ **SQS retry queue for SES.** Closes EU 2023/2673 Art. 11a(2)
+    durable-medium audit margin. 4 hours.
+19. ❌ **Order-confirmation + status-update email templates.**
+    Backfills the gap between the docs and reality. 4 hours.
+20. ❌ **Real storefront browsing.** Replace mock-data calls on
+    home, search, and `/products/[...path]` with real `@shop/api`
+    calls. ~1 day.
+21. ❌ **Admin-api Lambda + first admin slice** (orders). Removes
+    the manual `status='accepted'` psql. 2–3 days.
+22. ❌ **Scheduler-fn Lambda** + the three cron rules. ½ day.
+23. ❌ **Formalise SLOs in `slos.yaml` (OpenSLO format).** 1 hour.
+24. ❌ **Burn-rate CloudWatch composite alarms.** 1 hour.
+25. ❌ **Cloudflare DNS + R2 swap.** ½ day; saves €0.50/mo and
+    eliminates two AWS lock-in points.
+26. ❌ **Cut CloudWatch Logs retention to 14 days.** 5 min.
 
-### Week 2 — reliability (1 day total)
+### Month 2 — performance + governance
 
-7. **Add SQS retry queue between Lambda and SES** (4 hours)
-   - SQS standard queue + DLQ. Lambda enqueues; a second Lambda
-     consumer drains and calls SES with exponential backoff. Closes
-     the withdrawal-receipt durable-medium gap.
-8. **Formalise SLOs in `slos.yaml` (OpenSLO format)** (1 hour)
-   - Versioned, reviewed, in Git.
-9. **Add burn-rate alarms** (1 hour)
-   - CloudWatch composite alarms on the SLOs.
-10. **Schedule the first DR drill** (2 hours including doc)
-    - Calendar reminder, drill script, written outcome.
+27. ❌ **Lighthouse CI on every PR.** 4 hours.
+28. ❌ **Real User Monitoring (RUM).** 2 hours.
+29. ❌ **Status page** (statup.fyi or self-hosted). 1 hour.
+30. ❌ **Incident playbook.** 3 hours.
+31. ❌ **Asset inventory document.** 2 hours.
+32. ❌ **STRIDE threat model doc** — formal pass over major data
+    flows. 2 hours.
 
-### Week 2 — cost (1 day total)
+### Quarter 2+ — growth-stage
 
-11. **Path A1: DNS to Cloudflare + S3 images → R2** (½ day)
-    - Saves €0.50/mo, eliminates two AWS lock-in points.
-12. **Cut CloudWatch Logs retention to 14 days** (5 min)
-    - Console toggle.
-13. **Decide A2 vs A3** (decision, not work) — Cloudflare Free
-    proxy now (saves money) OR Cloudflare Pro proxy (stronger
-    security, slight cost increase that pays back at Tier 5).
+33. ❌ **Customer MFA (TOTP / WebAuthn).** ~3 days. Moves OWASP
+    ASVS to L2.
+34. ❌ **Admin TOTP enrolment + recovery codes UI.** ~2 days. The
+    schema exists; the flow is missing. Required before §15.21's
+    admin-api goes anywhere near production.
+35. ❌ **GDPR Art. 20 self-service data export.** ~1 day.
+36. ❌ **Multi-region failover.** ~1 week. Defer until customer
+    requires a contractual SLA.
+37. ❌ **Move to Neon Scale** when contractual SLA is required.
+38. ❌ **Upgrade SLSA to Level 3** — only if needed.
 
-### Account deletion — GDPR Art. 17 (SHIPPED May 24, 2026)
-
-17c. ✅ **`DELETE /auth/me` for self-service right-to-erasure.**
-     Closes the user-visible gap where the profile page had no way to
-     delete the account, and the documentation honesty gap where
-     `COMPLIANCE.md` previously claimed Art. 17 was shipped despite zero
-     code existing. The endpoint is gated by `requireAuth` + current-
-     password re-auth (defeats the stolen-cookie threat) + a typed
-     confirmation phrase locked to the Bulgarian literal `"ИЗТРИЙ"` via
-     `z.literal` (defence against mis-clicked DELETE from a TS-typed
-     client). The deletion runs in a single transaction (see
-     `backend/shop-api/src/lib/account-deletion.ts`) that balances two
-     binding regimes: GDPR Art. 17(1) "without undue delay" execution
-     vs the Bulgarian Accountancy Act's 10-year invoice-retention
-     mandate. Art. 17(3)(b) explicitly carves out the legal-obligation
-     exemption — we keep the legally-mandated records and pseudonymise
-     the linking PII. Hard-deleted: `customer_profiles` /
-     `corporate_profiles` / `addresses` / `carts` / `discounts` /
-     `mfa_recovery_codes` / `sessions` (all of them) /
-     `email_verification_tokens` / `password_reset_tokens` /
-     `login_attempts` (matched by email — Art. 5(1)(c) data
-     minimisation). Pseudonymised: `users` row stays in place with
-     `email` rewritten to `deleted-<uuid>@deleted.invalid` (RFC 6761
-     reserves `.invalid`) so the original email is freed for re-
-     registration AND the `users_email_unique` index is preserved;
-     `passwordHash` rewritten to a non-Argon2 sentinel so even if the
-     `deletedAt` filter is bypassed somewhere downstream
-     `verifyPassword` rejects the sentinel as malformed (defence in
-     depth); `deletedAt` + `anonymizedAt` set. Orders kept with
-     `customerId=NULL` and `customerEmail`/`customerName`/
-     `customerPhone` set to `"[deleted]"`; financial columns and
-     `order_items` snapshots untouched (invoice content). Delivery-
-     address: `street` + `apartmentOrOffice` blanked; `city` +
-     `postalCode` preserved (coarse-grained tax-territory data, no
-     longer identifying). Corporate-data snapshot: only `contactName`
-     blanked — `companyName` + `eik` + `vatNumber` +
-     `registeredAddress` + `mol` are LEGALLY REQUIRED invoice fields
-     under Bulgarian VAT law and stay intact. Complaints (where the
-     customer was the deleted user): customer_email/name/phone
-     blanked; `reason` enum + `description` kept (Art. 11a durable-
-     medium audit trail). Active-order check returns `422
-     /problems/active-orders-block-deletion` with blocking
-     orderNumbers in `errors[].path` — Art. 6(1)(b) "contract
-     performance" supersedes Art. 17 erasure while shipping is in
-     flight. Admin self-deletion via this endpoint returns 403 (the
-     shop has exactly one admin account by design — see §12.4 MFA
-     recovery runbook). Adjacent endpoints already filter
-     `isNull(deletedAt)` for enumeration resistance (`/auth/login`
-     constant-time-with-DUMMY_PASSWORD_HASH, `/auth/forgot-password`
-     silently-200, `/auth/email-change/request` conflict check) — no
-     code changes needed there. Post-deletion notification email
-     (`auth.account-deleted`, Bulgarian) sent best-effort to the
-     ORIGINAL address (captured before the transaction rewrites
-     `users.email`); explains what was deleted, what is legally
-     retained, and how to react if the recipient did not initiate the
-     deletion. Audit trail via structured Pino `account_deleted`
-     event (`userId` + `pseudonymizedAt` timestamp + IP + UA; never
-     the original email value). The pre-existing `admin_audit_log`
-     table is intentionally NOT used (subject-on-self vs actor=admin
-     posture — same call as PATCH /auth/me). No CSRF token (SameSite=
-     Lax + same-origin DELETE + re-auth covers it). Closes **GDPR
-     Art. 17** (right to erasure) and the user-visible gap in
-     docs/README.md §8.
-
-### Profile editing — GDPR Art. 16 (SHIPPED May 23, 2026)
-
-17b. ✅ **`PATCH /auth/me` for self-service profile rectification.**
-     Closes the user-visible gap where `/account/profile`'s
-     personal-data section was a client-only stub. Account-type-aware
-     partial update (RFC 5789 semantics, not RFC 7396 merge-patch —
-     we use a typed Zod schema with per-field validation messages
-     rather than the implicit null-as-delete convention). Personal
-     accounts edit `fullName` + `phone`; corporate accounts edit
-     `companyName` + `vatNumber` (nullable) + `registeredAddress` +
-     `mol` + `contactName` + `contactPhone`. Phone normalised to
-     Bulgarian E.164 by `backend/shop-api/src/lib/phone.ts` (hand-
-     rolled, ~20 lines, zero deps — swap for `libphonenumber-js` if
-     multi-country support ever lands). EIK / email / password /
-     role / accountType deliberately NOT editable (each has its own
-     flow or is structurally immutable). Zod `.strict()` rejects
-     unknown fields BEFORE the handler runs (defence-in-depth
-     against role/email/eik smuggling). Handler-level allowlist
-     rejects cross-account fields with per-field errors. No-op
-     short-circuit — submitting only unchanged values returns 200
-     without writing or bumping `updated_at`. Audit trail via
-     structured Pino `profile_updated` event carrying the list of
-     changed field NAMES (never values — values are PII; CloudWatch
-     logs are the wrong place for them). The pre-existing
-     `admin_audit_log` table is intentionally NOT used (that table
-     is for actor=admin, not subject-acting-on-self). GET `/auth/me`
-     was extended additively with a sibling `profile` field
-     (discriminated union by `kind`) so the form can hydrate from
-     server truth on mount. Closes **GDPR Art. 16**
-     (rectification) and the user-visible gap in docs/README.md §8.
-
-### Week 3 — auth modernization (SHIPPED May 2026)
-
-15. ✅ **HIBP k-anonymity check on registration / password reset** —
-    `backend/auth/src/breached-password.ts`. SHA-1 the password,
-    transmit only the first 5 hex chars (k-anonymity), reject on
-    `count ≥ 1`. Fail-open on HIBP unavailability with a structured
-    `breached_password_check_unavailable` warning log so we can alert
-    on a rate spike. Threshold and fail-mode rationale documented in
-    the module header. Wired into `POST /auth/register` (before the
-    existing-email check, to keep response-shape enumeration-resistant),
-    into `POST /auth/reset-password` (before token consumption, so
-    a breached-password retry doesn't burn the reset token), AND
-    into `POST /auth/change-password` (before the current-password
-    verify, so a breached-new-password retry doesn't pressure the
-    shared-with-/login lockout counter).
-17. ✅ **Customer password rules: composition → length-only** — server
-    `PasswordSchema` is now `min 12`, `max 1024`, no upper/lower/digit
-    refinements. Frontend register + reset-password + profile
-    change-password forms updated in lockstep. Rejection of breached
-    passwords carries a dedicated `type: "/problems/breached-password"`
-    problem URL so the client can render a Bulgarian message instead
-    of surfacing English from the API.
-17a. ✅ **Authenticated self-service password change** (shipped
-    May 22 2026) — `POST /auth/change-password`. Requires session +
-    current-password re-auth. HIBP-screens the new password,
-    rejects newPassword === currentPassword with `/problems/same-
-    password`, shares the per-email lockout counter with `/auth/login`,
-    on success rotates the Argon2id hash + drops every OTHER session
-    for the user (keeps THIS session — `deleteAllSessionsForUser(uid,
-    keepIdHash)`) + sends a best-effort "your password was changed"
-    notification. Closes OWASP ASVS V6.2 / NIST SP 800-63B-4
-    §5.1.1.2. The profile page password section is now wired (was a
-    client-only mock); the personal-data section is still a stub
-    awaiting a separate `PATCH /auth/me` slice.
-
-### Week 3 — security depth (CSP reporting SHIPPED May 25, 2026)
-
-14. ✅ **CSP violation report endpoint** — `POST /csp-report` on
-    `shop-api`. Accepts BOTH the modern Reporting API v1 payload
-    (`Content-Type: application/reports+json`, batched array of report
-    envelopes) AND the legacy `report-uri` payload (`Content-Type:
-    application/csp-report`, single wrapped object). The frontend
-    proxy (`frontend/src/proxy.ts`) now emits TWO sink declarations
-    on every HTML document — a `Reporting-Endpoints: csp-endpoint=…`
-    header paired with a `report-to csp-endpoint` directive on the
-    CSP (modern path), plus a `report-uri …` directive (legacy
-    fallback for older Firefox/Safari that didn't reach baseline
-    Reporting API support until March 2026). Each well-formed
-    violation produces one structured Pino `csp_violation` event at
-    warn-level (`effectiveDirective`, `blockedURL`, `documentURL`,
-    `sourceFile`, `lineNumber`, `sample`, etc.) — CloudWatch
-    Insights queries pivot on those fields. Browser-extension noise
-    (`chrome-extension://`, `moz-extension://`, `safari-extension://`,
-    `safari-web-extension://`, `webkit-masked-url://`, `about:`,
-    literal `"null"`) is downgraded to debug level so alerts don't
-    fire on ad-blocker injection attempts. In-memory per-IP token
-    bucket (60 reports/min/IP, max 10K tracked IPs) caps log spend
-    against a single chatty client; oversized bodies (>16 KiB) and
-    invalid JSON are silently dropped with an `info`-level
-    `csp_report_drop` event. Endpoint always returns `204 No
-    Content` — the W3C Reporting API spec treats any 2xx as success
-    and reporters do not retry on errors. The `'report-sample'`
-    keyword was added to `script-src` and `style-src` so violation
-    reports carry a 40-char excerpt of the violating content
-    (otherwise `sample` arrives empty, which makes debugging
-    guess-work). Closes the **OWASP A09 visibility gap** flagged in
-    §14 — the only remaining A09 item is distributed tracing
-    (Roadmap item 6).
-15. (already shipped — HIBP, listed in the auth modernization block)
-16. **Add a `THREAT_MODEL.md`** (2 hours)
-    - STRIDE pass over each major data flow. Document mitigations.
-
-### Month 2 — performance + governance (3 days total)
-
-18. **Lighthouse CI on every PR** (4 hours)
-    - GitHub Action, perf budget thresholds, fails the build on
-      regression.
-19. **Add Real User Monitoring (RUM)** (2 hours)
-    - Cloudflare Web Analytics (free, no cookie) or Plausible (€9/mo
-      self-hosted).
-20. **Status page** (1 hour)
-    - statup.fyi or self-host. Manually update on incidents.
-21. **Document the incident playbook** (3 hours)
-    - Postmortem template, severity definitions, communication
-      template.
-22. **Asset inventory document** (2 hours)
-    - All AWS resources, Neon project, GitHub repo, domain
-      registrar, MFA seed locations.
-23. **Vulnerability disclosure policy page** (1 hour)
-    - Public `/security` page with disclosure process.
-
-### Quarter 2+ — growth-stage upgrades
-
-24. **Customer MFA option** (~3 days) — moves ASVS to L2 compliance.
-25. **Multi-region failover** (~1 week) — Milestone 4 from
-    (originally Milestone 4 in the historical infra spec). Defer
-    until a customer requires a contractual SLA.
-26. **Move to Neon Scale** when contractual SLA is required.
-27. **Upgrade SLSA to Level 3** — only if you need build-platform-
-    enforced isolation.
-
-**Doing items 1–13 closes every meaningful 2026 gap in ~4
-working days. Items 14–23 raise the quality bar further at ~3
-more days. Items 24+ are growth-stage; not blocking on A+.**
+**Doing items 13–26 closes every meaningful 2026 gap in ~4–6
+working days. Items 27–32 raise the quality bar further at ~3 more
+days. Items 33+ are growth-stage; not blocking on A+.**
 
 ---
 
-## 16. Glossary
+## 16. Forward-looking design considerations
+
+Items that are not on the formal §15 roadmap but are worth recording
+now so the optionality stays open as the shop grows.
+
+### 16.1 Growth-tier viability at a glance
+
+The architecture has been sized for the following tiers. None of the
+breakpoints are sharp; treat them as orientation.
+
+| Tier | Customers | Orders / mo | Sweet-spot architectural posture |
+|---|---|---|---|
+| 1 — Founder | 0–500 | 0–10 | Today's repo is already over-prepared for this tier. Investment is forward-looking, not wasteful. **Missing: actual production deploy.** |
+| 2 — SMB | 500–10K | 50–500 | Architecture's sweet spot. Needs items 14–18 from §15 in place before crossing in. |
+| 3 — Mid-market | 10K–100K | 500–5K | Operational maturity gaps (§15 items 23–32) need to be closed before this tier. Cloudflare swap (§15 item 25) saves real money here. |
+| 4 — Regional | 100K–500K | 5K–50K | Single-admin model breaks; Amplify's lack of on-demand revalidation becomes the constraint that may push the frontend off Amplify; Postgres tsvector search needs to graduate to Meilisearch / Algolia. |
+| 5 — National | 500K+ | 50K+ | Geographic distribution becomes important. Neon does not yet support multi-region active-active for writes (only read replicas) — confirm before assuming. |
+
+### 16.2 Multi-tenant `tenant_id` — cheap optionality now, expensive retrofit later
+
+The schema today is single-shop, single-admin. If the owner ever
+wants to launch a second shop (white-label franchise, sister brand,
+multi-tenant SaaS pivot), every table that holds shop-scoped data
+will need a `tenant_id` retro-fit. That is a small fixed cost now
+(add a `tenant_id` column with default of a single-row `tenants`
+table) and a large variable cost later when there are millions of
+rows of orders and customers spread across hundreds of indexes. The
+application never needs to read it until the second tenant exists.
+Not on the §15 roadmap; revisit when there is a credible signal that
+a second tenant is coming.
+
+### 16.3 Search infrastructure threshold
+
+`docs/README.md` describes search as a product feature; the
+storefront `/search` is currently mock data. The intended first
+implementation is Postgres `tsvector` + a `pg_trgm` index on
+`products.name`. That topology scales comfortably to roughly 50K
+active SKUs with p95 latency under 200 ms. The migration door past
+that threshold is Meilisearch (self-hosted small instance, ~€10/mo)
+or managed (Algolia, Typesense Cloud). Document the trigger now:
+**"when our catalog exceeds 20K active SKUs OR p95 search latency
+exceeds 200 ms, migrate."** This avoids both premature optimisation
+and surprise-replatform.
+
+### 16.4 Payment-method door (cards) — SAQ A path
+
+Cash-on-delivery and pay-at-store removes the entire PCI-DSS audit
+scope, which is a deliberate, smart choice. PCI DSS 4.0.1 became
+fully effective April 1, 2025 with the first SAQ A assessments due
+in 2026 — even the lightest merchant tier now requires
+script-integrity controls. By staying out of scope the shop avoids
+quarterly Approved Scanning Vendor scans, the new SAQ A
+script-management attestation, and a real annual time cost.
+
+**If card payment is ever added**, restrict the work to SAQ-A-
+eligible redirect / iframe patterns (Stripe Checkout, Stripe
+Elements iframe). The current strict CSP would block a Stripe iframe
+without an explicit `frame-src https://js.stripe.com` allow-list
+entry. The implementation work would be: add `frame-src` to the
+proxy CSP, embed the Stripe iframe on `/checkout/review`, wire a
+new `paymentMethod = card` enum value into orders, capture only the
+Stripe `paymentIntentId` on the order row (no PAN). This keeps the
+shop on SAQ A (the lightest tier) and avoids the heavier SAQ A-EP
+that direct PAN handling would trigger.
+
+### 16.5 Things to defer with confidence
+
+The following are correctly listed in §15 but bear repeating as
+items not to spend energy on before there is demand-side signal:
+
+- **Customer MFA (TOTP / WebAuthn)** — for a cash-on-delivery shop
+  with no card data and no shop-wallet balance, the realistic value
+  of taking over a customer account is low. Friction added to
+  registration / recovery costs more than it saves. Defer until a
+  credible incident pattern emerges or a customer specifically asks.
+- **Multi-region failover** — Bulgaria-only operation makes
+  eu-central-1 plenty.
+- **SLSA Level 3** — useful only if a customer contract requires
+  it; the operational complexity over Level 2 is non-trivial.
+- **Cloudflare proxy swap** — saves real money at Tier 3+ but is a
+  cost optimisation, not a 2026-standards gap. Ship after a
+  production deploy stabilises.
+
+---
+
+## 17. Glossary
 
 Briefly, every acronym in this document and its siblings:
 
@@ -1790,13 +1515,12 @@ Briefly, every acronym in this document and its siblings:
 - **ASVS** — OWASP Application Security Verification Standard.
   L1 = baseline; L2 = sensitive data; L3 = high-assurance.
 - **CIS Controls** — Center for Internet Security's 18-control
-  framework. IG1 (Implementation Group 1) = small business baseline.
+  framework. IG1 = small business baseline.
 - **Cold start** — first invocation of a Lambda function after idle.
 - **Cosign** — Sigstore's code-signing CLI.
-- **CRA** — EU Cyber Resilience Act. Sept 11, 2026 deadline for
-  24-hour vulnerability reporting.
-- **CSF** — NIST Cybersecurity Framework. Version 2.0 (2024) has
-  6 functions: Govern, Identify, Protect, Detect, Respond, Recover.
+- **CRA** — EU Cyber Resilience Act. Sept 11, 2026 reporting
+  deadline (out of scope for this SaaS).
+- **CSF** — NIST Cybersecurity Framework. Version 2.0 (2024).
 - **CSP** — Content Security Policy.
 - **CSPRNG** — Cryptographically Secure Pseudo-Random Number
   Generator.
@@ -1804,60 +1528,57 @@ Briefly, every acronym in this document and its siblings:
 - **CU / CU-hour** — Neon Compute Unit. 1 CU = 1 vCPU + 4 GB RAM.
 - **CWE** — Common Weakness Enumeration.
 - **CycloneDX** — OWASP-hosted SBOM format. Alternative: SPDX.
-- **DORA** — DevOps Research and Assessment. The 4 metrics
-  (deployment frequency, lead time, MTTR, change failure rate).
+- **DORA** — DevOps Research and Assessment metrics.
 - **DSAR** — Data Subject Access Request.
 - **ETag** — HTTP cache validator.
-- **Fulcio** — Sigstore's certificate authority for keyless signing.
-- **HIBP** — Have I Been Pwned. Free k-anonymity API for password
-  breach checking.
+- **Fulcio** — Sigstore's certificate authority for keyless
+  signing.
+- **HIBP** — Have I Been Pwned.
 - **HSTS** — HTTP Strict Transport Security.
 - **IAM** — AWS Identity and Access Management.
 - **IG1** — CIS Controls Implementation Group 1.
 - **ISR** — Incremental Static Regeneration (Next.js).
 - **MFA** — Multi-Factor Authentication.
-- **NIS2** — EU directive on cybersecurity. Applies to "important
-  entities."
-- **OIDC** — OpenID Connect (used by Sigstore for keyless signing).
+- **NIS2** — EU directive on cybersecurity.
+- **OIDC** — OpenID Connect.
 - **OpenSLO** — YAML format for declarative SLO definitions.
 - **OpenTelemetry / OTel** — vendor-neutral standard for traces,
   metrics, logs.
-- **OWASP Top 10** — most critical web vulnerabilities. 2025 edition
-  is current.
+- **OWASP Top 10** — most critical web vulnerabilities. 2025
+  edition is current.
 - **PCI-DSS** — Payment Card Industry Data Security Standard.
-  Not in scope (no PAN storage).
+  Not in scope (no PAN).
 - **PgBouncer** — Postgres connection pooler.
 - **PII** — Personally Identifiable Information.
-- **PITR** — Point-in-Time Recovery (Neon: 7d Launch, 30d Scale).
+- **PITR** — Point-in-Time Recovery.
 - **PPR** — Partial Prerendering (Next.js 16).
 - **Rekor** — Sigstore's transparency log.
-- **RPO** — Recovery Point Objective. Max acceptable data loss.
-- **RTO** — Recovery Time Objective. Max acceptable downtime.
-- **RUM** — Real User Monitoring (browser-side perf collection).
+- **RPO** — Recovery Point Objective.
+- **RTO** — Recovery Time Objective.
+- **RUM** — Real User Monitoring.
 - **SAST** — Static Application Security Testing.
 - **SBOM** — Software Bill of Materials.
 - **SCA** — Software Composition Analysis (deps).
 - **SES** — AWS Simple Email Service.
-- **SLI / SLO / SLA** — Indicator (measurement) / Objective (target)
-  / Agreement (contract).
-- **SLSA** — Supply-chain Levels for Software Artifacts. Levels 0–3.
+- **SLI / SLO / SLA** — Indicator / Objective / Agreement.
+- **SLSA** — Supply-chain Levels for Software Artifacts.
 - **SPOF** — Single Point Of Failure.
 - **SQS** — AWS Simple Queue Service.
 - **SRE** — Site Reliability Engineering.
 - **SSM Parameter Store** — AWS Systems Manager Parameter Store.
-- **STRIDE** — Spoofing / Tampering / Repudiation / Information-
-  disclosure / Denial-of-service / Elevation-of-privilege. A threat-
-  modelling taxonomy.
-- **TOTP** — Time-based One-Time Password (Google Authenticator).
+- **STRIDE** — Spoofing / Tampering / Repudiation / Info-
+  disclosure / DoS / Elevation-of-privilege.
+- **TOTP** — Time-based One-Time Password.
 - **WAF** — Web Application Firewall.
 - **WAL** — Postgres Write-Ahead Log.
 - **WCAG** — Web Content Accessibility Guidelines. 2.2 AA is the
   European Accessibility Act baseline.
-- **ZTA** — Zero Trust Architecture (NIST SP 800-207).
+- **ZTA** — Zero Trust Architecture.
 
 ---
 
 *This is the single technical doc. For the auditor-facing
 standards-by-standards matrix, see `COMPLIANCE.md`. For the
 functional / product specification, see `docs/README.md`
-(Bulgarian).*
+(Bulgarian). For the dated strategic-direction review, see
+`docs/STRATEGIC_REVIEW_2026-05-26.md`.*
