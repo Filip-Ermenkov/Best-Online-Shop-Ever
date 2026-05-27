@@ -87,7 +87,7 @@ exercised until deployment, the cell is annotated.
 
 | Best practice | Status | Notes |
 |---|---|---|
-| Infrastructure as Code (Terraform) | ❌ | `infra/` directory does not yet exist. Roadmap item 14 |
+| Infrastructure as Code (Terraform) | ❌ | `infra/` directory does not yet exist. Roadmap item 16 |
 | Automated CI/CD | ✅ | GitHub Actions, 5 parallel jobs in ci.yml + CodeQL + SBOM workflows |
 | Atomic blue/green deployments | N/A today | Target: AWS Amplify atomic deploys once deployed |
 | Structured JSON logs | ✅ | Pino + PII redaction. Runs locally; lands in CloudWatch once deployed |
@@ -95,12 +95,12 @@ exercised until deployment, the cell is annotated.
 | CloudWatch alarms on key metrics | ❌ Today | Target: 5 alarms (5xx rate, admin logins, p99 duration, scheduler failure, SES bounces). Not deployed |
 | Cron via managed service | ❌ Today | Target: EventBridge Scheduler invoking `scheduler-fn`. Scheduler Lambda not built |
 | Runbooks documented | ⚠️ | DR procedure + MFA recovery documented in ARCHITECTURE.md §12. No incident response playbook yet |
-| **Distributed tracing** | ❌ | Not yet added. Roadmap item 15 (ADOT) |
-| **Formal SLO definitions** | ❌ | Targets exist informally in ARCHITECTURE.md §7.2. Roadmap item 23 |
+| **Distributed tracing** | ❌ | Not yet added. Roadmap item 17 (ADOT) |
+| **Formal SLO definitions** | ❌ | Targets exist informally in ARCHITECTURE.md §7.2. Roadmap item 24 |
 | **DORA metrics tracked** | ❌ | Not yet instrumented |
-| **DR drill cadence** | ❌ | Procedure documented; never tested. Roadmap item 16 |
-| **Incident postmortem template** | ❌ | Roadmap item 30 |
-| **Status page** | ❌ | Roadmap item 29 |
+| **DR drill cadence** | ❌ | Procedure documented; never tested. Roadmap item 18 |
+| **Incident postmortem template** | ❌ | Roadmap item 31 |
+| **Status page** | ❌ | Roadmap item 30 |
 
 ### Pillar 2 — Security
 
@@ -110,7 +110,7 @@ exercised until deployment, the cell is annotated.
 | TLS 1.3 + HSTS preload | ⚠️ Code ready | HSTS header emitted in production builds via `next.config.ts`. Operational verification requires deployment behind CloudFront/ACM |
 | Argon2id password hashing | ✅ | `m=19456, t=2, p=1`, RFC 9106 |
 | Constant-time login | ✅ | Defeats enumeration via timing — DUMMY_PASSWORD_HASH fallback for unknown emails |
-| **MFA for admin** | ❌ | Admin auth flow not built. Schema has `totp_secret` columns; no enrolment / verify routes exist. Roadmap item 34 |
+| **MFA for admin** | ❌ | Admin auth flow not built. Schema has `totp_secret` columns; no enrolment / verify routes exist. Roadmap item 35 |
 | IAM least privilege per Lambda | N/A today | Target: three separate execution roles once deployed |
 | Secrets in Parameter Store | N/A today | Target: SSM Parameter Store. Today: `.env` files for local dev |
 | Parametrized queries (no SQLi vector) | ✅ | Drizzle ORM |
@@ -134,8 +134,8 @@ exercised until deployment, the cell is annotated.
 | **CSP violation reporting** | ✅ | `POST /csp-report` accepts both legacy and modern wire formats; Pino `csp_violation` structured log at warn; browser-extension noise downgraded to debug; per-IP rate limit (60/min) |
 | **HIBP breach-list check** | ✅ | `backend/auth/src/breached-password.ts`; wired into `/auth/register`, `/auth/reset-password`, `/auth/change-password`. Fail-open with warning log |
 | **NIST SP 800-63B-4 password rules (length-only ≥12)** | ✅ | `PasswordSchema` in `backend/shop-api/src/routes/auth.ts`; composition rules removed |
-| **Customer MFA option** | ❌ | Roadmap item 33 (growth-stage) |
-| **STRIDE threat model document** | ❌ | Roadmap item 32 |
+| **Customer MFA option** | ❌ | Roadmap item 34 (growth-stage) |
+| **STRIDE threat model document** | ❌ | Roadmap item 33 |
 
 ### Pillar 3 — Reliability
 
@@ -151,10 +151,10 @@ exercised until deployment, the cell is annotated.
 | Expand-contract migration discipline | ✅ | Documented + practised |
 | Honest SPOF acknowledgement | ✅ | Neon Free/Launch documented as SPOF in ARCHITECTURE.md §6 |
 | **Formal RTO/RPO targets** | ❌ | Targets documented in ARCHITECTURE.md §6.2; not yet operationalised |
-| **SQS retry queue for SES** | ❌ | Withdrawal-receipt durable-medium audit margin. Roadmap item 18 |
-| **DR drill cadence** | ❌ | Roadmap item 16 |
-| **Public status page** | ❌ | Roadmap item 29 |
-| **Multi-region failover** | ❌ | Roadmap item 36 (deferred until contractual SLA) |
+| **SQS retry queue for SES** | ❌ | Withdrawal-receipt + order-confirmation durable-medium audit margin. Roadmap item 20 |
+| **DR drill cadence** | ❌ | Roadmap item 18 |
+| **Public status page** | ❌ | Roadmap item 30 |
+| **Multi-region failover** | ❌ | Roadmap item 37 (deferred until contractual SLA) |
 | **99.95% SLA-backed DB** | ❌ | Requires Neon Scale upgrade — defer until contractual |
 
 ### Pillar 4 — Performance Efficiency
@@ -169,9 +169,9 @@ exercised until deployment, the cell is annotated.
 | Cursor pagination | ✅ | O(1) regardless of page |
 | ETag middleware | ✅ | On cacheable routes |
 | Core Web Vitals targets defined | ✅ | LCP <2.5s, INP <200ms, CLS <0.1. Not measured continuously |
-| **Synthetic monitoring (Lighthouse CI)** | ❌ | Roadmap item 27 |
-| **Real User Monitoring (RUM)** | ❌ | Roadmap item 28 |
-| **Per-endpoint p95 latency budget** | ❌ | Roadmap item 24 (burn-rate alarms) |
+| **Synthetic monitoring (Lighthouse CI)** | ❌ | Roadmap item 28 |
+| **Real User Monitoring (RUM)** | ❌ | Roadmap item 29 |
+| **Per-endpoint p95 latency budget** | ❌ | Roadmap item 25 (burn-rate alarms) |
 | **Image variants for 800px / 2000px** | N/A today | Optional once image upload exists |
 
 ### Pillar 5 — Cost Optimization
@@ -181,9 +181,9 @@ exercised until deployment, the cell is annotated.
 | Pay-per-use | ✅ Architectural | Lambda, CloudFront, SES, S3 all pay-per-use once deployed |
 | AWS free tier utilised | N/A today | Target: Lambda free tier covers Tier 0–4 |
 | S3 lifecycle to Glacier | N/A today | Target: backups >90 days |
-| CloudWatch retention 14 days | N/A today | Will be set on deployment per Roadmap item 26 |
+| CloudWatch retention 14 days | N/A today | Will be set on deployment per Roadmap item 27 |
 | AWS Budgets alarm at $30 | N/A today | Target |
-| **AWS WAF + Route 53 vs Cloudflare** | ⚠️ | Pre-deployment decision. Roadmap item 25 (Path A1+A2 recommended) |
+| **AWS WAF + Route 53 vs Cloudflare** | ⚠️ | Pre-deployment decision. Roadmap item 26 (Path A1+A2 recommended) |
 | **AWS Customer Carbon Footprint review** | ❌ | Quarterly cadence suggested |
 
 ### Pillar 6 — Sustainability
@@ -219,8 +219,8 @@ gaps.
 
 | Category | Status | Notes |
 |---|---|---|
-| ID.AM — Asset management | ⚠️ | No formal asset inventory document. Roadmap item 31 |
-| ID.RA — Risk assessment | ⚠️ | Threat model implicit in ARCHITECTURE.md §5.1. Formal STRIDE pass is Roadmap item 32 |
+| ID.AM — Asset management | ⚠️ | No formal asset inventory document. Roadmap item 32 |
+| ID.RA — Risk assessment | ⚠️ | Threat model implicit in ARCHITECTURE.md §5.1. Formal STRIDE pass is Roadmap item 33 |
 | ID.IM — Improvement | ✅ | Continuous via CI/CD + per-slice retrospectives |
 
 ### Protect (PR)
@@ -244,7 +244,7 @@ gaps.
 
 | Category | Status | Notes |
 |---|---|---|
-| RS.MA — Incident management | ❌ | No playbook. Roadmap item 30 |
+| RS.MA — Incident management | ❌ | No playbook. Roadmap item 31 |
 | RS.AN — Incident analysis | ❌ | No postmortem template |
 | RS.CO — Incident response reporting and communication | ❌ | No status page; no notification SOP |
 | RS.MI — Incident mitigation | ✅ | Idempotency, graceful degradation, alarm-based detection (once deployed) |
@@ -253,7 +253,7 @@ gaps.
 
 | Category | Status | Notes |
 |---|---|---|
-| RC.RP — Incident recovery plan execution | ⚠️ | Procedures documented; never drilled. Roadmap item 16 |
+| RC.RP — Incident recovery plan execution | ⚠️ | Procedures documented; never drilled. Roadmap item 18 |
 | RC.CO — Incident recovery communication | ❌ | No public status page |
 
 ---
@@ -277,9 +277,9 @@ Published 2024–2025 (eighth edition). Notable changes vs 2021:
 | A04 | Cryptographic Failures | ⚠️ | TLS 1.3 + HSTS code-ready; AES at rest depends on deployed Neon/S3. Argon2id (RFC 9106), 32-byte CSPRNG tokens, SHA-256-at-rest all in code |
 | A05 | Injection | ✅ | Zod validation + Drizzle parametrized queries everywhere; WAF SQLi managed rules planned |
 | A06 | Insecure Design | ✅ | Idempotency, optimistic locking, line-item snapshots, expand-contract migrations, account-discount server-controlled |
-| A07 | Authentication Failures | ⚠️ | Customer-side ✅ (Argon2id RFC 9106, constant-time login, per-email lockout, NIST 800-63B-4 + HIBP). Admin MFA documented but **admin auth flow not built** (Roadmap item 34). Customer MFA is a growth-stage residual (Roadmap item 33) |
+| A07 | Authentication Failures | ⚠️ | Customer-side ✅ (Argon2id RFC 9106, constant-time login, per-email lockout, NIST 800-63B-4 + HIBP). Admin MFA documented but **admin auth flow not built** (Roadmap item 35). Customer MFA is a growth-stage residual (Roadmap item 34) |
 | A08 | Software and Data Integrity Failures | ✅ | Every SBOM signed via Sigstore Fulcio/Rekor, keyless OIDC, transparency log. Verification in ARCHITECTURE.md §9.5 |
-| A09 | Security Logging and Monitoring Failures | ⚠️ | Pino structured logs ✅; CSP violation reporting ✅ (May 2026); distributed tracing ❌. Roadmap item 15 |
+| A09 | Security Logging and Monitoring Failures | ⚠️ | Pino structured logs ✅; CSP violation reporting ✅ (May 2026); distributed tracing ❌. Roadmap item 17 |
 | A10 | Mishandling of Exceptional Conditions (new) | ✅ | RFC 9457 Problem Details on every error; graceful degradation; best-effort emails never block |
 
 E-commerce-specific OWASP 2025 vulnerabilities flagged in research:
@@ -339,7 +339,7 @@ breach-list checks.
 | Drop sessions on password change | ✅ | `/auth/reset-password` drops ALL sessions (unauthenticated flow). `/auth/change-password` drops every OTHER session, keeps the initiating one |
 | Out-of-band notification at email change | ✅ | Old + new addresses notified |
 | AAL1 for customer accounts | ✅ | Password + cookie session |
-| AAL2 for admin via TOTP MFA | ❌ | Admin auth flow not built. Schema has `totp_secret` columns. Roadmap item 34 |
+| AAL2 for admin via TOTP MFA | ❌ | Admin auth flow not built. Schema has `totp_secret` columns. Roadmap item 35 |
 
 ---
 
@@ -400,7 +400,7 @@ families:
 
 | Control | Status |
 |---|---|
-| CIS 1 Inventory of Enterprise Assets | ⚠️ No formal inventory doc. Roadmap item 31 |
+| CIS 1 Inventory of Enterprise Assets | ⚠️ No formal inventory doc. Roadmap item 32 |
 | CIS 2 Inventory of Software Assets | ✅ Signed CycloneDX SBOM per workspace, attached to releases |
 | CIS 3 Data Protection | ⚠️ Code controls ✅; at-rest encryption depends on deployment |
 | CIS 4 Secure Configuration of Enterprise Assets and Software | ⚠️ Code controls ✅; production hardening pending deployment |
@@ -416,7 +416,7 @@ families:
 | CIS 14 Security Awareness and Skills Training | N/A (solo project) |
 | CIS 15 Service Provider Management | ✅ AWS shared-responsibility model + Neon contract terms |
 | CIS 16 Application Software Security | ✅ CodeQL SAST + signed SBOM + RFC 9116 VDP |
-| CIS 17 Incident Response Management | ❌ No playbook. Roadmap item 30 |
+| CIS 17 Incident Response Management | ❌ No playbook. Roadmap item 31 |
 | CIS 18 Penetration Testing | N/A at this scale |
 
 ---
@@ -429,20 +429,20 @@ Bulgarian shop selling to EU residents — full GDPR scope.
 |---|---|---|
 | Art. 5 | Lawfulness, fairness, transparency | ✅ Privacy policy page at `/privacy`; cookie-consent schema (`cookie_consents` table) ready |
 | Art. 5(1)(c) | Data minimisation | ✅ Only collects required fields per account type |
-| Art. 5(1)(e) | Storage limitation | ⚠️ No retention sweep for old `login_attempts` (scheduler-fn not built — Roadmap item 22) |
+| Art. 5(1)(e) | Storage limitation | ⚠️ No retention sweep for old `login_attempts` (scheduler-fn not built — Roadmap item 23) |
 | Art. 6 | Lawful basis | ✅ Contract + legitimate interest + consent |
 | Art. 7 | Conditions for consent | ⚠️ Cookie consent UI exists client-side (`frontend/src/components/layout/CookieBanner.tsx`, choice persisted to `localStorage`); server-side `cookie_consents` table is in schema but not yet wired |
 | Art. 12 | Transparent information | ✅ Privacy policy + clear UI copy |
-| Art. 15 | Right of access | ❌ Self-service data export endpoint not built. Roadmap item 35 |
+| Art. 15 | Right of access | ❌ Self-service data export endpoint not built. Roadmap item 36 |
 | Art. 16 | Right to rectification | ✅ Self-service `/account/profile` wired to `PATCH /auth/me` (May 23, 2026). Account-type-aware. Phone normalised to Bulgarian E.164 server-side. Audit trail via structured Pino `profile_updated` event (field NAMES only — never values). EIK / email / password / role / accountType are deliberately read-only or have dedicated flows |
 | Art. 17 | Right to erasure | ✅ `DELETE /auth/me` (May 24, 2026). Current-password re-auth + typed confirmation `z.literal("ИЗТРИЙ")`. Active-order check returns `422 /problems/active-orders-block-deletion`. Single-transaction execution in `backend/shop-api/src/lib/account-deletion.ts` balances Art. 17(1) immediate erasure with the Bulgarian Accountancy Act's 10-year invoice retention via Art. 17(3)(b). Hard-deletes profiles, addresses, cart, discounts, MFA codes, sessions, tokens, login_attempts matched by email. Pseudonymises `users` (email → `deleted-<uuid>@deleted.invalid`, password_hash → non-Argon2 sentinel). Orders kept with customer fields blanked, financial columns + line-item snapshots intact. Email freed for re-registration |
 | Art. 17(3)(b) | Legal-obligation retention exemption | ✅ Bulgarian Accountancy Act 10-year invoice retention; EU 2011/83/EU + 2023/2673 complaint retention. Disclosed concurrently in the post-deletion notification email |
 | Art. 18 | Right to restriction | ❌ No explicit "freeze processing" flow |
-| Art. 20 | Right to data portability | ❌ Self-service export not built. Roadmap item 35 |
+| Art. 20 | Right to data portability | ❌ Self-service export not built. Roadmap item 36 |
 | Art. 21 | Right to object | ⚠️ Marketing-consent rejection not yet wired; broader object-to-processing flow not built |
 | Art. 25 | Privacy by design | ✅ PII redaction in logs; pseudonymised session tokens |
 | Art. 32 | Security of processing | ⚠️ Code-level controls ✅; encryption at rest depends on deployment |
-| Art. 33 | Breach notification to supervisory authority within 72h | ❌ No playbook documented. Roadmap item 30 |
+| Art. 33 | Breach notification to supervisory authority within 72h | ❌ No playbook documented. Roadmap item 31 |
 | Art. 34 | Communication of breach to data subject | ❌ No playbook documented |
 | Art. 35 | Data Protection Impact Assessment | N/A (low-risk processing) |
 | Art. 44 | Data residency | ✅ Architectural — all production processing intended for `eu-central-1` |
@@ -476,7 +476,7 @@ benefits are real even when the legal mandate doesn't apply.
 | SBOM published | ✅ CycloneDX 1.6 per workspace, signed, attached to releases | NIST CSF, OWASP 2025 |
 | Vulnerability disclosure policy (`security.txt`) | ✅ `frontend/public/.well-known/security.txt` + bilingual `/security` policy page | RFC 9116 |
 | Vulnerability handling process | ✅ Dependabot + CodeQL + 72h-ack / 90d-fix commitment in VDP | OWASP, NIST |
-| Documented 24h breach reporting | ⚠️ Playbook pending (Roadmap item 30) | GDPR Art. 33 |
+| Documented 24h breach reporting | ⚠️ Playbook pending (Roadmap item 31) | GDPR Art. 33 |
 | Security updates available for 5+ years | ⚠️ Managed AWS services covered by their respective vendor lifecycles | — |
 
 ---
@@ -494,7 +494,10 @@ ships in compliance ahead of the deadline.
 | Receipt includes date/time of withdrawal | ✅ Sofia timezone, second precision |
 | No dark patterns (recital 37) | ✅ No double-confirm, no countdown, no upsell |
 | Optional reason | ✅ Marked "по избор" |
-| Email send-failure does not break the audit trail | ⚠️ On-screen receipt is independent of email; SQS retry queue (Roadmap item 18) closes the formal audit margin |
+| **Confirmation of contract on durable medium (Art. 8(7), 2011/83/EU as amended by 2023/2673)** | ✅ `orders.order-confirmation` email fires from `POST /orders` after the checkout transaction commits. Includes the trader identity, line snapshots with frozen prices, money totals, payment + delivery arrangement, and a 14-day withdrawal-rights pointer (Art. 6(1)(h)). Idempotency-replay does NOT re-send. Backed by 5 integration tests in `backend/shop-api/tests/routes/order-emails.test.ts` |
+| Confirmation includes pre-contract information (Art. 6) | ✅ Order snapshot carries main characteristics of the goods + total price (incl. any applied discount) + payment / delivery arrangement; withdrawal-rights are surfaced both in the email and on the per-order page at `/account/orders/{n}` |
+| Confirmation is durable for the consumer (Art. 2(10)) | ✅ Email saved in the customer's mailbox (the canonical durable medium per the directive's recitals); plus a first-party `/account/orders/{n}` read path that does not depend on a third party |
+| Email send-failure does not break the audit trail | ⚠️ Order-placement does not block on the email (best-effort); a transport failure logs `order_confirmation_email_failed` and the `/account/orders/{n}` page is the independent durable-medium read path. SQS retry queue (Roadmap item 20) closes the formal audit margin |
 | Penalty for missing button | (Window extends to 12 months + 14 days) |
 
 Implemented in the May 2026 withdrawal slice. Three routes:
@@ -502,6 +505,12 @@ Implemented in the May 2026 withdrawal slice. Three routes:
 `POST /orders/:n/withdrawal`. Idempotent at the DB level via a
 partial unique index on `complaints.order_id WHERE
 reason='withdrawal'`.
+
+The order-confirmation email rows were added 2026-05-27 after the
+`orders.order-confirmation` template + `sendOrderConfirmationEmail`
+helper + `POST /orders` wire-up shipped. Until that revision, order
+placement sent zero emails and the Art. 8(7) row was the directive's
+single biggest gap; it is now closed pending the SQS retry queue.
 
 ---
 
@@ -519,7 +528,7 @@ e-commerce serving EU residents.
 
 WCAG 2.2 AA is the European Accessibility Act baseline. The
 functional spec commits to it; **the gap is continuous audit** —
-adding axe-core or Pa11y to CI (Roadmap item 27 area) would
+adding axe-core or Pa11y to CI (Roadmap item 28 area) would
 operationalise the commitment.
 
 ---

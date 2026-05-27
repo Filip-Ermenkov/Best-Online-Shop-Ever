@@ -1,0 +1,155 @@
+import {
+  renderOrderConfirmationEmail,
+  renderOrderStatusUpdateEmail,
+  type OrderConfirmationDeliveryAddress,
+  type OrderConfirmationLineItem,
+  type OrderConfirmationPaymentMethod,
+  type OrderStatusUpdateStatus,
+} from "@shop/email";
+import type { Logger } from "pino";
+import { getEmailTransport } from "./emails.js";
+import { parseEnv } from "./env.js";
+import { deriveSupportEmail } from "./withdrawal.js";
+
+/**
+ * Order-related email sends.
+ *
+ * The order-confirmation send fires from the `POST /orders` route the
+ * moment a checkout transaction commits — it is the durable-medium
+ * confirmation of contract conclusion that EU Directive 2011/83/EU
+ * (as amended by 2023/2673, mandatory 19 June 2026) obliges the trader
+ * to deliver "within a reasonable time after the conclusion of the
+ * contract … and at the latest at the time of delivery".
+ *
+ * The order-status-update send is wired here for future use by the
+ * admin-api Lambda (see `docs/ARCHITECTURE.md` §15 item 8). Today
+ * status transitions happen via direct DB updates; once the admin
+ * slice lands, it can call `sendOrderStatusUpdateEmail` immediately
+ * after each transition without re-deriving the copy or compliance
+ * language.
+ *
+ * Both helpers follow the same posture as the withdrawal helpers:
+ *
+ *   - Wrap the transport call in try/catch.
+ *   - Return `boolean` so the caller can record an audit-trail
+ *     "ack timestamp" on success (the orders schema does not have such
+ *     a column today — see "future audit column" note in the route).
+ *   - Logger is optional and used only for warn-level failure logs;
+ *     the helpers themselves NEVER throw.
+ */
+
+export interface SendOrderConfirmationInput {
+  to: string;
+  customerName: string;
+  orderNumber: string;
+  placedAt: Date;
+  paymentMethod: OrderConfirmationPaymentMethod;
+  items: OrderConfirmationLineItem[];
+  subtotalCents: number;
+  discountPercent: number;
+  discountAmountCents: number;
+  totalCents: number;
+  currency?: string;
+  deliveryAddress?: OrderConfirmationDeliveryAddress | null;
+  logger?: Logger;
+}
+
+/**
+ * Best-effort send of the order-confirmation email. Returns true iff the
+ * transport accepted the message. Caller does NOT fail the order on a
+ * `false` — the order is already committed, the customer can retrieve it
+ * from `/account/orders`, and the operations team has the log line to
+ * follow up if the SES bounce/complaint queue (future SQS retry queue —
+ * roadmap §15 item 7) catches a permanent failure.
+ */
+export async function sendOrderConfirmationEmail(
+  input: SendOrderConfirmationInput,
+): Promise<boolean> {
+  try {
+    const env = parseEnv();
+    const transport = getEmailTransport();
+    const orderUrl = `${env.PUBLIC_APP_BASE_URL}/account/orders/${encodeURIComponent(input.orderNumber)}`;
+    const email = renderOrderConfirmationEmail({
+      to: input.to,
+      fullName: input.customerName,
+      orderNumber: input.orderNumber,
+      placedAt: input.placedAt,
+      paymentMethod: input.paymentMethod,
+      items: input.items,
+      subtotalCents: input.subtotalCents,
+      discountPercent: input.discountPercent,
+      discountAmountCents: input.discountAmountCents,
+      totalCents: input.totalCents,
+      currency: input.currency,
+      deliveryAddress: input.deliveryAddress ?? null,
+      orderUrl,
+      supportEmail: deriveSupportEmail(env.EMAIL_FROM),
+    });
+    await transport.send(email);
+    return true;
+  } catch (err) {
+    input.logger?.warn(
+      { err, orderNumber: input.orderNumber },
+      "order_confirmation_email_failed",
+    );
+    return false;
+  }
+}
+
+export interface SendOrderStatusUpdateInput {
+  to: string;
+  customerName: string;
+  orderNumber: string;
+  status: OrderStatusUpdateStatus;
+  changedAt: Date;
+  courierCompany?: string | null;
+  trackingNumber?: string | null;
+  pickupDeadline?: Date | null;
+  cancelledReason?: string | null;
+  logger?: Logger;
+}
+
+/**
+ * Best-effort send of an order-status-update email. Future admin-api
+ * caller pattern:
+ *
+ *     await db.transaction(async (tx) => {
+ *       await tx.update(orders).set({ status: nextStatus, ... });
+ *       await tx.insert(orderStatusHistory).values({ ... });
+ *     });
+ *     await sendOrderStatusUpdateEmail({ to, customerName, orderNumber,
+ *       status: nextStatus, changedAt: new Date(), logger });
+ *
+ * Failure to send is logged; the status transition is durable in the DB
+ * regardless.
+ */
+export async function sendOrderStatusUpdateEmail(
+  input: SendOrderStatusUpdateInput,
+): Promise<boolean> {
+  try {
+    const env = parseEnv();
+    const transport = getEmailTransport();
+    const orderUrl = `${env.PUBLIC_APP_BASE_URL}/account/orders/${encodeURIComponent(input.orderNumber)}`;
+    const email = renderOrderStatusUpdateEmail({
+      to: input.to,
+      fullName: input.customerName,
+      orderNumber: input.orderNumber,
+      status: input.status,
+      changedAt: input.changedAt,
+      courierCompany: input.courierCompany ?? null,
+      trackingNumber: input.trackingNumber ?? null,
+      pickupDeadline: input.pickupDeadline ?? null,
+      cancelledReason: input.cancelledReason ?? null,
+      orderUrl,
+      supportEmail: deriveSupportEmail(env.EMAIL_FROM),
+    });
+    await transport.send(email);
+    return true;
+  } catch (err) {
+    input.logger?.warn(
+      { err, orderNumber: input.orderNumber, status: input.status },
+      "order_status_update_email_failed",
+    );
+    return false;
+  }
+}

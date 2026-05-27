@@ -83,6 +83,11 @@ click through to `/account/profile`. The session cookie is set by the
 API and the header re-renders with your name once `/auth/me`
 resolves.
 
+When you verify your email and place an order, the API also sends an
+order-confirmation email — see [Order placement](#order-placement)
+below. In local dev the `console` transport prints the rendered
+subject + body to the `api:dev` log.
+
 To smoke-test the cart-on-login merge: open an incognito window, add a
 couple of products to the cart while anonymous, then log in. The
 previously local `sessionStorage` cart is silently merged into your
@@ -92,17 +97,18 @@ To smoke-test order placement: register, log in, add products, walk
 through `/checkout` → `/checkout/review`, click **Потвърди
 поръчката**, land on
 `/account/orders/{orderNumber}?confirm=1` with a green confirmation
-banner. Order placement does **not** currently send a customer
-confirmation email — that template hasn't been written yet (see
-[Known gaps](#known-gaps) below). The order *is* persisted and visible
-at `/account/orders`.
+banner. The API also queues a Bulgarian-language order-confirmation
+email (best-effort — a transport failure does not fail the order; the
+order is durable in the DB regardless). Watch `api:dev`'s stdout for
+the rendered payload under the `console` transport. The order is also
+visible at `/account/orders`.
 
 ### Tests
 
 ```powershell
 npm --workspace @shop/auth  run test   # 31 unit tests (Argon2, sessions, HIBP)
-npm --workspace @shop/email run test   # 31 unit tests (9 templates + 3 transports)
-npm --workspace @shop/api   run test   # 224 integration tests vs shop_test DB
+npm --workspace @shop/email run test   # 46 unit tests (11 templates + 3 transports)
+npm --workspace @shop/api   run test   # 229 integration tests vs shop_test DB
 ```
 
 Everything CI runs (typecheck + lint + tests). Approximates a green PR:
@@ -159,11 +165,11 @@ what needs to happen to get from today's repo state to that posture.
   the auth chain).
 - `/health`, `/openapi.json`
 
-Test counts as of 2026-05-26: auth 48, cart 30, categories 7,
-csp-report 25, email-change 21, orders 25, password-reset 19,
-products 15, verification 11, withdrawal 23, plus a phone-validation
-lib test. **Total: 224 shop-api integration tests** running against
-a real `shop_test` Postgres in CI.
+Test counts as of 2026-05-27: auth 48, cart 30, categories 7,
+csp-report 25, email-change 21, order-emails 5, orders 25,
+password-reset 19, products 15, verification 11, withdrawal 23,
+plus a phone-validation lib test. **Total: 229 shop-api integration
+tests** running against a real `shop_test` Postgres in CI.
 
 ### Backend (`@shop/db` schema)
 
@@ -182,23 +188,29 @@ breached-password screening. 31 unit tests across `breached-password`,
 ### Backend (`@shop/email`)
 
 Transactional email behind a common `EmailTransport` interface, with
-three implementations (`ses`, `console`, `stub`). **Nine** Bulgarian
+three implementations (`ses`, `console`, `stub`). **Eleven** Bulgarian
 templates currently exist:
 
-1. `verification` — signup email-verification link
-2. `password-reset` — forgot-password link
-3. `password-changed` — post-reset / post-change security notice
-4. `email-change-verify` — verify link sent to NEW address
-5. `email-change-alert` — out-of-band alert to OLD address at request time
-6. `email-changed` — post-change notice to OLD address
-7. `withdrawal-received` — 14-day withdrawal acknowledgement to customer
-   (Art. 11a(2) durable medium with Sofia-timezone second-precision timestamp)
-8. `withdrawal-admin-notification` — operations notice to support inbox
-9. `account-deleted` — post-deletion notification (GDPR Art. 17 flow)
-
-Not yet written (but referenced in older copy of `docs/ARCHITECTURE.md`):
-order-confirmation email, order-status-update email. Order placement
-currently does not send any email. See [Known gaps](#known-gaps).
+1.  `verification` — signup email-verification link
+2.  `password-reset` — forgot-password link
+3.  `password-changed` — post-reset / post-change security notice
+4.  `email-change-verify` — verify link sent to NEW address
+5.  `email-change-alert` — out-of-band alert to OLD address at request time
+6.  `email-changed` — post-change notice to OLD address
+7.  `withdrawal-received` — 14-day withdrawal acknowledgement to customer
+    (Art. 11a(2) durable medium with Sofia-timezone second-precision timestamp)
+8.  `withdrawal-admin-notification` — operations notice to support inbox
+9.  `account-deleted` — post-deletion notification (GDPR Art. 17 flow)
+10. `order-confirmation` — durable-medium confirmation of contract
+    conclusion sent the moment `POST /orders` commits. Carries the order
+    snapshot, line items, money totals, delivery / pickup info, and a
+    withdrawal-rights pointer per EU 2023/2673 Art. 8 + Art. 6(1)(h).
+11. `order-status-update` — status-aware copy for each customer-visible
+    transition (`accepted`, `ready_for_pickup`, `shipped`, `delivered`,
+    `cancelled`). Template + helper land here ready for the future
+    `admin-api` Lambda to wire — admin status transitions today still
+    happen via direct DB updates, so the wire-up is one line away once
+    that slice lands.
 
 ### Frontend (`frontend/`)
 
@@ -512,11 +524,11 @@ reality, as of 2026-05-26:
   Three cron rules (daily catalog backup, hourly pickup expiry,
   daily unverified-account cleanup) are documented design but do
   not run.
-- **Order confirmation email** — the older copy of the architecture
-  doc listed this as a shipped template. It was never written. Order
-  placement currently sends zero emails.
-- **Order status update email** — same as above. Admin status
-  transitions (e.g. `accepted`) currently require manual psql.
+- **Order status update wire-up** — the template and helper exist
+  (`backend/email/src/templates/order-status-update.ts` + `lib/order-emails.ts`),
+  but admin status transitions today still happen via direct DB updates,
+  so the helper is not yet called from any route. Ships with the
+  `admin-api` slice.
 - **Customer MFA (TOTP / WebAuthn)** — schema exists
   (`mfaRecoveryCodes` table), no flow. Roadmap item, growth-stage.
 - **Admin auth (TOTP)** — the architecture doc treats this as
@@ -531,12 +543,13 @@ reality, as of 2026-05-26:
   `frontend/src/lib/mock-data/*` rather than calling `/products` and
   `/categories`. The endpoints exist and the storefront `(shop)`
   pages around auth / cart / orders / withdrawal are all real.
-- **Distributed tracing** — `docs/ARCHITECTURE.md` §15 item 6
+- **Distributed tracing** — `docs/ARCHITECTURE.md` §15 item 17
   identifies ADOT as the path. Not added. This is the last concrete
   OWASP A09 gap.
-- **SQS retry queue for SES** — `docs/ARCHITECTURE.md` §15 item 7.
-  Not added. Closes the EU 2023/2673 Art. 11a(2) durable-medium
-  audit margin on email-send failure.
+- **SQS retry queue for SES** — `docs/ARCHITECTURE.md` §15 item 20.
+  Not added. Closes the EU 2023/2673 Art. 11a(2) durable-medium +
+  Art. 8(7) confirmation-of-contract audit margins on email-send
+  failure.
 - **DR drill** — procedure documented, never executed.
 - **Status page, formal SLOs in YAML, burn-rate alarms, DORA
   metrics** — all roadmap items in §15.
@@ -559,16 +572,16 @@ In priority order (also tracked in `docs/ARCHITECTURE.md` §15):
 4. **Address book CRUD.** Schema is ready; ship customer-facing
    API + UI. 1 day, no AWS dependency.
 5. **SQS retry queue for SES.** 4 hours. Closes the EU 2023/2673
-   durable-medium audit margin before June 19, 2026.
-6. **Order-confirmation + status-update email templates.** Backfills
-   the gap between the docs and reality. 4 hours including new
-   tests.
-7. **Real storefront browsing.** Replace
+   durable-medium audit margin before June 19, 2026. With the
+   order-confirmation email now wired into `POST /orders`, this is the
+   single remaining lift to take that compliance row from "wired but
+   best-effort" to "wired with a durable retry queue".
+6. **Real storefront browsing.** Replace
    `frontend/src/lib/mock-data/{banners,products,categories}` calls
    on the home page, `/search`, and `/products/[...path]` with real
    `@shop/api` calls. The category and product endpoints already
    exist; this is glue work plus a category-tree fetcher. ~1 day.
-8. **Admin-api Lambda + first admin slice.** Pick the highest-leverage
+7. **Admin-api Lambda + first admin slice.** Pick the highest-leverage
    admin slice (probably orders, so the manual `status='accepted'`
    psql can go away). Requires admin auth flow — likely TOTP per the
    spec, but a password-only first cut may be acceptable for a single
@@ -576,9 +589,9 @@ In priority order (also tracked in `docs/ARCHITECTURE.md` §15):
    2–3 days.
 
 Items currently described as "shipped" but actually pending
-(admin-api, scheduler-fn, order-confirmation email, infra) should be
-brought into reality before any further "growth-stage" items
-(customer MFA, multi-region, SLSA L3, Cloudflare proxy swap).
+(admin-api, scheduler-fn, infra) should be brought into reality
+before any further "growth-stage" items (customer MFA, multi-region,
+SLSA L3, Cloudflare proxy swap).
 
 ## Browsing the API
 

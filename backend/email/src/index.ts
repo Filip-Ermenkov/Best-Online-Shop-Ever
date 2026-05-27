@@ -82,3 +82,23 @@ export {
   ACCOUNT_DELETED_TEMPLATE_ID,
 } from "./templates/account-deleted.js";
 export type { AccountDeletedTemplateInput } from "./templates/account-deleted.js";
+
+export {
+  renderOrderConfirmationEmail,
+  ORDER_CONFIRMATION_TEMPLATE_ID,
+} from "./templates/order-confirmation.js";
+export type {
+  OrderConfirmationTemplateInput,
+  OrderConfirmationLineItem,
+  OrderConfirmationDeliveryAddress,
+  OrderConfirmationPaymentMethod,
+} from "./templates/order-confirmation.js";
+
+export {
+  renderOrderStatusUpdateEmail,
+  ORDER_STATUS_UPDATE_TEMPLATE_ID,
+} from "./templates/order-status-update.js";
+export type {
+  OrderStatusUpdateTemplateInput,
+  OrderStatusUpdateStatus,
+} from "./templates/order-status-update.js";

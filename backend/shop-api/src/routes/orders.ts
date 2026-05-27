@@ -13,6 +13,7 @@ import { buildImageUrl } from "../lib/images.js";
 import { logger as baseLogger } from "../lib/logger.js";
 import { validationHook } from "../lib/validation-hook.js";
 import { parseEnv } from "../lib/env.js";
+import { sendOrderConfirmationEmail } from "../lib/order-emails.js";
 import {
   createOrFetchWithdrawalRecord,
   deriveSupportEmail,
@@ -805,6 +806,42 @@ ordersRoutes.openapi(placeOrderRoute, async (c) => {
     }
     throw e;
   }
+
+  // ─ Order-confirmation email ──────────────────────────────────────────────
+  // Fires AFTER the transaction commits and BEFORE we return so the response
+  // and the email are causally ordered for the customer's mailbox. Wrapped
+  // in a try/catch (inside the helper) so a transport failure cannot fail
+  // the order — the order is already durable in the DB at this point and
+  // the customer can see it at `/account/orders`.
+  //
+  // Idempotency-replay path (above, line ~510) returns early WITHOUT calling
+  // this — re-sending the confirmation on every retry would spam the
+  // customer. The Stripe / RFC pattern for Idempotency-Key is "the original
+  // side-effects happen exactly once"; the email IS a side-effect.
+  //
+  // We pass the route-level baseLogger so any send failure shows up in the
+  // same Pino stream as the rest of the order-placement logs. The helper
+  // emits a structured `order_confirmation_email_failed` warn event.
+  await sendOrderConfirmationEmail({
+    to: placed.customerEmail,
+    customerName: placed.customerName,
+    orderNumber: placed.orderNumber,
+    placedAt: new Date(placed.createdAt),
+    paymentMethod: placed.paymentMethod,
+    items: placed.items.map((it) => ({
+      productCode: it.productCode,
+      productName: it.productName,
+      quantity: it.quantity,
+      unitPriceCents: it.unitPriceCents,
+    })),
+    subtotalCents: placed.subtotalCents,
+    discountPercent: placed.discountPercent,
+    discountAmountCents: placed.discountAmountCents,
+    totalCents: placed.totalCents,
+    currency: placed.currency,
+    deliveryAddress: placed.deliveryAddress,
+    logger: baseLogger,
+  });
 
   return c.json(placed, 201);
 });
