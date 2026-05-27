@@ -310,37 +310,56 @@ eliminate one AWS lock-in point. See §10.
 
 **Today (code):** `@shop/email` exposes an `EmailTransport`
 interface with three implementations (`ses`, `console`, `stub`),
-selected via `EMAIL_TRANSPORT`. **Nine** Bulgarian templates are
+selected via `EMAIL_TRANSPORT`. **Eleven** Bulgarian templates are
 rendered server-side:
 
-1. Registration verification (`verification`)
-2. Password reset (`password-reset`)
-3. Post-reset / post-change security notice (`password-changed`)
-4. Email-change verify, sent to NEW address (`email-change-verify`)
-5. Email-change alert, sent to OLD address at request time
-   (`email-change-alert`)
-6. Email-changed notice, sent to OLD address after rotation
-   (`email-changed`)
-7. Withdrawal acknowledgement to customer (`withdrawal-received`)
-8. Withdrawal admin notification (`withdrawal-admin-notification`)
-9. Account-deletion notification (`account-deleted`)
-
-**Not yet written:** order-confirmation email and order-status-update
-email. The order placement endpoint currently sends zero emails. An
-earlier copy of this doc claimed these existed; that was incorrect.
+1.  Registration verification (`verification`)
+2.  Password reset (`password-reset`)
+3.  Post-reset / post-change security notice (`password-changed`)
+4.  Email-change verify, sent to NEW address (`email-change-verify`)
+5.  Email-change alert, sent to OLD address at request time
+    (`email-change-alert`)
+6.  Email-changed notice, sent to OLD address after rotation
+    (`email-changed`)
+7.  Withdrawal acknowledgement to customer (`withdrawal-received`)
+8.  Withdrawal admin notification (`withdrawal-admin-notification`)
+9.  Account-deletion notification (`account-deleted`)
+10. Order confirmation (`order-confirmation`) — durable-medium
+    confirmation of contract conclusion, fires from `POST /orders`
+    the moment the checkout transaction commits. Includes the order
+    snapshot, line items with frozen prices, money totals, delivery
+    or pickup info, and a 14-day right-of-withdrawal pointer
+    referencing чл. 50 ЗЗП + EU Directive 2023/2673.
+11. Order status update (`order-status-update`) — status-aware copy
+    for each customer-visible transition (`accepted`,
+    `ready_for_pickup`, `shipped`, `delivered`, `cancelled`). The
+    template and send helper exist; admin status transitions today
+    still happen via direct DB updates so the wire-up lives one line
+    away in the future `admin-api` slice.
 
 **Critical: email sending is best-effort, never blocking.** A failed
 verification email at registration creates the account anyway and
 tells the user to use "resend verification." Same for password
-reset, email change, and the 14-day withdrawal receipt.
+reset, email change, the 14-day withdrawal receipt, and the
+order-confirmation — the order is already durable in the DB at the
+moment the email send fires; a transport failure logs a structured
+`order_confirmation_email_failed` warn event and lets the request
+return 201.
 
-**The withdrawal-receipt case is the only real reliability gap.**
-EU Directive 2023/2673 Art. 11a(2) requires the receipt as a
-"durable medium" — an SES outage that drops the receipt is
-technically a compliance margin issue. The on-screen receipt
-rendered immediately after submission is the primary durable medium
-per recital 37, and is independent of email; the SQS retry queue
-described in Roadmap item 7 closes the audit margin formally.
+**Two real reliability gaps under "best-effort":**
+
+1. **Withdrawal receipt** — EU Directive 2023/2673 Art. 11a(2)
+   requires the receipt on a durable medium. The on-screen
+   acknowledgement IS the primary durable medium per recital 37; the
+   email is defence-in-depth.
+2. **Order confirmation** — Art. 8(7) requires the contract
+   confirmation on a durable medium "within a reasonable time". The
+   `/account/orders/{n}` page covers the consumer-side durable-
+   medium read path on the same first-party domain.
+
+The SQS retry queue described in Roadmap item 20 closes both audit
+margins formally — once that lands, an SES outage stops being a
+compliance concern and becomes a backlog-drain concern.
 
 **Production SES prerequisites** (must be completed before flipping
 `EMAIL_TRANSPORT=ses` in production, per the Google/Yahoo/Microsoft
@@ -672,7 +691,7 @@ invalid JSON are silently dropped with an `info`-level
 on errors).
 
 Closes the OWASP A09 visibility gap. The last remaining A09 item is
-distributed tracing (Roadmap item 6).
+distributed tracing (Roadmap item 17).
 
 #### 5.2.4 Verifying the policy is live
 
@@ -854,7 +873,7 @@ via **AWS Distro for OpenTelemetry (ADOT)**:
 
 **Effort to add:** ~1 day. ADOT ships as a Lambda layer; the
 instrumentation libraries auto-instrument the AWS SDK + HTTP +
-`pg` + Hono with one config change. Roadmap item 6.
+`pg` + Hono with one config change. Roadmap item 17.
 
 ### 8.3 Metrics that should exist but don't
 
@@ -936,7 +955,7 @@ provenance requirement).
 
 **Level 3** would require a reusable workflow in an isolated
 context, hermetic builds, and build-platform-signed provenance. Defer
-until contractual need (Roadmap item 27).
+until contractual need (Roadmap item 39).
 
 ### 9.4 Branch protection runbook (one-time setup)
 
@@ -1355,67 +1374,82 @@ Ranked by `(impact ÷ effort)` — highest leverage first. Items marked
 11. ✅ **EU Directive 2023/2673** — 14-day withdrawal flow.
 12. ✅ **CSP violation reporting** — `POST /csp-report` (modern +
     legacy formats).
+13. ✅ **Order-confirmation email** — `orders.order-confirmation`
+    template + `sendOrderConfirmationEmail` helper, wired into
+    `POST /orders` after the checkout transaction commits. Best-
+    effort: transport failure logs `order_confirmation_email_failed`
+    but does not fail the order. Idempotency-replay does NOT re-send.
+    Closes the EU 2011/83/EU Art. 8(7) durable-medium-of-contract gap
+    that was previously blank.
+14. ✅ **Order-status-update email template** — `orders.order-status-update`
+    template + `sendOrderStatusUpdateEmail` helper. Status-aware copy
+    for `accepted` / `ready_for_pickup` / `shipped` / `delivered` /
+    `cancelled`. Awaiting wire-up from the future `admin-api` slice.
 
 ### Next two weeks (do these in order)
 
-13. ❌ **Reconcile docs to reality** (done in this revision —
+15. ❌ **Reconcile docs to reality** (done in this revision —
     2026-05-26). Downgrade IaC claim, downgrade admin-api claim,
-    downgrade scheduler claim, downgrade order-confirmation-email
-    claim, downgrade EU CRA claim.
-14. ❌ **First production deploy.** Create `infra/` with the
+    downgrade scheduler claim, downgrade EU CRA claim. Re-upgrade
+    the order-confirmation row in COMPLIANCE.md (done in 2026-05-27
+    after the template + wire-up shipped).
+16. ❌ **First production deploy.** Create `infra/` with the
     minimal Terraform that provisions the actual running shop.
     1–2 days.
-15. ❌ **ADOT distributed tracing** on `shop-api`. Closes the OWASP
+17. ❌ **ADOT distributed tracing** on `shop-api`. Closes the OWASP
     A09 + NIST CSF Detect gap. ~1 day.
-16. ❌ **First real DR drill** against a Neon PITR branch. Write
+18. ❌ **First real DR drill** against a Neon PITR branch. Write
     up the timestamped result. 2 hours.
 
 ### Next month
 
-17. ❌ **Address book CRUD** — schema exists; ship API + UI.
+19. ❌ **Address book CRUD** — schema exists; ship API + UI.
     1 day.
-18. ❌ **SQS retry queue for SES.** Closes EU 2023/2673 Art. 11a(2)
-    durable-medium audit margin. 4 hours.
-19. ❌ **Order-confirmation + status-update email templates.**
-    Backfills the gap between the docs and reality. 4 hours.
-20. ❌ **Real storefront browsing.** Replace mock-data calls on
+20. ❌ **SQS retry queue for SES.** Closes both EU 2023/2673
+    Art. 11a(2) durable-medium audit margin AND Art. 8(7)
+    confirmation-of-contract margin. With the order-confirmation
+    email already wired (item 13), this is the single remaining
+    lift on the email-reliability side. 4 hours.
+21. ❌ **Real storefront browsing.** Replace mock-data calls on
     home, search, and `/products/[...path]` with real `@shop/api`
     calls. ~1 day.
-21. ❌ **Admin-api Lambda + first admin slice** (orders). Removes
-    the manual `status='accepted'` psql. 2–3 days.
-22. ❌ **Scheduler-fn Lambda** + the three cron rules. ½ day.
-23. ❌ **Formalise SLOs in `slos.yaml` (OpenSLO format).** 1 hour.
-24. ❌ **Burn-rate CloudWatch composite alarms.** 1 hour.
-25. ❌ **Cloudflare DNS + R2 swap.** ½ day; saves €0.50/mo and
+22. ❌ **Admin-api Lambda + first admin slice** (orders). Removes
+    the manual `status='accepted'` psql. Wire
+    `sendOrderStatusUpdateEmail` (item 14) into each admin status
+    transition while you're there — one line per branch. 2–3 days.
+23. ❌ **Scheduler-fn Lambda** + the three cron rules. ½ day.
+24. ❌ **Formalise SLOs in `slos.yaml` (OpenSLO format).** 1 hour.
+25. ❌ **Burn-rate CloudWatch composite alarms.** 1 hour.
+26. ❌ **Cloudflare DNS + R2 swap.** ½ day; saves €0.50/mo and
     eliminates two AWS lock-in points.
-26. ❌ **Cut CloudWatch Logs retention to 14 days.** 5 min.
+27. ❌ **Cut CloudWatch Logs retention to 14 days.** 5 min.
 
 ### Month 2 — performance + governance
 
-27. ❌ **Lighthouse CI on every PR.** 4 hours.
-28. ❌ **Real User Monitoring (RUM).** 2 hours.
-29. ❌ **Status page** (statup.fyi or self-hosted). 1 hour.
-30. ❌ **Incident playbook.** 3 hours.
-31. ❌ **Asset inventory document.** 2 hours.
-32. ❌ **STRIDE threat model doc** — formal pass over major data
+28. ❌ **Lighthouse CI on every PR.** 4 hours.
+29. ❌ **Real User Monitoring (RUM).** 2 hours.
+30. ❌ **Status page** (statup.fyi or self-hosted). 1 hour.
+31. ❌ **Incident playbook.** 3 hours.
+32. ❌ **Asset inventory document.** 2 hours.
+33. ❌ **STRIDE threat model doc** — formal pass over major data
     flows. 2 hours.
 
 ### Quarter 2+ — growth-stage
 
-33. ❌ **Customer MFA (TOTP / WebAuthn).** ~3 days. Moves OWASP
+34. ❌ **Customer MFA (TOTP / WebAuthn).** ~3 days. Moves OWASP
     ASVS to L2.
-34. ❌ **Admin TOTP enrolment + recovery codes UI.** ~2 days. The
-    schema exists; the flow is missing. Required before §15.21's
+35. ❌ **Admin TOTP enrolment + recovery codes UI.** ~2 days. The
+    schema exists; the flow is missing. Required before §15.22's
     admin-api goes anywhere near production.
-35. ❌ **GDPR Art. 20 self-service data export.** ~1 day.
-36. ❌ **Multi-region failover.** ~1 week. Defer until customer
+36. ❌ **GDPR Art. 20 self-service data export.** ~1 day.
+37. ❌ **Multi-region failover.** ~1 week. Defer until customer
     requires a contractual SLA.
-37. ❌ **Move to Neon Scale** when contractual SLA is required.
-38. ❌ **Upgrade SLSA to Level 3** — only if needed.
+38. ❌ **Move to Neon Scale** when contractual SLA is required.
+39. ❌ **Upgrade SLSA to Level 3** — only if needed.
 
-**Doing items 13–26 closes every meaningful 2026 gap in ~4–6
-working days. Items 27–32 raise the quality bar further at ~3 more
-days. Items 33+ are growth-stage; not blocking on A+.**
+**Doing items 15–27 closes every meaningful 2026 gap in ~4–6
+working days. Items 28–33 raise the quality bar further at ~3 more
+days. Items 34+ are growth-stage; not blocking on A+.**
 
 ---
 
@@ -1432,8 +1466,8 @@ breakpoints are sharp; treat them as orientation.
 | Tier | Customers | Orders / mo | Sweet-spot architectural posture |
 |---|---|---|---|
 | 1 — Founder | 0–500 | 0–10 | Today's repo is already over-prepared for this tier. Investment is forward-looking, not wasteful. **Missing: actual production deploy.** |
-| 2 — SMB | 500–10K | 50–500 | Architecture's sweet spot. Needs items 14–18 from §15 in place before crossing in. |
-| 3 — Mid-market | 10K–100K | 500–5K | Operational maturity gaps (§15 items 23–32) need to be closed before this tier. Cloudflare swap (§15 item 25) saves real money here. |
+| 2 — SMB | 500–10K | 50–500 | Architecture's sweet spot. Needs items 16–20 from §15 in place before crossing in. |
+| 3 — Mid-market | 10K–100K | 500–5K | Operational maturity gaps (§15 items 24–33) need to be closed before this tier. Cloudflare swap (§15 item 26) saves real money here. |
 | 4 — Regional | 100K–500K | 5K–50K | Single-admin model breaks; Amplify's lack of on-demand revalidation becomes the constraint that may push the frontend off Amplify; Postgres tsvector search needs to graduate to Meilisearch / Algolia. |
 | 5 — National | 500K+ | 50K+ | Geographic distribution becomes important. Neon does not yet support multi-region active-active for writes (only read replicas) — confirm before assuming. |
 
