@@ -233,15 +233,19 @@ Real order placement wired end-to-end: `Idempotency-Key`-headered
 
 **Still on mock data:**
 
-- Home page banners (`frontend/src/lib/mock-data/banners.ts`)
-- Category-tree browsing (`/products/[...path]`)
-- Search (`/search`) — entirely mock
+- Home page banners (`frontend/src/lib/mock-data/banners.ts`) — no
+  banner-slides API endpoint yet.
+- Checkout courier-office picker
+  (`frontend/src/lib/mock-data/courier-offices.ts`) — Bulgarian
+  Econt/Speedy office lists are real-world data not yet ingested into
+  the DB.
 - **Every admin page** under `/admin/*` (banners, categories,
   products, customers, orders, archive, settings) renders mock data;
-  there is no admin API behind any of these screens
+  there is no admin API behind any of these screens.
 
-The roadmap calls these out as the next storefront and admin slices
-respectively.
+Category-tree browsing (`/products/[...path]`) and search (`/search`)
+moved off mock data on 2026-05-28 — see [Storefront browsing](#storefront-browsing)
+below.
 
 ### Continuous integration
 
@@ -403,6 +407,64 @@ satisfies Art. 11a(2) durable medium) and admin notification. The
 flow in this slice. `/terms/withdrawal` is a server-component page
 carrying the full ЗЗП withdrawal text + Annex I(B) model form.
 
+### Storefront browsing
+
+Home page, search, and the catch-all `/products/[...path]` route all
+render from the live `@shop/api` catalog as of 2026-05-28. The
+`(shop)/layout.tsx` fetches the category tree once per request and
+passes it to `NavBar`; the home page parallelises that with a featured-
+products fetch; the products catch-all resolves the URL against the
+live tree as either (a) the virtual `new-products` view, (b) a pure
+category chain, (c) a category chain plus product slug, or (d) a bare
+product slug (which 301-redirects to the canonical category-prefixed
+URL). Product pages emit `Schema.org` `Product` + `BreadcrumbList`
+JSON-LD in an `@graph` envelope, plus per-product `generateMetadata`
+with canonical URL and OpenGraph image. The header autocomplete is a
+debounced (200 ms) client-side fetch to `/products?q=…&limit=5` with
+AbortController-cancellation on resumed typing.
+
+Tree-helper module: `frontend/src/lib/catalog.ts`. Pure functions over
+the live tree (`resolveCategoryPath`, `findCategoryById`,
+`getCategoryAncestors`, `categoryHref`, `productHref`) — no module-
+level state, safe in both Server and Client Components.
+
+Storefront fetch layer: `frontend/src/lib/api.ts` exposes typed
+helpers — `fetchProducts(query, init?)`, `fetchCategoryTree()`,
+`fetchProductBySlug(slug)` — backed by plain `fetch()` against
+`NEXT_PUBLIC_SHOP_API_URL`. Return shapes are the concrete Zod-
+inferred DTOs re-exported from `@shop/api` (`ProductsPage`,
+`CategoryTree`, `ProductDetail`) so callers always get typed
+results regardless of how the workspace symlink resolves on the
+build machine. The earlier `hc<AppType>(baseUrl)` Hono RPC client
+was removed after repeatedly hitting `Type error: 'api' is of
+type 'unknown'` on `next build`: `AppType = ReturnType<typeof
+buildApp>` is a deep generic chain that collapses whenever any
+link degrades, taking the whole `Client<AppType>` with it. Plain
+`fetch` sidesteps the type derivation entirely while keeping the
+same typed response contracts.
+
+Storefront filter sort options now map directly to the API's
+`/products?sort=` enum (`featured | newest | price_asc | price_desc`).
+The earlier UI-only `name_asc` option was dropped because the API does
+not support it; if it comes back it must come back server-side.
+
+Product-page JSON-LD includes `hasMerchantReturnPolicy` with the
+14-day Bulgarian/EU 2023/2673 right-of-withdrawal expressed in
+`schema.org` terms (`MerchantReturnFiniteReturnWindow`, 14 days,
+return-by-mail, customer pays return shipping). All `@id` / `url` /
+`item` URLs are absolute (resolved against `NEXT_PUBLIC_SITE_URL` —
+same env var that backs `metadataBase`), satisfying Google's Rich
+Results requirement that `BreadcrumbList.item` is a full URL. The
+`Product.image` field is omitted entirely when a product has no
+images yet, rather than emitting `image: []` which the Rich Results
+test flags as a missing-required-field error.
+
+The home banners and admin pages still render from
+`frontend/src/lib/mock-data/*` — both await later slices. The
+earlier `/api-demo` Hono-RPC smoke-test page was removed; the real
+storefront pages are the canonical example of how to consume the
+typed client from a Server Component.
+
 ### CSP violation reporting
 
 The strict `'nonce-X' 'strict-dynamic'` CSP shipped to the frontend
@@ -538,15 +600,17 @@ reality, as of 2026-05-26:
   is a stub.
 - **Address book CRUD** — `addresses` schema table exists
   (`backend/db/src/schema/users.ts` line 127); no API routes, no UI.
-- **Real product detail + search** — catalog browsing pages
-  (`/products/[...path]`, `/search`, home banners) render
-  `frontend/src/lib/mock-data/*` rather than calling `/products` and
-  `/categories`. The endpoints exist and the storefront `(shop)`
-  pages around auth / cart / orders / withdrawal are all real.
-- **Distributed tracing** — `docs/ARCHITECTURE.md` §15 item 17
+- **Banner slides API** — the home-page carousel still imports from
+  `frontend/src/lib/mock-data/banners.ts`. A real `banner_slides`
+  endpoint + admin CRUD ships with the admin-api slice.
+- **Courier-office picker** — the checkout step renders Bulgarian
+  Econt/Speedy offices from `mock-data/courier-offices.ts`. Real
+  ingestion (either a one-off seed from the carrier APIs or a
+  cron-refreshed table) is a future slice.
+- **Distributed tracing** — `docs/ARCHITECTURE.md` §15 item 18
   identifies ADOT as the path. Not added. This is the last concrete
   OWASP A09 gap.
-- **SQS retry queue for SES** — `docs/ARCHITECTURE.md` §15 item 20.
+- **SQS retry queue for SES** — `docs/ARCHITECTURE.md` §15 item 21.
   Not added. Closes the EU 2023/2673 Art. 11a(2) durable-medium +
   Art. 8(7) confirmation-of-contract audit margins on email-send
   failure.
@@ -576,11 +640,11 @@ In priority order (also tracked in `docs/ARCHITECTURE.md` §15):
    order-confirmation email now wired into `POST /orders`, this is the
    single remaining lift to take that compliance row from "wired but
    best-effort" to "wired with a durable retry queue".
-6. **Real storefront browsing.** Replace
-   `frontend/src/lib/mock-data/{banners,products,categories}` calls
-   on the home page, `/search`, and `/products/[...path]` with real
-   `@shop/api` calls. The category and product endpoints already
-   exist; this is glue work plus a category-tree fetcher. ~1 day.
+6. ~~**Real storefront browsing.**~~ ✅ Shipped 2026-05-28. Home page,
+   `/search`, `/products/[...path]`, and the header autocomplete all
+   render from the live `@shop/api` catalog. Banner slides remain on
+   mock data (no banners endpoint); admin pages remain on mock data
+   (no admin-api).
 7. **Admin-api Lambda + first admin slice.** Pick the highest-leverage
    admin slice (probably orders, so the manual `status='accepted'`
    psql can go away). Requires admin auth flow — likely TOTP per the

@@ -3,25 +3,56 @@
 import Link from "next/link";
 import { useState, useRef, useEffect } from "react";
 import { ChevronDown, ChevronRight, Menu, X, LayoutGrid } from "lucide-react";
-import { NEW_PRODUCTS_CATEGORY, getRootCategories } from "@/lib/mock-data/categories";
-import { CategoryNode } from "@/lib/types";
+import type { CategoryTreeNode } from "@/lib/catalog";
 import { cn } from "@/lib/utils";
 
-// How many visible root categories to show inline next to "Всички категории"
+/**
+ * NavBar is a Client Component (the mega-menu open/close + mobile drawer all
+ * need React state), but receives the category tree as a prop from the
+ * server-rendered `(shop)/layout.tsx`. That keeps the tree fetch off the
+ * client bundle entirely.
+ *
+ * The tree comes from `@shop/api`'s `GET /categories`. The "Нови продукти"
+ * virtual entry isn't a real category in the DB — it lives client-side only
+ * and routes to `/products/new-products`, where the catch-all page knows to
+ * render the "newest products" view.
+ */
+
 const VISIBLE_ROOT_COUNT = 6;
 
-function buildCategoryPath(cat: CategoryNode, ancestors: CategoryNode[] = []): string {
+/**
+ * Virtual "new products" nav entry. Not a row in the categories table; the
+ * catch-all `/products/[...path]` route handles `["new-products"]` as a
+ * special case and renders the newest-first product list.
+ */
+const NEW_PRODUCTS_ENTRY: CategoryTreeNode = {
+  id: "__virtual_new_products__",
+  slug: "new-products",
+  name: "Нови продукти",
+  imageUrl: null,
+  displayOrder: -1,
+  children: [],
+};
+
+function buildCategoryPath(
+  cat: CategoryTreeNode,
+  ancestors: CategoryTreeNode[] = [],
+): string {
   return "/products/" + [...ancestors, cat].map((c) => c.slug).join("/");
 }
 
-export default function NavBar() {
+interface NavBarProps {
+  /** Live category tree from `GET /categories`. May be empty on API error. */
+  tree: CategoryTreeNode[];
+}
+
+export default function NavBar({ tree }: NavBarProps) {
   const [mobileOpen, setMobileOpen] = useState(false);
 
   return (
     <nav className="bg-[oklch(0.18_0.02_270)] text-[oklch(0.96_0.005_270)] relative">
-      <DesktopNav />
+      <DesktopNav tree={tree} />
 
-      {/* Mobile nav toggle */}
       <div className="md:hidden flex items-center justify-between px-4 py-2">
         <span className="text-sm font-medium">Категории</span>
         <button
@@ -33,24 +64,24 @@ export default function NavBar() {
         </button>
       </div>
 
-      {mobileOpen && <MobileNav onClose={() => setMobileOpen(false)} />}
+      {mobileOpen && (
+        <MobileNav tree={tree} onClose={() => setMobileOpen(false)} />
+      )}
     </nav>
   );
 }
 
 // ─── Desktop: Mega menu with click-to-open "Всички категории" ───────────────
 
-function DesktopNav() {
-  const rootCategories = getRootCategories();
+function DesktopNav({ tree }: { tree: CategoryTreeNode[] }) {
+  const rootCategories = tree;
   const visibleRoots = rootCategories.slice(0, VISIBLE_ROOT_COUNT);
 
-  // Mega menu state
   const [allOpen, setAllOpen] = useState(false);
   const [hoveredRootId, setHoveredRootId] = useState<string | null>(null);
   const allMenuRef = useRef<HTMLDivElement>(null);
   const allButtonRef = useRef<HTMLButtonElement>(null);
 
-  // Hover state for inline visible categories
   const [hoveredVisibleId, setHoveredVisibleId] = useState<string | null>(null);
   const hoverTimer = useRef<number | null>(null);
 
@@ -64,7 +95,6 @@ function DesktopNav() {
     setHoveredRootId(null);
   }
 
-  // Close on outside click
   useEffect(() => {
     if (!allOpen) return;
     function onClick(e: MouseEvent) {
@@ -79,7 +109,6 @@ function DesktopNav() {
     return () => document.removeEventListener("mousedown", onClick);
   }, [allOpen]);
 
-  // Close on Escape
   useEffect(() => {
     if (!allOpen) return;
     function onKey(e: KeyboardEvent) {
@@ -108,7 +137,6 @@ function DesktopNav() {
   return (
     <div className="relative hidden md:block">
       <div className="max-w-7xl mx-auto px-4 flex items-center justify-center gap-0">
-        {/* "Всички категории" button */}
         <button
           ref={allButtonRef}
           onClick={() => (allOpen ? closeAll() : openAll())}
@@ -131,14 +159,12 @@ function DesktopNav() {
           />
         </button>
 
-        {/* "New products" pinned first */}
         <VisibleRootItem
-          cat={NEW_PRODUCTS_CATEGORY}
+          cat={NEW_PRODUCTS_ENTRY}
           hoveredVisibleId={hoveredVisibleId}
           setHover={setVisibleHoverDebounced}
         />
 
-        {/* First N root categories inline */}
         {visibleRoots.map((cat) => (
           <VisibleRootItem
             key={cat.id}
@@ -149,35 +175,38 @@ function DesktopNav() {
         ))}
       </div>
 
-      {/* Mega menu flyout */}
       {allOpen && (
         <div
           ref={allMenuRef}
           className="absolute left-0 right-0 top-full z-50 bg-white text-foreground shadow-2xl border-t border-border animate-mega-slide"
         >
           <div className="max-w-7xl mx-auto grid grid-cols-12 min-h-[420px] max-h-[70vh]">
-            {/* Left: all root categories (scrollable) */}
             <div className="col-span-4 lg:col-span-3 border-r border-border bg-muted/30 overflow-y-auto py-2">
-              {rootCategories.map((cat) => (
-                <Link
-                  key={cat.id}
-                  href={buildCategoryPath(cat)}
-                  onMouseEnter={() => setHoveredRootId(cat.id)}
-                  onClick={closeAll}
-                  className={cn(
-                    "w-full flex items-center justify-between px-4 py-2.5 text-sm transition-colors",
-                    hoveredRootId === cat.id
-                      ? "bg-white text-[oklch(0.73_0.10_75)] font-semibold"
-                      : "hover:bg-white/60 text-foreground"
-                  )}
-                >
-                  <span className="truncate">{cat.name}</span>
-                  <ChevronRight className="w-4 h-4 flex-shrink-0 opacity-50" />
-                </Link>
-              ))}
+              {rootCategories.length === 0 ? (
+                <p className="px-4 py-4 text-sm text-muted-foreground">
+                  Няма налични категории.
+                </p>
+              ) : (
+                rootCategories.map((cat) => (
+                  <Link
+                    key={cat.id}
+                    href={buildCategoryPath(cat)}
+                    onMouseEnter={() => setHoveredRootId(cat.id)}
+                    onClick={closeAll}
+                    className={cn(
+                      "w-full flex items-center justify-between px-4 py-2.5 text-sm transition-colors",
+                      hoveredRootId === cat.id
+                        ? "bg-white text-[oklch(0.73_0.10_75)] font-semibold"
+                        : "hover:bg-white/60 text-foreground"
+                    )}
+                  >
+                    <span className="truncate">{cat.name}</span>
+                    <ChevronRight className="w-4 h-4 flex-shrink-0 opacity-50" />
+                  </Link>
+                ))
+              )}
             </div>
 
-            {/* Right: subcategories of hovered root in columns */}
             <div className="col-span-8 lg:col-span-9 p-6 overflow-y-auto">
               {hoveredRoot && <MegaSubPanel root={hoveredRoot} onClose={closeAll} />}
             </div>
@@ -193,11 +222,11 @@ function VisibleRootItem({
   hoveredVisibleId,
   setHover,
 }: {
-  cat: CategoryNode;
+  cat: CategoryTreeNode;
   hoveredVisibleId: string | null;
   setHover: (id: string | null) => void;
 }) {
-  const activeChildren = cat.children.filter((c) => !c.isArchived);
+  const activeChildren = cat.children;
   const isOpen = hoveredVisibleId === cat.id;
   const href = buildCategoryPath(cat);
 
@@ -228,8 +257,8 @@ function VisibleRootItem({
       </Link>
       {activeChildren.length > 0 && isOpen && (
         <div className="absolute left-0 top-full z-50 min-w-[220px] bg-white text-foreground shadow-lg rounded-b-md border border-t-0 border-border py-1 animate-scale-in">
-          {activeChildren
-            .sort((a, b) => a.order - b.order)
+          {[...activeChildren]
+            .sort((a, b) => a.displayOrder - b.displayOrder)
             .map((child) => (
               <DesktopDropdownItem key={child.id} cat={child} ancestors={[cat]} />
             ))}
@@ -243,10 +272,10 @@ function DesktopDropdownItem({
   cat,
   ancestors,
 }: {
-  cat: CategoryNode;
-  ancestors: CategoryNode[];
+  cat: CategoryTreeNode;
+  ancestors: CategoryTreeNode[];
 }) {
-  const activeChildren = cat.children.filter((c) => !c.isArchived);
+  const activeChildren = cat.children;
   const href = buildCategoryPath(cat, ancestors);
 
   return (
@@ -260,8 +289,8 @@ function DesktopDropdownItem({
       </Link>
       {activeChildren.length > 0 && (
         <div className="absolute left-full top-0 z-50 hidden group-hover/sub:block min-w-[220px] bg-white text-foreground shadow-lg rounded-md border border-border py-1">
-          {activeChildren
-            .sort((a, b) => a.order - b.order)
+          {[...activeChildren]
+            .sort((a, b) => a.displayOrder - b.displayOrder)
             .map((child) => (
               <DesktopDropdownItem
                 key={child.id}
@@ -275,9 +304,14 @@ function DesktopDropdownItem({
   );
 }
 
-// Right panel of mega menu: subcategories in columns
-function MegaSubPanel({ root, onClose }: { root: CategoryNode; onClose: () => void }) {
-  const activeChildren = root.children.filter((c) => !c.isArchived);
+function MegaSubPanel({
+  root,
+  onClose,
+}: {
+  root: CategoryTreeNode;
+  onClose: () => void;
+}) {
+  const activeChildren = root.children;
 
   return (
     <div>
@@ -301,10 +335,10 @@ function MegaSubPanel({ root, onClose }: { root: CategoryNode; onClose: () => vo
 
       {activeChildren.length > 0 ? (
         <div className="grid grid-cols-2 lg:grid-cols-3 gap-x-6 gap-y-5">
-          {activeChildren
-            .sort((a, b) => a.order - b.order)
+          {[...activeChildren]
+            .sort((a, b) => a.displayOrder - b.displayOrder)
             .map((sub) => {
-              const subChildren = sub.children.filter((c) => !c.isArchived);
+              const subChildren = sub.children;
               return (
                 <div key={sub.id}>
                   <Link
@@ -316,8 +350,8 @@ function MegaSubPanel({ root, onClose }: { root: CategoryNode; onClose: () => vo
                   </Link>
                   {subChildren.length > 0 && (
                     <ul className="space-y-1">
-                      {subChildren
-                        .sort((a, b) => a.order - b.order)
+                      {[...subChildren]
+                        .sort((a, b) => a.displayOrder - b.displayOrder)
                         .map((leaf) => (
                           <li key={leaf.id}>
                             <Link
@@ -344,19 +378,31 @@ function MegaSubPanel({ root, onClose }: { root: CategoryNode; onClose: () => vo
 
 // ─── Mobile: recursive accordion ────────────────────────────────────────────
 
-function MobileNav({ onClose }: { onClose: () => void }) {
-  const rootNavCategories = [NEW_PRODUCTS_CATEGORY, ...getRootCategories()];
+function MobileNav({
+  tree,
+  onClose,
+}: {
+  tree: CategoryTreeNode[];
+  onClose: () => void;
+}) {
+  const rootNavCategories = [NEW_PRODUCTS_ENTRY, ...tree];
   return (
     <div className="md:hidden border-t border-white/10 bg-[oklch(0.18_0.02_270)] max-h-[70vh] overflow-y-auto">
-      {rootNavCategories.map((cat) => (
-        <MobileCategoryItem
-          key={cat.id}
-          cat={cat}
-          ancestors={[]}
-          depth={0}
-          onClose={onClose}
-        />
-      ))}
+      {rootNavCategories.length === 1 ? (
+        <p className="px-4 py-4 text-sm text-white/70">
+          Няма налични категории.
+        </p>
+      ) : (
+        rootNavCategories.map((cat) => (
+          <MobileCategoryItem
+            key={cat.id}
+            cat={cat}
+            ancestors={[]}
+            depth={0}
+            onClose={onClose}
+          />
+        ))
+      )}
     </div>
   );
 }
@@ -367,13 +413,13 @@ function MobileCategoryItem({
   depth,
   onClose,
 }: {
-  cat: CategoryNode;
-  ancestors: CategoryNode[];
+  cat: CategoryTreeNode;
+  ancestors: CategoryTreeNode[];
   depth: number;
   onClose: () => void;
 }) {
   const [expanded, setExpanded] = useState(false);
-  const activeChildren = cat.children.filter((c) => !c.isArchived);
+  const activeChildren = cat.children;
   const href = buildCategoryPath(cat, ancestors);
   const indent = 16 + depth * 16;
 
@@ -401,8 +447,8 @@ function MobileCategoryItem({
       </div>
       {expanded && activeChildren.length > 0 && (
         <div className="bg-white/5">
-          {activeChildren
-            .sort((a, b) => a.order - b.order)
+          {[...activeChildren]
+            .sort((a, b) => a.displayOrder - b.displayOrder)
             .map((child) => (
               <MobileCategoryItem
                 key={child.id}

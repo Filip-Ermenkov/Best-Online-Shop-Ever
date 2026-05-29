@@ -9,24 +9,29 @@ import { Button } from "@/components/ui/button";
 import { useCart } from "@/contexts/CartContext";
 import { MAX_QUANTITY_PER_LINE } from "@/lib/cart/types";
 import { formatPrice, cn } from "@/lib/utils";
-import { getCategoryAncestors } from "@/lib/mock-data/categories";
 
 interface ProductCardProps {
   product: Product;
+  /**
+   * Optional canonical URL for this product. When passed, the card links
+   * here directly. When omitted, the card links to the short
+   * `/products/{slug}` form — which the catch-all route resolves and 301s
+   * to the canonical category-prefixed URL. Pages that already know the
+   * category chain (category listing, search-result list with breadcrumb
+   * lookup) should pass the full URL to skip the redirect hop; pages that
+   * don't (home featured grid) just omit it.
+   */
+  href?: string;
   className?: string;
 }
 
-export default function ProductCard({ product, className }: ProductCardProps) {
+export default function ProductCard({ product, href, className }: ProductCardProps) {
   const { addGuestItem, addItem, isAuthenticated } = useCart();
   const [quantity, setQuantity] = useState(1);
   const [added, setAdded] = useState(false);
   const isOutOfStock = product.stockStatus === "out_of_stock";
 
-  // Build product URL from category ancestry
-  const ancestors = getCategoryAncestors(product.categoryId);
-  const productUrl = ancestors.length > 0
-    ? `/products/${ancestors.map((c) => c.slug).join("/")}/${product.slug}`
-    : `/products/${product.slug}`;
+  const productUrl = href ?? `/products/${product.slug}`;
 
   const handleAddToCart = (e: React.MouseEvent) => {
     e.preventDefault();

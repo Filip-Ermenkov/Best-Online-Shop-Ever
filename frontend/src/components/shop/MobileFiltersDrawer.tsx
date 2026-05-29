@@ -3,18 +3,15 @@
 import { useState } from "react";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import ProductFilters from "@/components/shop/ProductFilters";
-import { CategoryNode } from "@/lib/types";
 
 interface MobileFiltersDrawerProps {
   trigger: React.ReactNode;
-  category: CategoryNode;
   activeSort: string;
-  priceMin: number;
-  priceMax: number;
 }
 
 export default function MobileFiltersDrawer({
-  trigger, category, activeSort, priceMin, priceMax,
+  trigger,
+  activeSort,
 }: MobileFiltersDrawerProps) {
   const [open, setOpen] = useState(false);
 
@@ -26,12 +23,7 @@ export default function MobileFiltersDrawer({
           <SheetHeader className="mb-4 px-0">
             <SheetTitle>Филтри</SheetTitle>
           </SheetHeader>
-          <ProductFilters
-            category={category}
-            activeSort={activeSort}
-            priceMin={priceMin}
-            priceMax={priceMax}
-          />
+          <ProductFilters activeSort={activeSort} />
         </SheetContent>
       </Sheet>
     </>
