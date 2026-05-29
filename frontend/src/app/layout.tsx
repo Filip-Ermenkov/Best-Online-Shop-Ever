@@ -11,7 +11,23 @@ const geist = Geist({
   subsets: ["latin"],
 });
 
+/**
+ * `metadataBase` is the absolute URL Next.js uses to resolve any relative
+ * canonical / OG-image / Twitter-image URLs declared further down the tree
+ * (notably the storefront product pages, which use
+ * `alternates.canonical: "/products/..."`). Without it Next.js emits a
+ * build-time warning and OG images that ship to social-preview scrapers
+ * resolve against `http://localhost:3000` — fine in dev, broken in prod.
+ *
+ * Pulled from a public env var so the same build can target any host. The
+ * fallback only fires during pure local dev.
+ */
+const siteBaseUrl =
+  process.env.NEXT_PUBLIC_SITE_URL?.replace(/\/+$/, "") ??
+  "http://localhost:3000";
+
 export const metadata: Metadata = {
+  metadataBase: new URL(siteBaseUrl),
   title: "Duda 1",
   description: "Онлайн магазин с широка гама от продукти",
 };

@@ -1,59 +1,117 @@
-import { hc } from "hono/client";
-import type { AppType } from "@shop/api";
+import type {
+  CategoryTree,
+  ProductDetail,
+  ProductsPage,
+} from "@shop/api";
 
 /**
- * Type-safe Hono RPC client for shop-api.
+ * Typed fetchers for shop-api.
  *
- *   import { api } from "@/lib/api";
- *   const res = await api.products.$get({ query: { sort: "newest" } });
- *   if (!res.ok) { ... }
- *   const page = await res.json();   // strongly typed as ProductsPage
+ * ## Why plain `fetch` instead of Hono RPC `hc<AppType>(...)`
  *
- * `hc<AppType>()` consumes only TYPES from @shop/api — there is no runtime
- * code from the API package in the browser bundle. Tree-shaking strips it
- * out completely.
+ * The earlier implementation used `hc<AppType>(baseUrl)` which constructs a
+ * fully typed RPC client where `api.products.$get(...)` is autocompleted and
+ * the response shape is inferred from the server's Zod schemas. That's
+ * elegant when it works, but `AppType = ReturnType<typeof buildApp>` is a
+ * very deep generic chain that walks every route file, every Zod schema,
+ * and every transitive workspace dep. On any setup where one link in the
+ * chain degrades to `any` or `unknown` — most commonly because of npm
+ * workspace symlink resolution differences between machines — the whole
+ * `Client<AppType>` collapses to `unknown` and `next build` fails with
+ * `Type error: 'api' is of type 'unknown'`.
  *
- * Configure via NEXT_PUBLIC_SHOP_API_URL. The fallback is the local dev
+ * Plain `fetch` sidesteps the entire problem. We give up the typed URL
+ * generation and typed query parameters, but we keep:
+ *
+ *   1. **Typed response shapes.** `Promise<ProductsPage>`, `Promise<CategoryTree>`,
+ *      and `Promise<ProductDetail | null>` come from `@shop/api`'s explicit
+ *      Zod-inferred DTO exports (`backend/shop-api/src/types.ts`). These are
+ *      shallow types that don't depend on AppType, so they're bulletproof
+ *      against the workspace-symlink class of issues.
+ *   2. **Next.js cache integration.** `next: { revalidate, tags }` works the
+ *      same on plain fetch as it did through Hono RPC.
+ *   3. **Server / Client Component portability.** Same function signatures
+ *      work in either context; Client callers pass `{ signal, cache:
+ *      "no-store" }` for live-search semantics.
+ *
+ * We give up:
+ *   - Compile-time URL safety (typo `${baseUrl}/protucts` → 404 at runtime
+ *     instead of a TypeScript error). Mitigation: the API's Zod query
+ *     validation rejects bad shapes with RFC 9457 problem details, so the
+ *     error is surfaced cleanly.
+ *   - Compile-time query-parameter shape checks. Mitigation: the function
+ *     signature's `query` parameter is still typed (matches the Zod schema
+ *     on the server).
+ *
+ * Configure via `NEXT_PUBLIC_SHOP_API_URL`. The fallback is the local dev
  * server that `npm run api:dev` spins up.
  */
 const baseUrl =
   process.env.NEXT_PUBLIC_SHOP_API_URL?.replace(/\/+$/, "") ??
   "http://localhost:3001";
 
-export const api = hc<AppType>(baseUrl, {
-  // Server Components run on Node; Client Components run in the browser. Both
-  // use global fetch under the hood. Hono RPC will pick up Next's caching by
-  // default — we override per call when we need different semantics.
-  init: {
-    headers: {
-      // Lets us correlate frontend → API logs by the same id during debugging.
-      // Server Components have no access to a request id at this layer, so
-      // we omit. Future enhancement: use Next 16's `headers()` to forward
-      // the incoming X-Request-Id from the user's browser.
-      Accept: "application/json",
-    },
-  },
-});
+/**
+ * Optional fetch init for the typed helpers. Mirrors the standard
+ * `RequestInit` subset that storefront callers actually need, plus Next.js's
+ * `next` data cache directives. Server Components usually omit this
+ * (defaults apply); Client Components pass `{ signal, cache: "no-store" }`
+ * for AbortController-aware live searches like the header autocomplete.
+ *
+ * When `init` is provided, it REPLACES the defaults — callers that want
+ * both the next-cache options and a signal should spread them explicitly.
+ */
+export interface FetchInit {
+  signal?: AbortSignal;
+  cache?: RequestCache;
+  next?: { revalidate?: number; tags?: string[] };
+}
 
-/** Convenience: fetch a page of products. Used from Server Components. */
-export async function fetchProducts(query: {
-  categorySlug?: string;
-  inStock?: boolean;
-  q?: string;
-  sort?: "featured" | "newest" | "price_asc" | "price_desc";
-  limit?: number;
-  cursor?: string;
-}) {
-  // Hono's RPC client serialises booleans/numbers to strings automatically.
-  const res = await api.products.$get(
-    { query },
-    {
-      // Cache on the Next.js server for the same window as the API's CDN
-      // hint — the API is the source of truth, but Next.js can short-circuit
-      // duplicate requests within a render.
-      init: { next: { revalidate: 300, tags: ["products"] } },
-    },
-  );
+/**
+ * Build a query string from an object of primitives, skipping
+ * undefined/null. Booleans and numbers stringify per the API's Zod
+ * preprocess hook (`v === "true" ? true : v === "false" ? false : v` for
+ * inStock; `z.coerce.number()` for limit).
+ */
+function qs(params: Record<string, string | number | boolean | undefined>): string {
+  const u = new URLSearchParams();
+  for (const [k, v] of Object.entries(params)) {
+    if (v === undefined || v === null) continue;
+    u.set(k, String(v));
+  }
+  const s = u.toString();
+  return s ? "?" + s : "";
+}
+
+const COMMON_HEADERS = { Accept: "application/json" } as const;
+
+/**
+ * Convenience: fetch a page of products. Used from Server Components and
+ * the header autocomplete Client Component.
+ *
+ * The explicit `Promise<ProductsPage>` return type is the contract callers
+ * rely on — `(await fetchProducts(...)).items.map(p => ...)` always gets
+ * `p: ProductSummary`, immune to any AppType inference fragility.
+ */
+export async function fetchProducts(
+  query: {
+    categorySlug?: string;
+    inStock?: boolean;
+    q?: string;
+    sort?: "featured" | "newest" | "price_asc" | "price_desc";
+    limit?: number;
+    cursor?: string;
+  },
+  init?: FetchInit,
+): Promise<ProductsPage> {
+  const url = `${baseUrl}/products${qs(query)}`;
+  const res = await fetch(url, {
+    headers: COMMON_HEADERS,
+    // Server-side default: cache for the same window as the API's CDN
+    // hint, tagged so admin edits can purge via `revalidateTag('products')`.
+    // Caller-provided init wins — Client Components typically pass
+    // `{ signal, cache: "no-store" }` for live-search semantics.
+    ...(init ?? { next: { revalidate: 300, tags: ["products"] } }),
+  });
   if (!res.ok) {
     throw new ApiClientError(
       `GET /products failed (${res.status})`,
@@ -61,23 +119,23 @@ export async function fetchProducts(query: {
       await safeProblem(res),
     );
   }
-  return res.json();
+  return (await res.json()) as ProductsPage;
 }
 
 /**
- * Convenience: fetch the full category tree. Used by every storefront surface
- * that needs the navigation menu, the homepage categories grid, etc.
+ * Convenience: fetch the full category tree. Used by every storefront
+ * surface that needs the navigation menu, the homepage categories grid, etc.
  *
  * Tag-based revalidation: when an admin edits the tree (later slice), the
  * server action that performs the edit will call
  * `revalidateTag('categories')` to purge this fetch's Next.js cache entry
  * regardless of how stale the in-memory copy is.
  */
-export async function fetchCategoryTree() {
-  const res = await api.categories.$get(
-    {},
-    { init: { next: { revalidate: 300, tags: ["categories"] } } },
-  );
+export async function fetchCategoryTree(): Promise<CategoryTree> {
+  const res = await fetch(`${baseUrl}/categories`, {
+    headers: COMMON_HEADERS,
+    next: { revalidate: 300, tags: ["categories"] },
+  });
   if (!res.ok) {
     throw new ApiClientError(
       `GET /categories failed (${res.status})`,
@@ -85,15 +143,19 @@ export async function fetchCategoryTree() {
       await safeProblem(res),
     );
   }
-  return res.json();
+  return (await res.json()) as CategoryTree;
 }
 
 /** Convenience: fetch a single product by slug. Returns null on 404. */
-export async function fetchProductBySlug(slug: string) {
-  const res = await api.products[":slug"].$get(
-    { param: { slug } },
-    { init: { next: { revalidate: 300, tags: ["products", `product:${slug}`] } } },
-  );
+export async function fetchProductBySlug(
+  slug: string,
+): Promise<ProductDetail | null> {
+  // URL-encode the slug defensively even though the route only accepts
+  // [a-z0-9-]+ — caller pre-validation could be looser.
+  const res = await fetch(`${baseUrl}/products/${encodeURIComponent(slug)}`, {
+    headers: COMMON_HEADERS,
+    next: { revalidate: 300, tags: ["products", `product:${slug}`] },
+  });
   if (res.status === 404) return null;
   if (!res.ok) {
     throw new ApiClientError(
@@ -102,7 +164,7 @@ export async function fetchProductBySlug(slug: string) {
       await safeProblem(res),
     );
   }
-  return res.json();
+  return (await res.json()) as ProductDetail;
 }
 
 interface Problem {

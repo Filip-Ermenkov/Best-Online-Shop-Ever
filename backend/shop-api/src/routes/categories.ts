@@ -43,6 +43,16 @@ const CategoryTreeSchema = z
   })
   .openapi("CategoryTree");
 
+/**
+ * Public DTO type — re-exported from `src/types.ts`. The frontend imports
+ * this directly instead of mining it out of `AppType` via `InferResponseType`,
+ * which keeps the type chain shallow and resilient against workspace-symlink
+ * resolution quirks. `CategoryNode` is the recursive node shape (already
+ * exported above for the Zod schema annotation); `CategoryTree` is the
+ * envelope returned by `GET /categories`.
+ */
+export type CategoryTree = z.infer<typeof CategoryTreeSchema>;
+
 // ─── Helpers ───────────────────────────────────────────────────────────────
 
 const SHARED_CACHE_HEADERS = {

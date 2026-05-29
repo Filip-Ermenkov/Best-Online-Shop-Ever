@@ -84,13 +84,29 @@ export default async function HomePage() {
       <section className="max-w-7xl mx-auto px-4 pb-14">
         <div className="flex items-center justify-between mb-5">
           <h2 className="text-xl font-bold">Препоръчани продукти</h2>
-          <ButtonLink variant="ghost" size="sm" href="/products/electronics" className="gap-1.5">
-            Всички продукти <ArrowRight className="w-4 h-4" />
-          </ButtonLink>
+          {rootCategories[0] && (
+            // Land on the first root category — a "Всички продукти" landing
+            // page that lists all roots is its own slice. Linking to a real
+            // category is fine because the destination renders its own
+            // subcategory grid anyway.
+            <ButtonLink
+              variant="ghost"
+              size="sm"
+              href={`/products/${rootCategories[0].slug}`}
+              className="gap-1.5"
+            >
+              Всички продукти <ArrowRight className="w-4 h-4" />
+            </ButtonLink>
+          )}
         </div>
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
           {featuredProducts.map((p) => (
-            <ProductCard key={p.id} product={p} />
+            // Pass the short form `/products/{slug}` — the catch-all route's
+            // single-segment fallback permanently-redirects to the canonical
+            // category-prefixed URL. Featured products span multiple
+            // categories so the home page can't pre-compute the breadcrumb
+            // chain cheaply (would need an N+1 fetch per product).
+            <ProductCard key={p.id} product={p} href={`/products/${p.slug}`} />
           ))}
         </div>
       </section>

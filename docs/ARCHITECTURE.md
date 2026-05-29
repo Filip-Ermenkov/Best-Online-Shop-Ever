@@ -357,7 +357,7 @@ return 201.
    `/account/orders/{n}` page covers the consumer-side durable-
    medium read path on the same first-party domain.
 
-The SQS retry queue described in Roadmap item 20 closes both audit
+The SQS retry queue described in Roadmap item 21 closes both audit
 margins formally — once that lands, an SES outage stops being a
 compliance concern and becomes a backlog-drain concern.
 
@@ -691,7 +691,7 @@ invalid JSON are silently dropped with an `info`-level
 on errors).
 
 Closes the OWASP A09 visibility gap. The last remaining A09 item is
-distributed tracing (Roadmap item 17).
+distributed tracing (Roadmap item 18).
 
 #### 5.2.4 Verifying the policy is live
 
@@ -873,7 +873,7 @@ via **AWS Distro for OpenTelemetry (ADOT)**:
 
 **Effort to add:** ~1 day. ADOT ships as a Lambda layer; the
 instrumentation libraries auto-instrument the AWS SDK + HTTP +
-`pg` + Hono with one config change. Roadmap item 17.
+`pg` + Hono with one config change. Roadmap item 18.
 
 ### 8.3 Metrics that should exist but don't
 
@@ -1385,34 +1385,76 @@ Ranked by `(impact ÷ effort)` — highest leverage first. Items marked
     template + `sendOrderStatusUpdateEmail` helper. Status-aware copy
     for `accepted` / `ready_for_pickup` / `shipped` / `delivered` /
     `cancelled`. Awaiting wire-up from the future `admin-api` slice.
+15. ✅ **Real storefront browsing** (2026-05-28; JSON-LD + type
+    plumbing follow-up 2026-05-29). Home page, `/search`,
+    `/products/[...path]`, and the header autocomplete all moved
+    off `frontend/src/lib/mock-data/{products,categories}` to real
+    `@shop/api` calls. The catch-all
+    `/products/[...path]` is now an async Server Component that
+    resolves the URL against the live category tree as either
+    (a) the virtual `new-products` view, (b) a pure category chain,
+    (c) a category chain + product slug, or (d) a bare product slug
+    (which 301-redirects to the canonical category-prefixed URL via
+    `permanentRedirect`). Product pages emit `Schema.org` `Product`
+    + `BreadcrumbList` JSON-LD in an `@graph` envelope, plus
+    per-product `generateMetadata` with canonical URL and OpenGraph
+    image. Tree-helper module `frontend/src/lib/catalog.ts` exposes
+    pure functions over the live tree (`resolveCategoryPath`,
+    `findCategoryById`, `getCategoryAncestors`, `categoryHref`,
+    `productHref`). The `(shop)/layout.tsx` fetches the tree once
+    per request and passes it to `NavBar` via prop; the per-request
+    fetch is deduped via Next.js's
+    `next: { revalidate: 300, tags: ["categories"] }`. The header
+    autocomplete is a debounced (200 ms) client-side fetch to
+    `/products?q=…&limit=5` with AbortController-cancellation on
+    resumed typing. Banner slides on the home carousel remain on
+    mock data (no banners endpoint exists) and admin pages remain
+    on mock data (admin-api not yet built). 2026-05-29 follow-up:
+    `@shop/api` now exports concrete Zod-inferred DTO types
+    (`ProductSummary`, `ProductsPage`, `ProductDetail`,
+    `CategoryNode`, `CategoryTree`, etc.) from `src/types.ts`,
+    consumed by `frontend/src/lib/api.ts`'s helper return-type
+    annotations (`Promise<ProductsPage>`, etc.) and by
+    `frontend/src/lib/catalog.ts`. This makes typing resilient
+    to the workspace-symlink hiccups that can collapse
+    `ReturnType<typeof buildApp>` into `any` on some setups —
+    callers always get the right shape regardless of how the deep
+    AppType inference happens to resolve. Same follow-up shipped
+    `hasMerchantReturnPolicy` (14-day EU 2023/2673 withdrawal) on
+    every product Offer, absolute URLs everywhere in `@id`/`item`
+    fields (Google Rich Results requirement), and omits the
+    `Product.image` field when no images exist (closes the
+    Rich Results "Missing field image" warning). The
+    `frontend/src/app/(shop)/api-demo/` smoke-test page was
+    removed since the real storefront pages now demonstrate the
+    same RPC patterns end-to-end.
 
 ### Next two weeks (do these in order)
 
-15. ❌ **Reconcile docs to reality** (done in this revision —
+16. ❌ **Reconcile docs to reality** (done in this revision —
     2026-05-26). Downgrade IaC claim, downgrade admin-api claim,
     downgrade scheduler claim, downgrade EU CRA claim. Re-upgrade
     the order-confirmation row in COMPLIANCE.md (done in 2026-05-27
-    after the template + wire-up shipped).
-16. ❌ **First production deploy.** Create `infra/` with the
+    after the template + wire-up shipped). Re-upgrade the storefront
+    browsing row in this doc (done in 2026-05-28 after item 15
+    shipped).
+17. ❌ **First production deploy.** Create `infra/` with the
     minimal Terraform that provisions the actual running shop.
     1–2 days.
-17. ❌ **ADOT distributed tracing** on `shop-api`. Closes the OWASP
+18. ❌ **ADOT distributed tracing** on `shop-api`. Closes the OWASP
     A09 + NIST CSF Detect gap. ~1 day.
-18. ❌ **First real DR drill** against a Neon PITR branch. Write
+19. ❌ **First real DR drill** against a Neon PITR branch. Write
     up the timestamped result. 2 hours.
 
 ### Next month
 
-19. ❌ **Address book CRUD** — schema exists; ship API + UI.
+20. ❌ **Address book CRUD** — schema exists; ship API + UI.
     1 day.
-20. ❌ **SQS retry queue for SES.** Closes both EU 2023/2673
+21. ❌ **SQS retry queue for SES.** Closes both EU 2023/2673
     Art. 11a(2) durable-medium audit margin AND Art. 8(7)
     confirmation-of-contract margin. With the order-confirmation
     email already wired (item 13), this is the single remaining
     lift on the email-reliability side. 4 hours.
-21. ❌ **Real storefront browsing.** Replace mock-data calls on
-    home, search, and `/products/[...path]` with real `@shop/api`
-    calls. ~1 day.
 22. ❌ **Admin-api Lambda + first admin slice** (orders). Removes
     the manual `status='accepted'` psql. Wire
     `sendOrderStatusUpdateEmail` (item 14) into each admin status

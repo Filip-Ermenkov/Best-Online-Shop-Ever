@@ -80,6 +80,24 @@ const ProductsPageSchema = z
   })
   .openapi("ProductsPage");
 
+/**
+ * Public DTO types — re-exported from `src/types.ts` and consumed by the
+ * frontend without going through the Hono RPC `AppType` ReturnType chain.
+ *
+ * The `AppType` route does work over the workspace symlink in most local
+ * setups, but `ReturnType<typeof buildApp>` walks a deep dependency graph
+ * (every route file, every Zod schema, every workspace dep) and degrades
+ * to `any` if ANY link breaks. The explicit Zod-inferred types below are
+ * resilient — they only depend on this file and Zod's own type machinery,
+ * so consumers always get the right shape.
+ */
+export type ProductImage = z.infer<typeof ProductImageSchema>;
+export type StockStatus = z.infer<typeof StockStatusSchema>;
+export type ProductSummary = z.infer<typeof ProductSummarySchema>;
+export type CategoryBreadcrumb = z.infer<typeof CategoryBreadcrumbSchema>;
+export type ProductDetail = z.infer<typeof ProductDetailSchema>;
+export type ProductsPage = z.infer<typeof ProductsPageSchema>;
+
 // ─── Query schemas ─────────────────────────────────────────────────────────
 
 const SortKey = z.enum(["featured", "newest", "price_asc", "price_desc"]);

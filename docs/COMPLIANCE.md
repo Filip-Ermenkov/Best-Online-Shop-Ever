@@ -87,7 +87,7 @@ exercised until deployment, the cell is annotated.
 
 | Best practice | Status | Notes |
 |---|---|---|
-| Infrastructure as Code (Terraform) | ❌ | `infra/` directory does not yet exist. Roadmap item 16 |
+| Infrastructure as Code (Terraform) | ❌ | `infra/` directory does not yet exist. Roadmap item 18 |
 | Automated CI/CD | ✅ | GitHub Actions, 5 parallel jobs in ci.yml + CodeQL + SBOM workflows |
 | Atomic blue/green deployments | N/A today | Target: AWS Amplify atomic deploys once deployed |
 | Structured JSON logs | ✅ | Pino + PII redaction. Runs locally; lands in CloudWatch once deployed |
@@ -95,10 +95,10 @@ exercised until deployment, the cell is annotated.
 | CloudWatch alarms on key metrics | ❌ Today | Target: 5 alarms (5xx rate, admin logins, p99 duration, scheduler failure, SES bounces). Not deployed |
 | Cron via managed service | ❌ Today | Target: EventBridge Scheduler invoking `scheduler-fn`. Scheduler Lambda not built |
 | Runbooks documented | ⚠️ | DR procedure + MFA recovery documented in ARCHITECTURE.md §12. No incident response playbook yet |
-| **Distributed tracing** | ❌ | Not yet added. Roadmap item 17 (ADOT) |
+| **Distributed tracing** | ❌ | Not yet added. Roadmap item 18 (ADOT) |
 | **Formal SLO definitions** | ❌ | Targets exist informally in ARCHITECTURE.md §7.2. Roadmap item 24 |
 | **DORA metrics tracked** | ❌ | Not yet instrumented |
-| **DR drill cadence** | ❌ | Procedure documented; never tested. Roadmap item 18 |
+| **DR drill cadence** | ❌ | Procedure documented; never tested. Roadmap item 19 |
 | **Incident postmortem template** | ❌ | Roadmap item 31 |
 | **Status page** | ❌ | Roadmap item 30 |
 
@@ -151,8 +151,8 @@ exercised until deployment, the cell is annotated.
 | Expand-contract migration discipline | ✅ | Documented + practised |
 | Honest SPOF acknowledgement | ✅ | Neon Free/Launch documented as SPOF in ARCHITECTURE.md §6 |
 | **Formal RTO/RPO targets** | ❌ | Targets documented in ARCHITECTURE.md §6.2; not yet operationalised |
-| **SQS retry queue for SES** | ❌ | Withdrawal-receipt + order-confirmation durable-medium audit margin. Roadmap item 20 |
-| **DR drill cadence** | ❌ | Roadmap item 18 |
+| **SQS retry queue for SES** | ❌ | Withdrawal-receipt + order-confirmation durable-medium audit margin. Roadmap item 21 |
+| **DR drill cadence** | ❌ | Roadmap item 19 |
 | **Public status page** | ❌ | Roadmap item 30 |
 | **Multi-region failover** | ❌ | Roadmap item 37 (deferred until contractual SLA) |
 | **99.95% SLA-backed DB** | ❌ | Requires Neon Scale upgrade — defer until contractual |
@@ -253,7 +253,7 @@ gaps.
 
 | Category | Status | Notes |
 |---|---|---|
-| RC.RP — Incident recovery plan execution | ⚠️ | Procedures documented; never drilled. Roadmap item 18 |
+| RC.RP — Incident recovery plan execution | ⚠️ | Procedures documented; never drilled. Roadmap item 19 |
 | RC.CO — Incident recovery communication | ❌ | No public status page |
 
 ---
@@ -279,7 +279,7 @@ Published 2024–2025 (eighth edition). Notable changes vs 2021:
 | A06 | Insecure Design | ✅ | Idempotency, optimistic locking, line-item snapshots, expand-contract migrations, account-discount server-controlled |
 | A07 | Authentication Failures | ⚠️ | Customer-side ✅ (Argon2id RFC 9106, constant-time login, per-email lockout, NIST 800-63B-4 + HIBP). Admin MFA documented but **admin auth flow not built** (Roadmap item 35). Customer MFA is a growth-stage residual (Roadmap item 34) |
 | A08 | Software and Data Integrity Failures | ✅ | Every SBOM signed via Sigstore Fulcio/Rekor, keyless OIDC, transparency log. Verification in ARCHITECTURE.md §9.5 |
-| A09 | Security Logging and Monitoring Failures | ⚠️ | Pino structured logs ✅; CSP violation reporting ✅ (May 2026); distributed tracing ❌. Roadmap item 17 |
+| A09 | Security Logging and Monitoring Failures | ⚠️ | Pino structured logs ✅; CSP violation reporting ✅ (May 2026); distributed tracing ❌. Roadmap item 18 |
 | A10 | Mishandling of Exceptional Conditions (new) | ✅ | RFC 9457 Problem Details on every error; graceful degradation; best-effort emails never block |
 
 E-commerce-specific OWASP 2025 vulnerabilities flagged in research:
@@ -497,7 +497,7 @@ ships in compliance ahead of the deadline.
 | **Confirmation of contract on durable medium (Art. 8(7), 2011/83/EU as amended by 2023/2673)** | ✅ `orders.order-confirmation` email fires from `POST /orders` after the checkout transaction commits. Includes the trader identity, line snapshots with frozen prices, money totals, payment + delivery arrangement, and a 14-day withdrawal-rights pointer (Art. 6(1)(h)). Idempotency-replay does NOT re-send. Backed by 5 integration tests in `backend/shop-api/tests/routes/order-emails.test.ts` |
 | Confirmation includes pre-contract information (Art. 6) | ✅ Order snapshot carries main characteristics of the goods + total price (incl. any applied discount) + payment / delivery arrangement; withdrawal-rights are surfaced both in the email and on the per-order page at `/account/orders/{n}` |
 | Confirmation is durable for the consumer (Art. 2(10)) | ✅ Email saved in the customer's mailbox (the canonical durable medium per the directive's recitals); plus a first-party `/account/orders/{n}` read path that does not depend on a third party |
-| Email send-failure does not break the audit trail | ⚠️ Order-placement does not block on the email (best-effort); a transport failure logs `order_confirmation_email_failed` and the `/account/orders/{n}` page is the independent durable-medium read path. SQS retry queue (Roadmap item 20) closes the formal audit margin |
+| Email send-failure does not break the audit trail | ⚠️ Order-placement does not block on the email (best-effort); a transport failure logs `order_confirmation_email_failed` and the `/account/orders/{n}` page is the independent durable-medium read path. SQS retry queue (Roadmap item 21) closes the formal audit margin |
 | Penalty for missing button | (Window extends to 12 months + 14 days) |
 
 Implemented in the May 2026 withdrawal slice. Three routes:
