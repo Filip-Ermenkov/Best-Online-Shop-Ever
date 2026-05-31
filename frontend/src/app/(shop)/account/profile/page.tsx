@@ -845,6 +845,30 @@ export default function ProfilePage() {
 
       <Separator className="my-8" />
 
+      {/* Personal-data export — GDPR Art. 15 (access) + Art. 20 (portability).
+         Sits between profile editing (Art. 16) and account deletion (Art. 17)
+         so the three self-service data rights live together, in escalating
+         order. The action lives behind a re-auth on /account/data-export. */}
+      <section aria-labelledby="data-export-heading">
+        <h2 id="data-export-heading" className="font-semibold">
+          Експорт на личните Ви данни
+        </h2>
+        <p className="text-sm text-muted-foreground mt-1">
+          Можете да изтеглите копие на личните данни, които съхраняваме за Вас,
+          в структуриран, машинно четим формат (JSON). Това включва акаунта,
+          профила, адресите, кошницата и историята на поръчките Ви — в
+          изпълнение на правото на достъп (чл. 15) и правото на преносимост на
+          данните (чл. 20).
+        </p>
+        <div className="mt-3">
+          <ButtonLink href="/account/data-export" variant="outline" size="sm">
+            Изтегли данните си
+          </ButtonLink>
+        </div>
+      </section>
+
+      <Separator className="my-8" />
+
       {/* Danger zone — GDPR Art. 17 right to erasure. Visually de-emphasised
          (no big destructive button on this page) so an accidental click
          can't trigger the destructive flow. The action lives behind a

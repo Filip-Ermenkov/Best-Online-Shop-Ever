@@ -310,7 +310,7 @@ eliminate one AWS lock-in point. See §10.
 
 **Today (code):** `@shop/email` exposes an `EmailTransport`
 interface with three implementations (`ses`, `console`, `stub`),
-selected via `EMAIL_TRANSPORT`. **Eleven** Bulgarian templates are
+selected via `EMAIL_TRANSPORT`. **Twelve** Bulgarian templates are
 rendered server-side:
 
 1.  Registration verification (`verification`)
@@ -336,6 +336,12 @@ rendered server-side:
     template and send helper exist; admin status transitions today
     still happen via direct DB updates so the wire-up lives one line
     away in the future `admin-api` slice.
+12. Data-export security notice (`data-exported`) — out-of-band
+    "your data was exported" notice, fires from `POST /auth/me/export`
+    the moment the GDPR Art. 15/20 export is generated. Carries no
+    payload and no link (the data went over the authenticated channel);
+    directs a surprised recipient to secure their account, mirroring
+    the `password-changed` pattern.
 
 **Critical: email sending is best-effort, never blocking.** A failed
 verification email at registration creates the account anyway and
@@ -1332,7 +1338,8 @@ of the AWS plumbing is provisioned yet.
 | SLSA v1.1 | ✅ Level 2 | Level 3 only if contractual need |
 | CIS Controls v8.1 IG1 | ✅ Met | — |
 | GDPR Art. 32 / 16 / 17 | ✅ | — |
-| GDPR Art. 20 | ⚠️ | Self-service data export endpoint |
+| GDPR Art. 15 (right of access) | ✅ | — (`POST /auth/me/export`, May 31 2026) |
+| GDPR Art. 20 (data portability) | ✅ | — (same endpoint; structured machine-readable JSON) |
 | GDPR Art. 33–34 (72h breach) | ⚠️ | Playbook |
 | EU Directive 2023/2673 | ✅ Shipped | — |
 | EU CRA (Sep 2026) | N/A | Out of scope (SaaS); CRA-style hygiene voluntarily maintained |
@@ -1483,7 +1490,19 @@ Ranked by `(impact ÷ effort)` — highest leverage first. Items marked
 35. ❌ **Admin TOTP enrolment + recovery codes UI.** ~2 days. The
     schema exists; the flow is missing. Required before §15.22's
     admin-api goes anywhere near production.
-36. ❌ **GDPR Art. 20 self-service data export.** ~1 day.
+36. ✅ **GDPR Art. 15 + Art. 20 self-service data export** (May 31,
+    2026). Pulled forward from growth-stage: it is a standing legal
+    obligation with a one-month statutory response window (Art. 12(3)),
+    and it completes the self-service data-rights triad next to Art. 16
+    (`PATCH /auth/me`) and Art. 17 (`DELETE /auth/me`). `POST
+    /auth/me/export` — current-password re-auth + a per-user frequency
+    cap (Art. 12(5) "manifestly excessive" guard). Returns a structured,
+    machine-readable JSON copy of the data the subject provided (Art. 20)
+    plus a `processingInformation` transparency block (Art. 15);
+    credentials/secrets are excluded and the exclusion is disclosed.
+    Builder + Zod envelope in `backend/shop-api/src/lib/data-export.ts`;
+    best-effort `auth.data-exported` notification email. See README
+    "Personal-data export" smoke test.
 37. ❌ **Multi-region failover.** ~1 week. Defer until customer
     requires a contractual SLA.
 38. ❌ **Move to Neon Scale** when contractual SLA is required.

@@ -1,6 +1,7 @@
 import { afterAll, beforeEach } from "vitest";
 import { sql } from "drizzle-orm";
 import { _resetRateLimitForTests } from "../../src/lib/csp-report.js";
+import { _resetExportRateLimitForTests } from "../../src/lib/data-export.js";
 import { getDb } from "../../src/lib/db.js";
 import {
   _resetEmailTransportForTests,
@@ -69,6 +70,10 @@ beforeEach(async () => {
   // earlier files in the suite, and so other tests don't accidentally trip
   // the limit by chaining many requests.
   _resetRateLimitForTests();
+
+  // POST /auth/me/export maintains an in-memory per-user frequency counter.
+  // Reset it for the same reasons as the CSP bucket above.
+  _resetExportRateLimitForTests();
 });
 
 afterAll(async () => {

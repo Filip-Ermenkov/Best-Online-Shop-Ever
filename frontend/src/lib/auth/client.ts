@@ -114,6 +114,9 @@ function classifyError(status: number, problem?: ProblemResponse): AuthError {
   if (status === 429 && problem?.type === "/problems/resend-rate-limited") {
     return { kind: "resend_rate_limited", detail: problem.detail };
   }
+  if (status === 429 && problem?.type === "/problems/export-rate-limited") {
+    return { kind: "export_rate_limited", detail: problem.detail };
+  }
   if (status === 400 && problem?.type === "/problems/invalid-reset-token") {
     return { kind: "invalid_reset_token", detail: problem.detail };
   }
@@ -635,4 +638,63 @@ export async function deleteAccount(
   }
   // Any other non-OK status flows through the standard problem mapper.
   return withErrorMapping(res, async () => ({ ok: true } as const));
+}
+
+/** Pull the `filename` out of a `Content-Disposition: attachment; ...` header. */
+function parseAttachmentFilename(header: string | null): string | null {
+  if (!header) return null;
+  const m = header.match(/filename\*?=(?:UTF-8'')?"?([^";]+)"?/i);
+  return m?.[1] ? decodeURIComponent(m[1]) : null;
+}
+
+/**
+ * Request a machine-readable export of the current user's personal data via
+ * POST /auth/me/export.
+ *
+ * GDPR Art. 15 (right of access) + Art. 20 (right to data portability). The
+ * backend gates this behind the same current-password re-auth as
+ * change-password / delete-account: a stolen cookie alone must not be able to
+ * pull a one-shot copy of everything the shop holds about the user.
+ *
+ * On success the API streams a JSON document with a `Content-Disposition:
+ * attachment` header. We hand the caller the `Blob` plus the resolved
+ * filename so the page can trigger a browser download without round-tripping
+ * the (potentially large, PII-heavy) payload through React state.
+ *
+ * Failure branches:
+ *   - kind === "invalid_credentials": current password was wrong. Repeated
+ *     failures trip the same lockout as /auth/login.
+ *   - kind === "account_locked": 5+ wrong-password attempts in the rolling
+ *     15-min window.
+ *   - kind === "export_rate_limited": 5+ SUCCESSFUL exports in the rolling
+ *     hour (Art. 12(5) "manifestly excessive" guard). Try again shortly.
+ *   - kind === "validation": missing currentPassword (the UI requires it, so
+ *     this is mostly a guard against later API consumers).
+ *   - kind === "unauthenticated": session expired between page load and submit.
+ *   - kind === "network": fetch failed.
+ */
+export async function requestDataExport(
+  currentPassword: string,
+): Promise<AuthResult<{ blob: Blob; filename: string }>> {
+  let res: Response;
+  try {
+    res = await authFetch("/auth/me/export", {
+      method: "POST",
+      body: JSON.stringify({ currentPassword }),
+    });
+  } catch (err) {
+    return { ok: false, error: { kind: "network", cause: err } };
+  }
+  if (res.status === 401) {
+    return { ok: false, error: { kind: "invalid_credentials" } };
+  }
+  if (res.ok) {
+    const blob = await res.blob();
+    const filename =
+      parseAttachmentFilename(res.headers.get("content-disposition")) ??
+      `shop-data-export-${new Date().toISOString().slice(0, 10)}.json`;
+    return { ok: true, value: { blob, filename } };
+  }
+  const problem = await readProblem(res);
+  return { ok: false, error: classifyError(res.status, problem) };
 }

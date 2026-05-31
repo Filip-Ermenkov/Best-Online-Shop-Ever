@@ -102,3 +102,9 @@ export type {
   OrderStatusUpdateTemplateInput,
   OrderStatusUpdateStatus,
 } from "./templates/order-status-update.js";
+
+export {
+  renderDataExportedEmail,
+  DATA_EXPORTED_TEMPLATE_ID,
+} from "./templates/data-exported.js";
+export type { DataExportedTemplateInput } from "./templates/data-exported.js";
