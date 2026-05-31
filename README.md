@@ -107,8 +107,8 @@ visible at `/account/orders`.
 
 ```powershell
 npm --workspace @shop/auth  run test   # 31 unit tests (Argon2, sessions, HIBP)
-npm --workspace @shop/email run test   # 46 unit tests (11 templates + 3 transports)
-npm --workspace @shop/api   run test   # 229 integration tests vs shop_test DB
+npm --workspace @shop/email run test   # 51 unit tests (12 templates + 3 transports)
+npm --workspace @shop/api   run test   # 242 integration tests vs shop_test DB
 ```
 
 Everything CI runs (typecheck + lint + tests). Approximates a green PR:
@@ -152,6 +152,7 @@ what needs to happen to get from today's repo state to that posture.
 
 - `/products`, `/categories` — read API, ETag, cursor pagination
 - `/auth/*` — register, login, logout, GET+PATCH `/me`, DELETE `/me`,
+  POST `/me/export` (GDPR Art. 15 + 20 personal-data export),
   verify-email, resend-verification, forgot-password,
   reset-password/check, reset-password, change-password,
   email-change/request, email-change/verify/check,
@@ -165,11 +166,12 @@ what needs to happen to get from today's repo state to that posture.
   the auth chain).
 - `/health`, `/openapi.json`
 
-Test counts as of 2026-05-27: auth 48, cart 30, categories 7,
-csp-report 25, email-change 21, order-emails 5, orders 25,
-password-reset 19, products 15, verification 11, withdrawal 23,
-plus a phone-validation lib test. **Total: 229 shop-api integration
-tests** running against a real `shop_test` Postgres in CI.
+Test counts as of 2026-05-31: auth 48, cart 30, categories 7,
+csp-report 25, data-export 13, email-change 21, order-emails 5,
+orders 25, password-reset 19, products 15, verification 11,
+withdrawal 23, plus a phone-validation lib test. **Total: 242
+shop-api integration tests** running against a real `shop_test`
+Postgres in CI.
 
 ### Backend (`@shop/db` schema)
 
@@ -188,7 +190,7 @@ breached-password screening. 31 unit tests across `breached-password`,
 ### Backend (`@shop/email`)
 
 Transactional email behind a common `EmailTransport` interface, with
-three implementations (`ses`, `console`, `stub`). **Eleven** Bulgarian
+three implementations (`ses`, `console`, `stub`). **Twelve** Bulgarian
 templates currently exist:
 
 1.  `verification` — signup email-verification link
@@ -211,6 +213,11 @@ templates currently exist:
     `admin-api` Lambda to wire — admin status transitions today still
     happen via direct DB updates, so the wire-up is one line away once
     that slice lands.
+12. `data-exported` — out-of-band security notice sent when a customer
+    runs the GDPR Art. 15/20 self-service data export (`POST
+    /auth/me/export`). Carries no payload and no link (the data went
+    over the authenticated channel); directs a surprised recipient to
+    secure their account, mirroring the `password-changed` pattern.
 
 ### Frontend (`frontend/`)
 
@@ -381,6 +388,33 @@ codes, sessions, tokens, login_attempts matched by original email
 rewritten to a non-Argon2 sentinel. Orders kept, customer fields
 blanked, financial data + line snapshots intact. Active-order check
 returns `422 /problems/active-orders-block-deletion`.
+
+### Personal-data export (GDPR Art. 15 + Art. 20)
+
+`/account/data-export` → `POST /auth/me/export`. Requires current-
+password re-auth (same posture as delete / change-password — a stolen
+cookie alone must not pull a one-shot copy of everything we hold). The
+builder (`backend/shop-api/src/lib/data-export.ts`) assembles a
+structured, machine-readable JSON document: account, profile, address
+book, cart, full order history (line items + delivery + corporate +
+status history + withdrawals), per-account discount, a `securityActivity`
+summary, and a `processingInformation` block (purposes, data categories,
+recipient categories, retention, the catalogue of rights, supervisory
+authority, automated-decision-making statement). Timestamps are ISO-8601,
+money is integer cents, keys are English (portable); the transparency
+strings are Bulgarian. Credentials and secrets (password/token/2FA
+hashes, raw login telemetry) are excluded and the exclusion is disclosed
+in `processingInformation.dataNotIncluded`. The response is served with
+`Content-Disposition: attachment` + `Cache-Control: no-store`; the page
+turns the blob into a browser download. A per-user frequency cap
+(5/hour) returns `429 /problems/export-rate-limited`. A best-effort
+`auth.data-exported` notification email fires on success.
+
+To smoke-test: register + log in, go to `/account/profile`, click
+**Изтегли данните си** (under the new "Експорт на личните Ви данни"
+section), enter your password, and a `shop-data-export-YYYY-MM-DD.json`
+file downloads. Watch `api:dev`'s stdout for the rendered notification
+email under the `console` transport.
 
 ### Order placement
 

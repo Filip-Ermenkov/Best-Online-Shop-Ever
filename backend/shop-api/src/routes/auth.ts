@@ -46,6 +46,14 @@ import {
   findActiveOrdersForUser,
   sendAccountDeletedEmail,
 } from "../lib/account-deletion.js";
+import {
+  DataExportSchema,
+  ExportUserMissingError,
+  buildUserDataExport,
+  checkAndRecordExport,
+  sendDataExportedNotification,
+  type DataExport,
+} from "../lib/data-export.js";
 import { parseEnv } from "../lib/env.js";
 import { ApiError, ProblemSchema, badRequest, internal } from "../lib/errors.js";
 import { logger as baseLogger } from "../lib/logger.js";
@@ -476,6 +484,80 @@ const deleteMeRoute = createRoute({
     429: {
       description:
         "Per-email lockout fired — shared with /auth/login. Too many incorrect currentPassword attempts.",
+      content: { "application/problem+json": { schema: ProblemSchema } },
+    },
+  },
+});
+
+// ─── Export my data (POST /auth/me/export) ────────────────────────────────
+//
+// GDPR Art. 15 (right of access) + Art. 20 (right to data portability), as a
+// single self-service download. Completes the data-rights triad the shop
+// already ships: Art. 16 rectify (PATCH /auth/me) + Art. 17 erase
+// (DELETE /auth/me) + Art. 20/15 export (here).
+//
+// Why POST, not GET: it carries a re-auth body (current password — GET with a
+// body is non-idiomatic), and it has a side effect (the security-notification
+// email), so it is not a cacheable idempotent read.
+//
+// Re-auth + lockout are identical in posture to /auth/change-password and
+// DELETE /auth/me: the session proves WHO you are, the current password
+// proves it is really you behind a possibly-stolen cookie before we hand over
+// a one-shot copy of everything we hold about you. A second, per-user
+// frequency limit (see lib/data-export.ts) caps the Art. 12(5) "manifestly
+// excessive / repetitive" case and the notification-email amplification.
+
+const ExportMeRequestSchema = z
+  .object({
+    /** Re-auth proof. Length-only validation — see ChangePasswordRequest. */
+    currentPassword: z.string().min(1).max(1024),
+  })
+  .strict()
+  .openapi("ExportMeRequest");
+
+const exportMeRoute = createRoute({
+  method: "post",
+  path: "/me/export",
+  tags: ["auth"],
+  summary:
+    "Export the authenticated user's personal data (GDPR Art. 15 + Art. 20). Requires current-password re-auth.",
+  description:
+    "Returns a structured, machine-readable JSON copy of the personal data " +
+    "held about the authenticated user — account, profile, address book, " +
+    "cart, full order history (with line-item, delivery, corporate, status- " +
+    "history and withdrawal records), per-account discount — plus a " +
+    "`processingInformation` block (purposes, data categories, recipient " +
+    "categories, retention, the catalogue of rights, the supervisory " +
+    "authority, and the existence of automated decision-making) that " +
+    "satisfies the Art. 15 access right alongside the Art. 20 portable " +
+    "payload. Credentials and security secrets are never included; the " +
+    "exclusions are disclosed in `processingInformation.dataNotIncluded`. " +
+    "Served with `Content-Disposition: attachment` and `Cache-Control: " +
+    "no-store`. Requires current-password re-auth.",
+  request: {
+    body: {
+      required: true,
+      content: { "application/json": { schema: ExportMeRequestSchema } },
+    },
+  },
+  responses: {
+    200: {
+      description:
+        "A structured, machine-readable JSON copy of the user's personal data.",
+      content: { "application/json": { schema: DataExportSchema } },
+    },
+    400: {
+      description: "Validation error — missing currentPassword.",
+      content: { "application/problem+json": { schema: ProblemSchema } },
+    },
+    401: {
+      description:
+        "No active session OR currentPassword is incorrect. Identical body for both — distinguishing them would leak whether the cookie alone is enough.",
+      content: { "application/problem+json": { schema: ProblemSchema } },
+    },
+    429: {
+      description:
+        "Per-email lockout fired (shared with /auth/login) OR the per-user export frequency limit was exceeded.",
       content: { "application/problem+json": { schema: ProblemSchema } },
     },
   },
@@ -1529,6 +1611,138 @@ authRoutes.openapi(deleteMeRoute, async (c) => {
   // cleanup.
   clearSessionCookie(c);
   return c.body(null, 204);
+});
+
+// POST /auth/me/export — GDPR Art. 15 + Art. 20 self-service data export. See
+// the route definition above for the design rationale and lib/data-export.ts
+// for the per-table inventory, the secrets-exclusion list, and the in-memory
+// frequency limiter.
+authRoutes.use(exportMeRoute.path, requireAuth);
+authRoutes.openapi(exportMeRoute, async (c) => {
+  const body = c.req.valid("json");
+  const user = c.get("user");
+  if (!user) {
+    throw new ApiError({
+      type: "about:blank",
+      title: "Unauthorized",
+      status: 401,
+      detail: "Authentication is required.",
+    });
+  }
+  const log = baseLogger;
+  const db = getDb();
+
+  // ── Lockout pre-check — same per-email counter as /auth/login. ────────
+  const lockout = await getLockoutState(user.email);
+  if (lockout.locked) {
+    throw new ApiError({
+      type: "/problems/account-locked",
+      title: "Too Many Attempts",
+      status: 429,
+      detail: lockout.unlockAt
+        ? `Account temporarily locked. Try again after ${lockout.unlockAt.toISOString()}.`
+        : "Account temporarily locked due to too many failed attempts.",
+    });
+  }
+
+  // ── Constant-time current-password verify ───────────────────────────
+  // Same posture as /auth/change-password and DELETE /auth/me. A stolen
+  // cookie alone must not be enough to exfiltrate the whole data bundle.
+  const [row] = await db
+    .select({ passwordHash: schema.users.passwordHash })
+    .from(schema.users)
+    .where(eq(schema.users.id, user.id))
+    .limit(1);
+  const targetHash = row?.passwordHash ?? (await DUMMY_PASSWORD_HASH);
+  const passwordOk = await verifyPassword(targetHash, body.currentPassword);
+
+  const ip = clientIp(c);
+  const ua = c.req.header("user-agent") ?? null;
+  const isRealSuccess = passwordOk && !!row;
+  await recordAttempt({
+    email: user.email,
+    success: isRealSuccess,
+    ipAddress: ip,
+    userAgent: ua,
+  });
+
+  if (!isRealSuccess) {
+    throw new ApiError({
+      type: "about:blank",
+      title: "Unauthorized",
+      status: 401,
+      detail: "Current password is incorrect.",
+    });
+  }
+
+  // ── Per-user export frequency limit ─────────────────────────────────
+  // Checked AFTER re-auth so a wrong-password or locked attempt never
+  // consumes the export budget. The budget caps SUCCESSFUL exports (and
+  // the notification-email amplification) per Art. 12(5).
+  const rl = checkAndRecordExport(user.id);
+  if (!rl.allowed) {
+    const retryAfterSec =
+      rl.retryAfterMs != null ? Math.ceil(rl.retryAfterMs / 1000) : null;
+    throw new ApiError({
+      type: "/problems/export-rate-limited",
+      title: "Too Many Requests",
+      status: 429,
+      detail:
+        retryAfterSec != null
+          ? `Too many data-export requests. Try again in about ${retryAfterSec} seconds.`
+          : "Too many data-export requests. Please try again later.",
+    });
+  }
+
+  // ── Build the export ─────────────────────────────────────────────────
+  let payload: DataExport;
+  try {
+    payload = await buildUserDataExport(user.id);
+  } catch (err) {
+    if (err instanceof ExportUserMissingError) {
+      // Row vanished between session validation and now — same flat 401.
+      throw new ApiError({
+        type: "about:blank",
+        title: "Unauthorized",
+        status: 401,
+        detail: "Authentication is required.",
+      });
+    }
+    throw err;
+  }
+
+  // ── Best-effort security notification ────────────────────────────────
+  // Out-of-band "your data was exported" notice. A failed send must NOT
+  // fail the export — the user already has the data on this response.
+  const fullName =
+    payload.profile == null
+      ? null
+      : payload.profile.kind === "personal"
+        ? payload.profile.fullName
+        : payload.profile.contactName;
+  await sendDataExportedNotification({
+    to: user.email,
+    fullName,
+    exportedAt: new Date(payload.export.generatedAt),
+    logger: log,
+  });
+
+  // ── Audit log (counts only — never the PII values) ───────────────────
+  log?.info(
+    {
+      userId: user.id,
+      orderCount: payload.orders.length,
+      addressCount: payload.addresses.length,
+    },
+    "data_export_completed",
+  );
+
+  // Stamp the response as a downloadable, never-cached attachment. The
+  // bundle is the user's entire PII set — a shared cache must never hold it.
+  const filename = `shop-data-export-${payload.export.generatedAt.slice(0, 10)}.json`;
+  c.header("Content-Disposition", `attachment; filename="${filename}"`);
+  c.header("Cache-Control", "no-store");
+  return c.json(payload, 200);
 });
 
 // /verify-email is intentionally NOT gated by requireAuth. Anyone holding the

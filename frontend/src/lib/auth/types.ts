@@ -84,6 +84,15 @@ export type AuthError =
   | { kind: "account_locked"; detail?: string; unlockAt?: string }
   | { kind: "resend_rate_limited"; detail?: string }
   /**
+   * The per-user data-export frequency cap fired (5 successful exports per
+   * rolling hour). Backend returns 429 with type=/problems/export-rate-limited.
+   * Distinct from `account_locked` (which is the shared-with-/login wrong-
+   * password lockout): export-rate-limited is hit by SUCCESSFUL exports, so the
+   * UI copy is "you've exported a few times recently, try again shortly" rather
+   * than a security-lockout message.
+   */
+  | { kind: "export_rate_limited"; detail?: string }
+  /**
    * The reset link was unknown / expired / already consumed. The backend
    * returns `application/problem+json` with type=/problems/invalid-reset-token
    * for all three cases — we deliberately do NOT distinguish them in the UI

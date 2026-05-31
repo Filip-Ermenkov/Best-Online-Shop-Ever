@@ -46,3 +46,9 @@ export type {
 // recursive node shape (manually annotated so Zod's `z.lazy()` can type-
 // check); `CategoryTree` is the envelope.
 export type { CategoryNode, CategoryTree } from "./routes/categories.js";
+
+// GDPR Art. 15 + Art. 20 self-service personal-data export envelope. The Zod
+// schema + builder live in lib/data-export.ts (the route in routes/auth.ts
+// references the schema for OpenAPI). Exported here as a concrete DTO for any
+// internal consumer that wants the typed shape.
+export type { DataExport } from "./lib/data-export.js";
