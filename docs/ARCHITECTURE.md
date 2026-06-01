@@ -206,7 +206,7 @@ runnable locally via `@hono/node-server`. Routes mounted in
 `backend/shop-api/src/app.ts`:
 
 - `/products`, `/categories`, `/auth/*`, `/cart/*`, `/orders/*`,
-  `/csp-report`, `/health`, `/openapi.json`.
+  `/addresses/*`, `/csp-report`, `/health`, `/openapi.json`.
 
 **Target (three Lambdas):**
 
@@ -1455,8 +1455,24 @@ Ranked by `(impact ÷ effort)` — highest leverage first. Items marked
 
 ### Next month
 
-20. ❌ **Address book CRUD** — schema exists; ship API + UI.
-    1 day.
+20. ✅ **Address book CRUD** (2026-06-01) — `/addresses` on `shop-api`:
+    `GET` (list live), `POST` (create), `PATCH /{id}` (partial update),
+    `DELETE /{id}` (soft delete via `deleted_at`). `requireAuth`-gated;
+    every row operation scoped to `(userId, deleted_at IS NULL)` so
+    not-found / not-yours / removed all collapse to one 404
+    (enumeration-resistant, like the per-order 404). Bulgarian 4-digit
+    postal-code validation, a 20-address per-user cap
+    (`422 /problems/address-limit-reached`), structured
+    `address_created/updated/deleted` Pino audit events (field NAMES
+    only on update — never PII values). `Address` DTO re-exported from
+    `src/types.ts`. Frontend `/account/addresses` page + typed
+    `lib/addresses` client, linked from the profile. This **activated the
+    previously-dead `addresses` table**: the GDPR export (item 36) and
+    account-deletion already read/erased it, but no route could write it,
+    so the export always returned an empty `addresses: []`. The
+    delivery-address snapshot on orders stays decoupled (orders snapshot
+    into `order_delivery_address`), so removing a book entry never
+    rewrites order history. 28 integration tests. Spec §6 "адресна книга".
 21. ❌ **SQS retry queue for SES.** Closes both EU 2023/2673
     Art. 11a(2) durable-medium audit margin AND Art. 8(7)
     confirmation-of-contract margin. With the order-confirmation

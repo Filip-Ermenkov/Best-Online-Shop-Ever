@@ -33,7 +33,10 @@ const TABLES_TO_TRUNCATE = [
   "order_items",
   "orders",
   // Auth & users — TRUNCATE … CASCADE will pick up profile / session /
-  // login_attempts rows via foreign keys.
+  // login_attempts / addresses rows via foreign keys. `addresses` is listed
+  // explicitly (it also cascades from users) so the address-book tests start
+  // from a clean book every test.
+  "addresses",
   "users",
   "sessions",
   "login_attempts",

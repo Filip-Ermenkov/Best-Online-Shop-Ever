@@ -749,6 +749,28 @@ export default function ProfilePage() {
 
       <Separator className="my-8" />
 
+      {/* Address book — manage saved delivery addresses (spec §6 "адресна
+         книга"). Lives next to the other self-service sections; the actual
+         CRUD is on the dedicated /account/addresses page. These are the same
+         addresses the GDPR export (Art. 15/20) lists. */}
+      <section aria-labelledby="addresses-heading">
+        <h2 id="addresses-heading" className="font-semibold">
+          Адресна книга
+        </h2>
+        <p className="text-sm text-muted-foreground mt-1">
+          Управлявайте запазените си адреси за доставка — добавяйте,
+          редактирайте или премахвайте адреси, които да изберете бързо при
+          поръчка.
+        </p>
+        <div className="mt-3">
+          <ButtonLink href="/account/addresses" variant="outline" size="sm">
+            Към адресната книга
+          </ButtonLink>
+        </div>
+      </section>
+
+      <Separator className="my-8" />
+
       {/* Password-change form — wired to POST /auth/change-password. */}
       <form onSubmit={(e) => void handleSubmitPassword(e)} className="space-y-4" noValidate>
         <h2 className="font-semibold">Смяна на парола</h2>

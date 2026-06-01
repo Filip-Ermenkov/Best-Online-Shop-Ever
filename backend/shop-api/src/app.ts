@@ -11,6 +11,7 @@ import { ApiError, badRequest, internal, type Problem } from "./lib/errors.js";
 import { logger as baseLogger, requestLogger } from "./lib/logger.js";
 import { validationHook } from "./lib/validation-hook.js";
 import { currentUser, type AuthVariables } from "./middleware/auth.js";
+import { addressesRoutes } from "./routes/addresses.js";
 import { authRoutes } from "./routes/auth.js";
 import { cartRoutes } from "./routes/cart.js";
 import { categoriesRoutes } from "./routes/categories.js";
@@ -159,6 +160,8 @@ export function buildApp() {
   app.use("/cart", currentUser);
   app.use("/orders/*", currentUser);
   app.use("/orders", currentUser);
+  app.use("/addresses/*", currentUser);
+  app.use("/addresses", currentUser);
 
   app.get("/health", (c) => c.json({ ok: true }));
 
@@ -167,6 +170,7 @@ export function buildApp() {
   app.route("/auth", authRoutes);
   app.route("/cart", cartRoutes);
   app.route("/orders", ordersRoutes);
+  app.route("/addresses", addressesRoutes);
   // CSP violation reports — anonymous, no currentUser middleware (intentional).
   // Always returns 204 No Content; see backend/shop-api/src/routes/csp.ts for
   // the full design rationale.
@@ -248,4 +252,5 @@ export function buildApp() {
   return app;
 }
 
+// AppType is the Hono RPC lynchpin; see src/types.ts for the consumer story.
 export type AppType = ReturnType<typeof buildApp>;

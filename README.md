@@ -108,7 +108,7 @@ visible at `/account/orders`.
 ```powershell
 npm --workspace @shop/auth  run test   # 31 unit tests (Argon2, sessions, HIBP)
 npm --workspace @shop/email run test   # 51 unit tests (12 templates + 3 transports)
-npm --workspace @shop/api   run test   # 242 integration tests vs shop_test DB
+npm --workspace @shop/api   run test   # full integration suite (304 cases) vs shop_test DB
 ```
 
 Everything CI runs (typecheck + lint + tests). Approximates a green PR:
@@ -161,17 +161,23 @@ what needs to happen to get from today's repo state to that posture.
 - `/orders`, `/orders/:orderNumber`,
   `/orders/:orderNumber/withdrawal`,
   `/orders/:orderNumber/withdrawal/eligibility`
+- `/addresses`, `/addresses/:id` — customer address-book CRUD
+  (list / create / partial-update / soft-delete). `requireAuth`-gated,
+  per-user ownership-scoped, 4-digit Bulgarian postal-code validation,
+  20-address cap. Activates the `addresses` table the GDPR export and
+  account-deletion already reference.
 - `/csp-report` — accepts both legacy `application/csp-report` and
   modern `application/reports+json`. Anonymous (intentionally outside
   the auth chain).
 - `/health`, `/openapi.json`
 
-Test counts as of 2026-05-31: auth 48, cart 30, categories 7,
-csp-report 25, data-export 13, email-change 21, order-emails 5,
-orders 25, password-reset 19, products 15, verification 11,
-withdrawal 23, plus a phone-validation lib test. **Total: 242
-shop-api integration tests** running against a real `shop_test`
-Postgres in CI.
+Test counts as of 2026-06-01, by `it`/`test` block: addresses 28,
+auth 48, cart 30, categories 7, csp-report 25, data-export 13,
+email-change 21, order-emails 5, orders 25, password-reset 19,
+products 15, verification 11, withdrawal 23, plus a phone-validation
+lib suite — **270 blocks**. The `csp-report` and `phone` suites are
+table-driven (`it.each`), so `vitest run` expands them and reports
+**304 cases total**, all against a real `shop_test` Postgres in CI.
 
 ### Backend (`@shop/db` schema)
 
@@ -237,6 +243,12 @@ discriminated union.
 Real order placement wired end-to-end: `Idempotency-Key`-headered
 `POST /orders`, full `OrderError` discriminated union, listing + detail
 + withdrawal flow at `/account/orders/[orderNumber]`.
+
+Real address book wired end-to-end at `/account/addresses` (linked from
+`/account/profile`): list + add + inline-edit + two-step-confirm delete,
+backed by the `/addresses` CRUD with a typed `AddressError` union in
+`frontend/src/lib/addresses/`. 4-digit postal-code validation client- and
+server-side. The "адресна книга" of spec §6.
 
 **Still on mock data:**
 
@@ -415,6 +427,24 @@ To smoke-test: register + log in, go to `/account/profile`, click
 section), enter your password, and a `shop-data-export-YYYY-MM-DD.json`
 file downloads. Watch `api:dev`'s stdout for the rendered notification
 email under the `console` transport.
+
+### Address book
+
+`/account/addresses` (linked from `/account/profile` under "Адресна
+книга") → `/addresses` CRUD. Register, log in, open the page: it starts
+empty. **Добави адрес** opens the shared form — `Град`, `Пощенски код`
+(exactly 4 digits — try `12` or `abcd` to see the inline rejection),
+`Улица и номер`, plus optional `Етикет` and `Апартамент / офис`. Save and
+the address appears in the list. **Редактирай** re-opens the same form
+pre-filled (`PATCH /addresses/:id`, no-op short-circuit if nothing
+changed); **Изтрий** asks "Сигурни ли сте?" inline before a soft delete
+(`deleted_at` stamped, row stays in the DB for the export's transparency
+view). Ownership is enforced server-side — an address id belonging to
+another account returns the same `404` as a non-existent one. The book is
+capped at 20 live addresses (the 21st create returns
+`422 /problems/address-limit-reached`). Run a data export afterwards: the
+saved addresses now appear under `addresses` in the JSON (the table was
+unreachable before this slice).
 
 ### Order placement
 
@@ -632,8 +662,6 @@ reality, as of 2026-05-26:
   carries `totp_secret` columns; no admin auth flow exists in the
   frontend or `shop-api`. The admin login page at `/admin/login`
   is a stub.
-- **Address book CRUD** — `addresses` schema table exists
-  (`backend/db/src/schema/users.ts` line 127); no API routes, no UI.
 - **Banner slides API** — the home-page carousel still imports from
   `frontend/src/lib/mock-data/banners.ts`. A real `banner_slides`
   endpoint + admin CRUD ships with the admin-api slice.
@@ -667,8 +695,11 @@ In priority order (also tracked in `docs/ARCHITECTURE.md` §15):
    DR drill.
 3. **First real DR drill** against a Neon PITR branch. Write up the
    timestamped result. 2 hours including doc.
-4. **Address book CRUD.** Schema is ready; ship customer-facing
-   API + UI. 1 day, no AWS dependency.
+4. ~~**Address book CRUD.**~~ ✅ Shipped 2026-06-01. `/addresses` CRUD
+   (list / create / PATCH / soft-delete) + `/account/addresses` UI,
+   linked from the profile. Activated the previously-dead `addresses`
+   table that the GDPR export and account-deletion already referenced.
+   28 integration tests.
 5. **SQS retry queue for SES.** 4 hours. Closes the EU 2023/2673
    durable-medium audit margin before June 19, 2026. With the
    order-confirmation email now wired into `POST /orders`, this is the
