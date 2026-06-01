@@ -52,3 +52,8 @@ export type { CategoryNode, CategoryTree } from "./routes/categories.js";
 // references the schema for OpenAPI). Exported here as a concrete DTO for any
 // internal consumer that wants the typed shape.
 export type { DataExport } from "./lib/data-export.js";
+
+// Customer address-book DTO from routes/addresses.ts. The frontend annotates
+// its lib/addresses fetch helpers with this concrete shape so callers get the
+// right type regardless of how the workspace symlink resolves AppType.
+export type { Address } from "./routes/addresses.js";
