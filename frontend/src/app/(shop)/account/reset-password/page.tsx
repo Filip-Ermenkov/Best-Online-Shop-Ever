@@ -216,7 +216,7 @@ export default function ResetPasswordPage() {
 
         <div className="mb-6">
           <div className="w-12 h-12 rounded-full bg-primary/10 flex items-center justify-center mb-4">
-            <KeyRound className="w-6 h-6 text-primary" />
+            <KeyRound className="w-6 h-6 text-primary-strong" />
           </div>
           <h1 className="text-2xl font-bold">Нова парола</h1>
           <p className="text-muted-foreground mt-1 text-sm">
@@ -235,7 +235,6 @@ export default function ResetPasswordPage() {
               onChange={(e) => setNewPassword(e.target.value)}
               autoComplete="new-password"
               required
-              autoFocus
               className="mt-1"
               disabled={pending}
             />
@@ -274,7 +273,7 @@ export default function ResetPasswordPage() {
           Спомнихте си старата парола?{" "}
           <Link
             href="/account/login"
-            className="text-primary hover:underline"
+            className="text-primary-strong underline"
           >
             Влезте тук
           </Link>

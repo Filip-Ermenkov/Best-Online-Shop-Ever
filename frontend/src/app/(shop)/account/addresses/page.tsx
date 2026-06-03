@@ -295,7 +295,7 @@ export default function AddressesPage() {
 
       <div className="flex items-center justify-between mb-2">
         <h1 className="text-2xl font-bold flex items-center gap-2">
-          <MapPin className="w-6 h-6 text-primary" /> Адресна книга
+          <MapPin className="w-6 h-6 text-primary-strong" /> Адресна книга
         </h1>
         {!showForm && (
           <Button size="sm" className="gap-1.5" onClick={openCreate}>

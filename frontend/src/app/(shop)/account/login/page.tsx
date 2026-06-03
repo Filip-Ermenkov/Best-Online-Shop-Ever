@@ -119,7 +119,6 @@ export default function LoginPage() {
             onChange={(e) => setEmail(e.target.value)}
             autoComplete="email"
             required
-            autoFocus
             className="mt-1"
             placeholder="you@example.com"
             disabled={pending}
@@ -128,7 +127,7 @@ export default function LoginPage() {
         <div>
           <div className="flex justify-between items-center">
             <Label htmlFor="password">Парола</Label>
-            <Link href="/account/forgot-password" className="text-xs text-primary hover:underline">
+            <Link href="/account/forgot-password" className="text-xs text-primary-strong underline">
               Забравена парола?
             </Link>
           </div>
@@ -150,6 +149,7 @@ export default function LoginPage() {
             checked={rememberMe}
             onChange={(e) => setRememberMe(e.target.checked)}
             disabled={pending}
+            aria-label="Запомни ме"
             className="h-4 w-4 rounded border-input"
           />
           <span>Запомни ме</span>
@@ -178,7 +178,7 @@ export default function LoginPage() {
       </div>
 
       <div className="mt-4 text-center">
-        <Link href="/checkout" className="text-sm text-primary hover:underline">
+        <Link href="/checkout" className="text-sm text-primary-strong underline">
           Продължи като гост →
         </Link>
       </div>

@@ -516,20 +516,31 @@ single biggest gap; it is now closed pending the SQS retry queue.
 
 ## 13. WCAG 2.2 / European Accessibility Act
 
-European Accessibility Act mandatory since **June 28, 2025** for
-e-commerce serving EU residents.
+European Accessibility Act enforceable since **June 28, 2025** for
+e-commerce serving EU residents; enforcement is active across the EU in
+2026 (penalties up to ~€3M plus market-removal powers). The harmonised
+technical standard is **EN 301 549** — its current revision maps to
+WCAG 2.1 AA; the V4.x revision brings WCAG 2.2 AA. The shop targets
+**WCAG 2.2 AA**, a superset of 2.1 AA, so it satisfies both. Shipped
+**2026-06-02**; engineering detail + manual checklist in
+`docs/ACCESSIBILITY.md`, customer-facing statement at `/accessibility`
+(EAA Annex V).
 
-| WCAG 2.2 Principle | Status |
-|---|---|
-| Perceivable (alt text, contrast 4.5:1, info not by colour alone) | ⚠️ Design intent in scope per docs/README §13; not continuously audited |
-| Operable (keyboard nav, focus indicators, 24×24 touch targets, skip nav) | ⚠️ |
-| Understandable (labels, error messages, autocomplete, predictable navigation) | ⚠️ |
-| Robust (semantic HTML, ARIA, screen-reader compatibility) | ⚠️ |
+| WCAG 2.2 Principle | Status | Notes |
+|---|---|---|
+| Perceivable | ✅ | Text contrast ≥ 4.5:1 (≥ 3:1 large/UI) — design tokens darkened (`--primary-strong` gold, `--muted-foreground`), verified computationally (OKLCH→WCAG luminance); meaningful `alt`, decorative images `alt=""`; info never by colour alone |
+| Operable | ✅ | Full keyboard nav; uniform `:focus-visible` indicator (2.4.13); skip-link to `#main-content` (2.4.1); targets ≥ 24 px (2.5.8); `prefers-reduced-motion` honoured (2.2.2 / 2.3.3); search is a WAI-ARIA APG combobox |
+| Understandable | ✅ | Associated `<label>` on every field; `autoComplete` purposes (1.3.5); errors via `role="alert"`; `lang="bg"`; predictable navigation |
+| Robust | ✅ | Semantic landmarks + ARIA (combobox/listbox/option, region, alert); base-ui dialogs trap focus + close on Esc |
+| **Continuous audit** | ✅ | Static `eslint-plugin-jsx-a11y` in CI (the `lint` job) + runtime `axe-core`/Playwright (`npm run test:a11y`) + manual keyboard/SR checklist (`docs/ACCESSIBILITY.md` §5). The ⚠️→✅ this row used to flag is now operationalised |
 
-WCAG 2.2 AA is the European Accessibility Act baseline. The
-functional spec commits to it; **the gap is continuous audit** —
-adding axe-core or Pa11y to CI (Roadmap item 28 area) would
-operationalise the commitment.
+**Known limitations (disclosed in the statement):** the category menu
+does not implement the full WAI-ARIA `menubar` model (roving tabindex +
+arrow-key traversal) — but every category is keyboard-reachable via the
+"Всички категории" panel, and the previews now open on keyboard focus as
+well as hover (`onFocus`/`onBlur` + `group-focus-within`); `/admin/*` is
+operator-only and out of scope for the customer statement. Tracked in
+`ARCHITECTURE.md` §15 item 40.
 
 ---
 

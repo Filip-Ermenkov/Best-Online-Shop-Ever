@@ -25,6 +25,24 @@ interface ProductCardProps {
   className?: string;
 }
 
+/**
+ * Accessibility note — the "stretched link" pattern.
+ *
+ * The card used to be a single <Link> wrapping the whole thing, INCLUDING the
+ * quantity stepper and the Add-to-cart <button>s. Nesting interactive controls
+ * inside an <a> is invalid HTML (an anchor may not contain interactive content)
+ * and produces a broken keyboard/screen-reader experience: the buttons land
+ * inside the link, focus order is muddled, and a stray `onClick preventDefault`
+ * hack was needed to stop button clicks from navigating.
+ *
+ * Now the card is a non-interactive <article>. Only the product TITLE is a
+ * link, and its `::after` is stretched over the whole card so the entire
+ * surface stays clickable for pointer users (WCAG 2.5.8 large target) while
+ * exactly one link sits in the tab order with an accessible name (the product
+ * name). The action buttons are SIBLINGS of the link, raised above the
+ * stretched overlay with `relative z-10`, so they're independently focusable
+ * and clickable. Valid HTML, clean focus order, no preventDefault hack.
+ */
 export default function ProductCard({ product, href, className }: ProductCardProps) {
   const { addGuestItem, addItem, isAuthenticated } = useCart();
   const [quantity, setQuantity] = useState(1);
@@ -33,9 +51,7 @@ export default function ProductCard({ product, href, className }: ProductCardPro
 
   const productUrl = href ?? `/products/${product.slug}`;
 
-  const handleAddToCart = (e: React.MouseEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
+  const handleAddToCart = () => {
     if (isOutOfStock) return;
     // The card can serve both anonymous (use addGuestItem with snapshot) and
     // authenticated (server hydrates everything from productId) users.
@@ -63,9 +79,7 @@ export default function ProductCard({ product, href, className }: ProductCardPro
     setTimeout(() => setAdded(false), 1800);
   };
 
-  const handleQuantityChange = (delta: number, e: React.MouseEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
+  const handleQuantityChange = (delta: number) => {
     // The DB does not track stock quantity (only stockStatus). Cap at the
     // server's per-line ceiling so the stepper can't suggest a value the
     // server will clamp anyway.
@@ -73,16 +87,15 @@ export default function ProductCard({ product, href, className }: ProductCardPro
   };
 
   return (
-    <Link
-      href={productUrl}
+    <article
       className={cn(
         "group relative flex flex-col rounded-lg border border-border bg-card card-lift overflow-hidden",
         className
       )}
     >
-      {/* New badge */}
+      {/* New badge — z-20 keeps it above the stretched product-link overlay */}
       {product.isNew && (
-        <div className="absolute top-2 left-2 z-10">
+        <div className="absolute top-2 left-2 z-20">
           <Badge className="bg-[oklch(0.73_0.10_75)] text-[oklch(0.18_0.02_270)] text-[10px] px-1.5 py-0.5 font-semibold">НОВО</Badge>
         </div>
       )}
@@ -105,37 +118,51 @@ export default function ProductCard({ product, href, className }: ProductCardPro
       {/* Info */}
       <div className="flex flex-col flex-1 p-3 gap-1.5">
         <p className="text-xs text-muted-foreground">{product.code}</p>
-        <h3 className="text-sm font-medium leading-snug line-clamp-2 flex-1">{product.name}</h3>
+        <h3 className="text-sm font-medium leading-snug line-clamp-2 flex-1">
+          {/* Stretched link: `after:inset-0` covers the whole card (the
+              <article> is the nearest positioned ancestor) so pointer users can
+              click anywhere, while only this one link is keyboard-tabbable. */}
+          <Link
+            href={productUrl}
+            className="after:absolute after:inset-0 after:content-[''] hover:text-primary-strong transition-colors"
+          >
+            {product.name}
+          </Link>
+        </h3>
 
         {/* Stock status — only in_stock or out_of_stock */}
         <p className={cn(
           "text-xs",
-          product.stockStatus === "in_stock" ? "text-green-600" : "text-muted-foreground"
+          product.stockStatus === "in_stock" ? "text-green-700" : "text-muted-foreground"
         )}>
           {product.stockStatus === "in_stock" ? "В наличност" : "Изчерпано"}
         </p>
 
         {/* Price */}
-        <span className="font-bold text-base text-primary">{formatPrice(product.price)}</span>
+        <span className="font-bold text-base text-primary-strong">{formatPrice(product.price)}</span>
 
-        {/* Quantity selector + Add to cart — responsive, never cut off */}
+        {/* Quantity selector + Add to cart. `relative z-10` lifts these above
+            the stretched link's overlay so they remain independently
+            operable; no preventDefault hack needed any more. */}
         {!isOutOfStock ? (
-          <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 mt-auto" onClick={(e) => e.preventDefault()}>
+          <div className="relative z-10 flex flex-col sm:flex-row items-stretch sm:items-center gap-2 mt-auto">
             <div className="flex items-center border border-border rounded-md self-start">
               <button
-                onClick={(e) => handleQuantityChange(-1, e)}
+                type="button"
+                onClick={() => handleQuantityChange(-1)}
                 className="w-7 h-7 flex items-center justify-center hover:bg-muted transition-colors rounded-l-md text-muted-foreground hover:text-foreground"
-                aria-label="Намали"
+                aria-label="Намали количеството"
               >
-                <Minus className="w-3 h-3" />
+                <Minus className="w-3 h-3" aria-hidden="true" />
               </button>
-              <span className="w-8 text-center text-sm font-medium">{quantity}</span>
+              <span className="w-8 text-center text-sm font-medium" aria-live="polite" aria-label={`Количество: ${quantity}`}>{quantity}</span>
               <button
-                onClick={(e) => handleQuantityChange(1, e)}
+                type="button"
+                onClick={() => handleQuantityChange(1)}
                 className="w-7 h-7 flex items-center justify-center hover:bg-muted transition-colors rounded-r-md text-muted-foreground hover:text-foreground"
-                aria-label="Увеличи"
+                aria-label="Увеличи количеството"
               >
-                <Plus className="w-3 h-3" />
+                <Plus className="w-3 h-3" aria-hidden="true" />
               </button>
             </div>
             <Button
@@ -144,16 +171,16 @@ export default function ProductCard({ product, href, className }: ProductCardPro
               className="w-full sm:flex-1 gap-1 text-xs"
               aria-label={`Добави ${product.name} в количката`}
             >
-              <ShoppingCart className="w-3.5 h-3.5" />
+              <ShoppingCart className="w-3.5 h-3.5" aria-hidden="true" />
               {added ? "✓" : "Добави"}
             </Button>
           </div>
         ) : (
-          <Button size="sm" variant="outline" disabled className="w-full mt-auto">
+          <Button size="sm" variant="outline" disabled className="relative z-10 w-full mt-auto">
             Изчерпано
           </Button>
         )}
       </div>
-    </Link>
+    </article>
   );
 }

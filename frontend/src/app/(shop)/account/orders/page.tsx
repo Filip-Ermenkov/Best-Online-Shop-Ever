@@ -152,7 +152,7 @@ export default function OrdersPage() {
                   </div>
                   <div className="flex flex-col items-end gap-2">
                     <Badge variant={status.variant}>{status.label}</Badge>
-                    <span className="font-bold text-primary">
+                    <span className="font-bold text-primary-strong">
                       {formatCents(order.totalCents)}
                     </span>
                     <ChevronRight className="w-4 h-4 text-muted-foreground" />

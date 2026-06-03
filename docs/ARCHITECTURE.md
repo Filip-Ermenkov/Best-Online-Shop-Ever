@@ -759,12 +759,16 @@ Brief; full mapping in `COMPLIANCE.md`:
 - **GDPR Art. 32** (security of processing): ✅
 - **GDPR Art. 16** (rectification): ✅ shipped May 23, 2026
 - **GDPR Art. 17** (right to erasure): ✅ shipped May 24, 2026
-- **GDPR Art. 20** (data portability): ⚠️ documented intent, not
-  implemented; would need a `GET /auth/me/export` endpoint
+- **GDPR Art. 15 + 20** (access + data portability): ✅ shipped
+  May 31, 2026 — `POST /auth/me/export` (structured machine-readable JSON)
 - **GDPR Art. 33–34** (breach notification 72h): ⚠️ no playbook
 - **EU Directive 2023/2673** (14-day withdrawal): ✅ shipped
-- **WCAG 2.2 Level AA / European Accessibility Act**: ⚠️ in scope;
-  no continuous accessibility audit running
+- **WCAG 2.2 Level AA / European Accessibility Act**: ✅ shipped
+  2026-06-02 — EN 301 549 / WCAG 2.2 AA conformance (contrast-fixed
+  tokens, keyboard + focus + skip-link, `prefers-reduced-motion`, ARIA
+  combobox search, live-region errors) with a continuous audit (static
+  `jsx-a11y` in CI + runtime `axe-core`/Playwright + manual checklist).
+  See `docs/ACCESSIBILITY.md`, the `/accessibility` statement, §15 item 40
 - **PCI-DSS**: n/a (no card data)
 - **NIS2**: n/a at current scale
 - **EU CRA**: **out of scope** — pure SaaS is exempt per the
@@ -1343,7 +1347,7 @@ of the AWS plumbing is provisioned yet.
 | GDPR Art. 33–34 (72h breach) | ⚠️ | Playbook |
 | EU Directive 2023/2673 | ✅ Shipped | — |
 | EU CRA (Sep 2026) | N/A | Out of scope (SaaS); CRA-style hygiene voluntarily maintained |
-| WCAG 2.2 AA | ⚠️ | Continuous audit |
+| WCAG 2.2 AA / EN 301 549 / EAA | ✅ | — (2026-06-02; tokens, keyboard/focus/skip-link, reduced-motion, ARIA combobox; static jsx-a11y in CI + runtime axe + `/accessibility` statement) |
 
 **Verdict.** Code-level posture is meaningfully above 2026 industry
 median for a B2C shop of this profile. The gap between today and a
@@ -1523,6 +1527,43 @@ Ranked by `(impact ÷ effort)` — highest leverage first. Items marked
     requires a contractual SLA.
 38. ❌ **Move to Neon Scale** when contractual SLA is required.
 39. ❌ **Upgrade SLSA to Level 3** — only if needed.
+
+### Accessibility (EAA) — shipped 2026-06-02
+
+40. ✅ **WCAG 2.2 AA / European Accessibility Act conformance.** Closed
+    the project's most overdue compliance item: the EAA has been
+    *enforceable* since 28 June 2025 (~12 months before this shipped),
+    yet the shop was shipping the 2023/2673 withdrawal directive *early*
+    while accessibility sat at ⚠️ on all four WCAG principles — the one
+    glaring inconsistency for a compliance-first project. The harmonised
+    standard is EN 301 549 (WCAG 2.1 AA today, 2.2 AA incoming); we
+    targeted **WCAG 2.2 AA**, a superset, so both are covered. Work, all
+    sandbox/Windows-testable (no AWS needed, unlike items 17–19):
+    - **Contrast (1.4.3 / 1.4.11).** Brand gold (`--primary`, 2.4:1 on
+      white) was failing as text. Kept it for fills; added an accessible
+      `--primary-strong` (5.6:1) for gold text/links/icons and the focus
+      ring; darkened `--muted-foreground` (3.95→5.5:1). Every pair
+      verified computationally (OKLCH→WCAG luminance). 67 `text-primary`
+      usages swept to `text-primary-strong`.
+    - **Operable.** Uniform `:focus-visible` indicator (2.4.13);
+      skip-to-content link → `#main-content` (2.4.1); `prefers-reduced-
+      motion` neutralises the infinite shimmer + entry animations
+      (2.2.2 / 2.3.3); targets ≥ 24 px (2.5.8).
+    - **Robust.** The header search became a WAI-ARIA APG combobox
+      (role/aria-expanded/controls/activedescendant + Arrow/Enter/Escape);
+      `ProductCard` was refactored off the invalid pattern of `<button>`s
+      nested inside a card-wide `<a>` to the stretched-link pattern;
+      `MobileFiltersDrawer`'s `<span onClick>` became a real
+      `SheetTrigger`; cart errors got `role="alert"`.
+    - **Continuous audit** (the COMPLIANCE.md §13 remedy): static
+      `eslint-plugin-jsx-a11y` hardened in the CI `lint` job + runtime
+      `axe-core`/Playwright (`npm run test:a11y`, local/pre-push like
+      `next build`) + a manual keyboard/SR checklist.
+    - **EAA Annex V**: `/accessibility` statement page (BG/EN) +
+      `docs/ACCESSIBILITY.md` (engineering detail). Known limitation
+      disclosed: the category menu has no full `menubar` keyboard model
+      (arrow-key traversal); previews now open on hover *and* keyboard
+      focus, and every category stays keyboard-reachable via the panel.
 
 **Doing items 15–27 closes every meaningful 2026 gap in ~4–6
 working days. Items 28–33 raise the quality bar further at ~3 more

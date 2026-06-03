@@ -75,6 +75,7 @@ export default function Footer() {
               <li><Link href="/account/orders" className="hover:text-[oklch(0.73_0.10_75)] transition-colors">Проследяване на поръчка</Link></li>
               <li><Link href="/terms" className="hover:text-[oklch(0.73_0.10_75)] transition-colors">Условия за ползване</Link></li>
               <li><Link href="/privacy" className="hover:text-[oklch(0.73_0.10_75)] transition-colors">Поверителност</Link></li>
+              <li><Link href="/accessibility" className="hover:text-[oklch(0.73_0.10_75)] transition-colors">Достъпност</Link></li>
             </ul>
           </div>
 
@@ -149,7 +150,7 @@ export default function Footer() {
         </div>
 
         {/* Copyright */}
-        <div className="mt-8 pt-6 border-t border-white/10 flex flex-col sm:flex-row items-center justify-between gap-2 text-sm text-[oklch(0.50_0.02_270)]">
+        <div className="mt-8 pt-6 border-t border-white/10 flex flex-col sm:flex-row items-center justify-between gap-2 text-sm text-[oklch(0.62_0.02_270)]">
           <p>© {new Date().getFullYear()} Duda 1 ЕООД. Всички права запазени.</p>
           <p>Цените са в EUR с ДДС.</p>
         </div>

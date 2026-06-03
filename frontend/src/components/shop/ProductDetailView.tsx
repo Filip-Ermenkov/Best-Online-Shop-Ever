@@ -143,7 +143,7 @@ export default function ProductDetailView({ product, categoryChain }: Props) {
 
           {/* Price */}
           <div className="flex items-baseline gap-3">
-            <span className="text-3xl font-bold text-primary">{formatPrice(product.price)}</span>
+            <span className="text-3xl font-bold text-primary-strong">{formatPrice(product.price)}</span>
             {product.originalPrice && (
               <span className="text-lg text-muted-foreground line-through">{formatPrice(product.originalPrice)}</span>
             )}
@@ -152,7 +152,7 @@ export default function ProductDetailView({ product, categoryChain }: Props) {
           {/* Stock */}
           <p className={cn(
             "text-sm font-medium",
-            product.stockStatus === "in_stock" ? "text-green-600" : "text-muted-foreground"
+            product.stockStatus === "in_stock" ? "text-green-700" : "text-muted-foreground"
           )}>
             {product.stockStatus === "in_stock" ? "✔ В наличност" : "✖ Изчерпано"}
           </p>

@@ -70,9 +70,8 @@ function SheetContent({
               />
             }
           >
-            <XIcon
-            />
-            <span className="sr-only">Close</span>
+            <XIcon aria-hidden="true" />
+            <span className="sr-only">Затвори</span>
           </SheetPrimitive.Close>
         )}
       </SheetPrimitive.Popup>

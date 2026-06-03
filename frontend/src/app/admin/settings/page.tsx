@@ -58,7 +58,7 @@ export default function AdminSettingsPage() {
 
         <div className="flex items-center gap-3">
           <Button type="submit">Запази настройките</Button>
-          {saved && <p className="text-sm text-green-600">Настройките са записани!</p>}
+          {saved && <p className="text-sm text-green-700">Настройките са записани!</p>}
         </div>
       </form>
     </div>

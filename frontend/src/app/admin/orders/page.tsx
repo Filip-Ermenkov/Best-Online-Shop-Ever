@@ -90,7 +90,7 @@ export default function AdminOrdersPage() {
                 <span className="text-xs text-muted-foreground">{formatDate(o.createdAt)}</span>
                 <span className="font-semibold">{formatPrice(o.total)}</span>
               </div>
-              <div className="flex items-center justify-end text-xs text-primary pt-1 border-t border-border">
+              <div className="flex items-center justify-end text-xs text-primary-strong pt-1 border-t border-border">
                 Виж детайли <ChevronRight className="w-3 h-3 ml-0.5" />
               </div>
             </Link>

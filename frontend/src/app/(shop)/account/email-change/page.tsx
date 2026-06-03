@@ -150,7 +150,7 @@ export default function EmailChangePage() {
 
         <div className="mb-6">
           <div className="w-12 h-12 rounded-full bg-primary/10 flex items-center justify-center mb-4">
-            <Mail className="w-6 h-6 text-primary" />
+            <Mail className="w-6 h-6 text-primary-strong" />
           </div>
           <h1 className="text-2xl font-bold">Смяна на имейл адрес</h1>
           <p className="text-muted-foreground mt-1 text-sm">
@@ -200,7 +200,6 @@ export default function EmailChangePage() {
                 onChange={(e) => setNewEmail(e.target.value)}
                 autoComplete="email"
                 required
-                autoFocus
                 className="mt-1"
                 placeholder="new@example.com"
                 disabled={pending}

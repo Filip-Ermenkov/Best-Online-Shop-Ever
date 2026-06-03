@@ -85,20 +85,26 @@ export default function BannerSlider({ banners }: BannerSliderProps) {
             <ChevronRight className="w-4 h-4" />
           </button>
 
-          {/* Dots */}
-          <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-20 flex gap-2">
+          {/* Dots — each button is a >=24x24 hit target (WCAG 2.5.8) with the
+              small visual indicator centred inside as a <span>. */}
+          <div className="absolute bottom-2 left-1/2 -translate-x-1/2 z-20 flex items-center gap-1">
             {active.map((_, i) => (
               <button
                 key={i}
                 onClick={() => goTo(i)}
-                className={cn(
-                  "h-1.5 rounded-full transition-all duration-300",
-                  i === current
-                    ? "bg-[oklch(0.73_0.10_75)] w-6"
-                    : "bg-white/50 hover:bg-white/80 w-1.5"
-                )}
+                className="group flex h-6 min-w-6 items-center justify-center"
                 aria-label={`Банер ${i + 1}`}
-              />
+                aria-current={i === current ? "true" : undefined}
+              >
+                <span
+                  className={cn(
+                    "block h-1.5 rounded-full transition-all duration-300",
+                    i === current
+                      ? "bg-[oklch(0.73_0.10_75)] w-6"
+                      : "bg-white/50 group-hover:bg-white/80 w-1.5"
+                  )}
+                />
+              </button>
             ))}
           </div>
         </>

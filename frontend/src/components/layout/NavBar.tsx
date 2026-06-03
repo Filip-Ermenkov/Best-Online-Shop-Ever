@@ -196,7 +196,7 @@ function DesktopNav({ tree }: { tree: CategoryTreeNode[] }) {
                     className={cn(
                       "w-full flex items-center justify-between px-4 py-2.5 text-sm transition-colors",
                       hoveredRootId === cat.id
-                        ? "bg-white text-[oklch(0.73_0.10_75)] font-semibold"
+                        ? "bg-white text-[oklch(0.52_0.12_75)] font-semibold"
                         : "hover:bg-white/60 text-foreground"
                     )}
                   >
@@ -231,10 +231,22 @@ function VisibleRootItem({
   const href = buildCategoryPath(cat);
 
   return (
+    // Hover/focus zone wrapping a native <Link> (the actual control). The
+    // dropdown it reveals is an enhancement: every category also stays
+    // reachable by keyboard via the "Всички категории" panel
+    // (docs/ACCESSIBILITY.md §6). onFocus/onBlur make the preview open on
+    // keyboard focus too; onBlur only closes when focus leaves the whole zone.
+    // No interactive role is added because the div is a wrapper, not a control,
+    // so the static-interaction rule is intentionally suppressed here.
+    // eslint-disable-next-line jsx-a11y/no-static-element-interactions
     <div
       className="relative flex-shrink-0"
       onMouseEnter={() => setHover(cat.id)}
       onMouseLeave={() => setHover(null)}
+      onFocus={() => setHover(cat.id)}
+      onBlur={(e) => {
+        if (!e.currentTarget.contains(e.relatedTarget as Node)) setHover(null);
+      }}
     >
       <Link
         href={href}
@@ -282,13 +294,13 @@ function DesktopDropdownItem({
     <div className="relative group/sub">
       <Link
         href={href}
-        className="flex items-center justify-between px-4 py-2 text-sm hover:bg-muted hover:text-[oklch(0.73_0.10_75)] transition-colors"
+        className="flex items-center justify-between px-4 py-2 text-sm hover:bg-muted hover:text-[oklch(0.52_0.12_75)] transition-colors"
       >
         {cat.name}
         {activeChildren.length > 0 && <ChevronRight className="w-3.5 h-3.5 opacity-50" />}
       </Link>
       {activeChildren.length > 0 && (
-        <div className="absolute left-full top-0 z-50 hidden group-hover/sub:block min-w-[220px] bg-white text-foreground shadow-lg rounded-md border border-border py-1">
+        <div className="absolute left-full top-0 z-50 hidden group-hover/sub:block group-focus-within/sub:block min-w-[220px] bg-white text-foreground shadow-lg rounded-md border border-border py-1">
           {[...activeChildren]
             .sort((a, b) => a.displayOrder - b.displayOrder)
             .map((child) => (
@@ -319,7 +331,7 @@ function MegaSubPanel({
         <Link
           href={buildCategoryPath(root)}
           onClick={onClose}
-          className="text-base font-bold text-foreground hover:text-[oklch(0.73_0.10_75)] transition-colors inline-flex items-center gap-1"
+          className="text-base font-bold text-foreground hover:text-[oklch(0.52_0.12_75)] transition-colors inline-flex items-center gap-1"
         >
           {root.name}
           <ChevronRight className="w-4 h-4" />
@@ -327,7 +339,7 @@ function MegaSubPanel({
         <Link
           href={buildCategoryPath(root)}
           onClick={onClose}
-          className="text-xs text-muted-foreground hover:text-[oklch(0.73_0.10_75)] transition-colors"
+          className="text-xs text-muted-foreground hover:text-[oklch(0.52_0.12_75)] transition-colors"
         >
           Виж всички →
         </Link>
@@ -344,7 +356,7 @@ function MegaSubPanel({
                   <Link
                     href={buildCategoryPath(sub, [root])}
                     onClick={onClose}
-                    className="text-sm font-semibold text-foreground hover:text-[oklch(0.73_0.10_75)] transition-colors mb-2 block"
+                    className="text-sm font-semibold text-foreground hover:text-[oklch(0.52_0.12_75)] transition-colors mb-2 block"
                   >
                     {sub.name}
                   </Link>
@@ -357,7 +369,7 @@ function MegaSubPanel({
                             <Link
                               href={buildCategoryPath(leaf, [root, sub])}
                               onClick={onClose}
-                              className="text-xs text-muted-foreground hover:text-[oklch(0.73_0.10_75)] transition-colors"
+                              className="text-xs text-muted-foreground hover:text-[oklch(0.52_0.12_75)] transition-colors"
                             >
                               {leaf.name}
                             </Link>

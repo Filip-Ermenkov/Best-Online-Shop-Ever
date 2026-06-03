@@ -724,9 +724,14 @@ function CategoryBreadcrumbJsonLd({ chain }: { chain: CategoryTreeNode[] }) {
 
 // ─── Small shared bits ──────────────────────────────────────────────────────
 
-function FilterTriggerButton() {
+function FilterTriggerButton(props: React.ComponentProps<"button">) {
+  // Spreads incoming props so base-ui's <SheetTrigger render={...}> can wire
+  // its onClick + aria-haspopup="dialog" + aria-expanded onto the real button.
   return (
-    <button className="md:hidden flex items-center gap-1.5 text-sm border border-border rounded-md px-3 py-1.5 hover:bg-muted transition-colors">
+    <button
+      {...props}
+      className="md:hidden flex items-center gap-1.5 text-sm border border-border rounded-md px-3 py-1.5 hover:bg-muted transition-colors"
+    >
       <SlidersHorizontal className="w-4 h-4" />
       Филтри
     </button>

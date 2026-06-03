@@ -33,7 +33,15 @@ export default function AdminLayoutShell({ children }: { children: React.ReactNo
         <AdminSidebar />
         <div className="flex-1 min-w-0 flex flex-col">
           <AdminMobileHeader />
-          <main className="flex-1 p-4 lg:p-6 overflow-y-auto">{children}</main>
+          {/* Skip-link target (mirrors the storefront <main>) so the global
+              "skip to content" link works in the admin section too. */}
+          <main
+            id="main-content"
+            tabIndex={-1}
+            className="flex-1 p-4 lg:p-6 overflow-y-auto focus:outline-none"
+          >
+            {children}
+          </main>
         </div>
       </div>
     </AdminSidebarProvider>

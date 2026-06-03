@@ -472,7 +472,7 @@ export default function ProfilePage() {
 
       <div className="rounded-lg border border-border p-5 mb-6">
         <div className="flex items-center gap-3 mb-4">
-          <div className="w-12 h-12 rounded-full bg-primary/10 flex items-center justify-center text-primary font-bold text-lg">
+          <div className="w-12 h-12 rounded-full bg-primary/10 flex items-center justify-center text-primary-strong font-bold text-lg">
             {initial}
           </div>
           <div>
@@ -528,7 +528,7 @@ export default function ProfilePage() {
               За промяна на имейл адреса{" "}
               <a
                 href="/account/email-change"
-                className="text-primary hover:underline"
+                className="text-primary-strong underline"
               >
                 кликнете тук
               </a>
@@ -575,7 +575,7 @@ export default function ProfilePage() {
               {profileSubmitting ? "Записване..." : "Запази промените"}
             </Button>
             {profileSuccess && (
-              <p className="text-sm text-green-600" role="status">
+              <p className="text-sm text-green-700" role="status">
                 Записано успешно.
               </p>
             )}
@@ -713,7 +713,7 @@ export default function ProfilePage() {
               За промяна на имейл адреса{" "}
               <a
                 href="/account/email-change"
-                className="text-primary hover:underline"
+                className="text-primary-strong underline"
               >
                 кликнете тук
               </a>
@@ -735,7 +735,7 @@ export default function ProfilePage() {
               {profileSubmitting ? "Записване..." : "Запази промените"}
             </Button>
             {profileSuccess && (
-              <p className="text-sm text-green-600" role="status">
+              <p className="text-sm text-green-700" role="status">
                 Записано успешно.
               </p>
             )}
@@ -855,7 +855,7 @@ export default function ProfilePage() {
             {pwSubmitting ? "Записване..." : "Смени паролата"}
           </Button>
           {pwSuccess && (
-            <p className="text-sm text-green-600" role="status">
+            <p className="text-sm text-green-700" role="status">
               Паролата е сменена успешно. Всички други устройства са излезли.
             </p>
           )}

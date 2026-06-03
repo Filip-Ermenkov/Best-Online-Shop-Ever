@@ -11,7 +11,7 @@ export default async function OrderConfirmationPage({ searchParams }: Props) {
   return (
     <div className="max-w-lg mx-auto px-4 py-16 text-center">
       <div className="w-16 h-16 rounded-full bg-green-100 flex items-center justify-center mx-auto mb-6">
-        <CheckCircle className="w-9 h-9 text-green-600" />
+        <CheckCircle className="w-9 h-9 text-green-700" />
       </div>
 
       <h1 className="text-2xl font-bold mb-2">Поръчката е приета!</h1>

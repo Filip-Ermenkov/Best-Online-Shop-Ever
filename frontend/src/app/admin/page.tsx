@@ -17,7 +17,7 @@ function KpiCard({ title, value, sub, icon: Icon, href }: {
           <p className="text-xs text-muted-foreground mt-1">{sub}</p>
         </div>
         <div className="w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center">
-          <Icon className="w-5 h-5 text-primary" />
+          <Icon className="w-5 h-5 text-primary-strong" />
         </div>
       </div>
     </Link>
@@ -67,7 +67,7 @@ export default function AdminDashboard() {
       <section>
         <div className="flex items-center justify-between mb-3">
           <h2 className="font-semibold">Последни поръчки</h2>
-          <Link href="/admin/orders" className="text-sm text-primary hover:underline">Всички →</Link>
+          <Link href="/admin/orders" className="text-sm text-primary-strong underline">Всички →</Link>
         </div>
         <div className="rounded-lg border border-border bg-card overflow-x-auto">
           <table className="w-full text-sm min-w-[500px]">
@@ -83,7 +83,7 @@ export default function AdminDashboard() {
               {orders.map((o) => (
                 <tr key={o.id} className="border-b border-border last:border-0 hover:bg-muted/30 transition-colors">
                   <td className="px-4 py-3">
-                    <Link href={`/admin/orders/${o.id}`} className="text-primary hover:underline font-medium">{o.orderNumber}</Link>
+                    <Link href={`/admin/orders/${o.id}`} className="text-primary-strong underline font-medium">{o.orderNumber}</Link>
                   </td>
                   <td className="px-4 py-3 text-muted-foreground">{o.customerEmail}</td>
                   <td className="px-4 py-3">

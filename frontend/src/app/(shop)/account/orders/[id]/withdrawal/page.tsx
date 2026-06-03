@@ -440,7 +440,7 @@ function OrderSummaryCard({ order }: { order: OrderDTO }) {
     <div className="rounded-lg border border-border p-4">
       <div className="flex items-center justify-between mb-3">
         <h2 className="font-semibold">Поръчка {order.orderNumber}</h2>
-        <span className="text-sm font-semibold text-primary">
+        <span className="text-sm font-semibold text-primary-strong">
           {formatCents(order.totalCents)}
         </span>
       </div>
@@ -544,7 +544,7 @@ function ReceiptView({
       </Breadcrumb>
 
       <div className="rounded-lg border border-green-200 bg-green-50 p-5 mb-6 flex items-start gap-3">
-        <CheckCircle className="w-6 h-6 text-green-600 flex-shrink-0 mt-0.5" />
+        <CheckCircle className="w-6 h-6 text-green-700 flex-shrink-0 mt-0.5" />
         <div>
           <h1 className="text-lg font-semibold text-green-900">
             {justSubmitted

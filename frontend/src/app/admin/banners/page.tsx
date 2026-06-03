@@ -37,7 +37,7 @@ export default function AdminBannersPage() {
               <div className="flex-1 min-w-0">
                 <p className="font-semibold">{b.title}</p>
                 {b.subtitle && <p className="text-sm text-muted-foreground">{b.subtitle}</p>}
-                {b.linkUrl && <p className="text-xs text-primary truncate">{b.linkUrl}</p>}
+                {b.linkUrl && <p className="text-xs text-primary-strong truncate">{b.linkUrl}</p>}
               </div>
               <div className="flex items-center gap-2 flex-wrap">
                 <Badge variant="outline" className={b.isActive ? "bg-green-50 text-green-700 border-green-200" : ""}>

@@ -317,7 +317,6 @@ export default function DeleteAccountPage() {
               autoComplete="off"
               autoCapitalize="characters"
               required
-              autoFocus
               className="mt-1 font-mono"
               placeholder="ИЗТРИЙ"
               disabled={pending}
