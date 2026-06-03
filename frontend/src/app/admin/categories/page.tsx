@@ -221,7 +221,7 @@ function CategoryTreeItem({
           {hasChildren ? (
             <button
               onClick={() => setExpanded((v) => !v)}
-              className="p-0.5 hover:text-primary transition-colors flex-shrink-0 mt-0.5"
+              className="p-0.5 hover:text-primary-strong transition-colors flex-shrink-0 mt-0.5"
               aria-label={expanded ? "Свий" : "Разгъни"}
             >
               {expanded ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
@@ -358,7 +358,6 @@ function CategoryFormDialog({
               onChange={(e) => setName(e.target.value)}
               placeholder="Напр. Електроника"
               className="mt-1"
-              autoFocus
               required
             />
           </div>

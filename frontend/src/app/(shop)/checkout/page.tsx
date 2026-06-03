@@ -29,7 +29,7 @@ function RadioOption({
         selected ? "border-primary bg-primary/5" : "border-border hover:border-muted-foreground"
       )}
     >
-      <Icon className="w-5 h-5 mt-0.5 flex-shrink-0 text-primary" />
+      <Icon className="w-5 h-5 mt-0.5 flex-shrink-0 text-primary-strong" />
       <div>
         <p className="font-medium text-sm">{label}</p>
         <p className="text-xs text-muted-foreground">{description}</p>
@@ -110,7 +110,7 @@ export default function CheckoutPage() {
 
       {/* Progress */}
       <div className="flex items-center gap-2 mb-8 text-sm">
-        <span className="font-semibold text-primary">1. Данни</span>
+        <span className="font-semibold text-primary-strong">1. Данни</span>
         <Separator orientation="horizontal" className="flex-1" />
         <span className="text-muted-foreground">2. Преглед</span>
         <Separator orientation="horizontal" className="flex-1" />
@@ -241,7 +241,7 @@ export default function CheckoutPage() {
                             onClick={() => setSelectedOffice(office)}
                             className={cn(
                               "w-full text-left px-3 py-2.5 text-sm transition-colors hover:bg-muted",
-                              selectedOffice?.id === office.id && "bg-primary/5 text-primary font-medium"
+                              selectedOffice?.id === office.id && "bg-primary/5 text-primary-strong font-medium"
                             )}
                           >
                             <p className="font-medium">{office.name} — {office.city}</p>
@@ -298,7 +298,7 @@ export default function CheckoutPage() {
                 <span>{formatCents(subtotalCents)}</span>
               </div>
               {discountPercent > 0 && (
-                <div className="flex justify-between text-green-600">
+                <div className="flex justify-between text-green-700">
                   <span>Отстъпка ({discountPercent}%)</span>
                   <span>- {formatCents(discountAmountCents)}</span>
                 </div>
@@ -307,7 +307,7 @@ export default function CheckoutPage() {
             <Separator />
             <div className="flex justify-between font-bold">
               <span>Общо</span>
-              <span className="text-primary">{formatCents(totalCents)}</span>
+              <span className="text-primary-strong">{formatCents(totalCents)}</span>
             </div>
           </div>
           <Button

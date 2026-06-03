@@ -323,7 +323,7 @@ export default function CheckoutReviewPage() {
       <div className="flex items-center gap-2 mb-8 text-sm">
         <span className="text-muted-foreground">1. Данни</span>
         <Separator orientation="horizontal" className="flex-1" />
-        <span className="font-semibold text-primary">2. Преглед</span>
+        <span className="font-semibold text-primary-strong">2. Преглед</span>
         <Separator orientation="horizontal" className="flex-1" />
         <span className="text-muted-foreground">3. Потвърждение</span>
       </div>
@@ -409,7 +409,7 @@ export default function CheckoutReviewPage() {
               <span>{formatCents(subtotalCents)}</span>
             </div>
             {discountPercent > 0 && (
-              <div className="flex justify-between text-green-600">
+              <div className="flex justify-between text-green-700">
                 <span>Отстъпка ({discountPercent}%)</span>
                 <span>- {formatCents(discountAmountCents)}</span>
               </div>
@@ -418,7 +418,7 @@ export default function CheckoutReviewPage() {
           <Separator className="my-3" />
           <div className="flex justify-between font-bold text-base">
             <span>Общо</span>
-            <span className="text-primary">{formatCents(totalCents)}</span>
+            <span className="text-primary-strong">{formatCents(totalCents)}</span>
           </div>
         </div>
 

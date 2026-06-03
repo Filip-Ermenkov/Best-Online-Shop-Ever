@@ -56,8 +56,8 @@ const statusConfig: Record<
   processing:       { label: "Обработва се",         icon: Clock,        color: "text-amber-600"      },
   shipped:          { label: "Изпратена",             icon: Truck,        color: "text-blue-600"       },
   ready_for_pickup: { label: "Готова за вземане",     icon: Store,        color: "text-blue-600"       },
-  delivered:        { label: "Доставена",             icon: Package,      color: "text-green-600"      },
-  accepted:         { label: "Приета",                icon: CheckCircle,  color: "text-green-600"      },
+  delivered:        { label: "Доставена",             icon: Package,      color: "text-green-700"      },
+  accepted:         { label: "Приета",                icon: CheckCircle,  color: "text-green-700"      },
   returned:         { label: "Върната",               icon: XCircle,      color: "text-destructive"    },
   cancelled:        { label: "Отказана",              icon: XCircle,      color: "text-destructive"    },
 };
@@ -223,7 +223,7 @@ export default function OrderDetailPage({ params }: Props) {
       {/* Confirmation banner — shown only when arriving from successful checkout */}
       {showConfirm && (
         <div className="mb-6 rounded-lg border border-green-200 bg-green-50 p-4 flex items-start gap-3">
-          <CheckCircle className="w-5 h-5 text-green-600 flex-shrink-0 mt-0.5" />
+          <CheckCircle className="w-5 h-5 text-green-700 flex-shrink-0 mt-0.5" />
           <div className="text-sm">
             <p className="font-semibold text-green-800">Поръчката е приета!</p>
             <p className="text-green-700 mt-0.5">
@@ -299,7 +299,7 @@ export default function OrderDetailPage({ params }: Props) {
               <span>{formatCents(order.subtotalCents)}</span>
             </div>
             {order.discountAmountCents > 0 && (
-              <div className="flex justify-between text-green-600">
+              <div className="flex justify-between text-green-700">
                 <span>
                   Отстъпка{" "}
                   {order.discountPercent > 0 && `(${order.discountPercent}%)`}
@@ -311,7 +311,7 @@ export default function OrderDetailPage({ params }: Props) {
           <Separator className="my-3" />
           <div className="flex justify-between font-bold text-base">
             <span>Общо</span>
-            <span className="text-primary">{formatCents(order.totalCents)}</span>
+            <span className="text-primary-strong">{formatCents(order.totalCents)}</span>
           </div>
         </div>
 

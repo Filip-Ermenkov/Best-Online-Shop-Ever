@@ -83,7 +83,7 @@ export default function ForgotPasswordPage() {
 
         <div className="mb-6">
           <div className="w-12 h-12 rounded-full bg-primary/10 flex items-center justify-center mb-4">
-            <Mail className="w-6 h-6 text-primary" />
+            <Mail className="w-6 h-6 text-primary-strong" />
           </div>
           <h1 className="text-2xl font-bold">Забравена парола</h1>
           <p className="text-muted-foreground mt-1 text-sm">
@@ -100,7 +100,7 @@ export default function ForgotPasswordPage() {
             <p className="font-semibold text-green-700">
               Проверете пощата си
             </p>
-            <p className="text-sm text-green-600">
+            <p className="text-sm text-green-700">
               Ако този имейл е свързан с акаунт, ще получите линк за
               нулиране на паролата в рамките на няколко минути.
             </p>
@@ -119,7 +119,6 @@ export default function ForgotPasswordPage() {
                 onChange={(e) => setEmail(e.target.value)}
                 autoComplete="email"
                 required
-                autoFocus
                 className="mt-1"
                 placeholder="you@example.com"
                 disabled={pending}
@@ -146,7 +145,7 @@ export default function ForgotPasswordPage() {
           Спомнихте си паролата?{" "}
           <Link
             href="/account/login"
-            className="text-primary hover:underline"
+            className="text-primary-strong underline"
           >
             Влезте тук
           </Link>

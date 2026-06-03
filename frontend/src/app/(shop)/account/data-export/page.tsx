@@ -209,7 +209,7 @@ export default function DataExportPage() {
             aria-live="polite"
             className="mb-6 rounded-md border border-green-200 bg-green-50 p-4 flex items-start gap-2"
           >
-            <CheckCircle2 className="w-5 h-5 text-green-600 shrink-0 mt-0.5" />
+            <CheckCircle2 className="w-5 h-5 text-green-700 shrink-0 mt-0.5" />
             <div className="text-sm text-green-800">
               <p className="font-semibold">Експортът е готов.</p>
               <p className="mt-0.5">
@@ -232,7 +232,6 @@ export default function DataExportPage() {
               onChange={(e) => setCurrentPassword(e.target.value)}
               autoComplete="current-password"
               required
-              autoFocus
               className="mt-1"
               disabled={pending}
             />

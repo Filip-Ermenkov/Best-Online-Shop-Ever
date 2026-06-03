@@ -82,18 +82,22 @@ export default function CookieBanner() {
 
   return (
     <div className="fixed bottom-0 left-0 right-0 z-50 p-4 pointer-events-none">
-      <div className="max-w-2xl mx-auto bg-white border border-border rounded-xl shadow-2xl p-5 pointer-events-auto">
+      <div
+        role="region"
+        aria-label="Съгласие за бисквитки"
+        className="max-w-2xl mx-auto bg-white border border-border rounded-xl shadow-2xl p-5 pointer-events-auto"
+      >
         <div className="flex items-start justify-between gap-3 mb-3">
-          <h3 className="font-semibold">Използваме бисквитки</h3>
+          <h2 className="font-semibold">Използваме бисквитки</h2>
           <button onClick={rejectAll} className="text-muted-foreground hover:text-foreground" aria-label="Откажи">
-            <X className="w-4 h-4" />
+            <X className="w-4 h-4" aria-hidden="true" />
           </button>
         </div>
 
         <p className="text-sm text-muted-foreground mb-4">
           Използваме бисквитки за нормалното функциониране на сайта и с ваше съгласие — за подобряване на
           услугите и анализ. Научете повече в нашата{" "}
-          <Link href="/privacy" className="text-primary hover:underline">Политика за поверителност</Link>.
+          <Link href="/privacy" className="text-primary-strong underline">Политика за поверителност</Link>.
         </p>
 
         {showDetails && (
@@ -131,7 +135,12 @@ export default function CookieBanner() {
         )}
 
         <div className="flex flex-wrap gap-2 justify-end">
-          <Button variant="ghost" size="sm" onClick={() => setShowDetails((v) => !v)}>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => setShowDetails((v) => !v)}
+            aria-expanded={showDetails}
+          >
             {showDetails ? "Скрий настройките" : "Персонализирай"}
           </Button>
           {showDetails && (

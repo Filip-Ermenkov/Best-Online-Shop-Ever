@@ -31,8 +31,8 @@ export default function ContactPage() {
           {sent ? (
             <div className="rounded-lg border border-green-200 bg-green-50 p-8 text-center space-y-2">
               <p className="font-bold text-green-700 text-lg">Съобщението е изпратено!</p>
-              <p className="text-sm text-green-600">Ще се свържем с вас в рамките на 1 работен ден.</p>
-              <button onClick={() => setSent(false)} className="text-sm text-primary hover:underline mt-2">
+              <p className="text-sm text-green-700">Ще се свържем с вас в рамките на 1 работен ден.</p>
+              <button onClick={() => setSent(false)} className="text-sm text-primary-strong underline mt-2">
                 Изпрати ново съобщение
               </button>
             </div>
@@ -75,7 +75,7 @@ export default function ContactPage() {
             ].map(({ icon: Icon, label, value }) => (
               <div key={label} className="flex gap-3">
                 <div className="w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center flex-shrink-0 mt-0.5">
-                  <Icon className="w-4 h-4 text-primary" />
+                  <Icon className="w-4 h-4 text-primary-strong" />
                 </div>
                 <div>
                   <p className="text-xs text-muted-foreground">{label}</p>

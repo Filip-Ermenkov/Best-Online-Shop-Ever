@@ -10,7 +10,7 @@ export default function DeliveryPage() {
       <div className="space-y-8">
         {/* Delivery methods */}
         <section>
-          <h2 className="text-xl font-semibold mb-4 flex items-center gap-2"><Truck className="w-5 h-5 text-primary" /> Начини на доставка</h2>
+          <h2 className="text-xl font-semibold mb-4 flex items-center gap-2"><Truck className="w-5 h-5 text-primary-strong" /> Начини на доставка</h2>
           <div className="space-y-3">
             {[
               { title: "Куриер Еконт", description: "Доставка до адрес или офис на Еконт на следващия работен ден при поръчка до 14:00 ч.", price: "Безплатно при поръчка над 100 EUR, иначе 5 EUR" },
@@ -23,7 +23,7 @@ export default function DeliveryPage() {
                     <h3 className="font-semibold text-sm">{title}</h3>
                     <p className="text-sm text-muted-foreground mt-1">{description}</p>
                   </div>
-                  <span className="text-sm font-medium text-primary whitespace-nowrap">{price}</span>
+                  <span className="text-sm font-medium text-primary-strong whitespace-nowrap">{price}</span>
                 </div>
               </div>
             ))}
@@ -32,7 +32,7 @@ export default function DeliveryPage() {
 
         {/* Timelines */}
         <section>
-          <h2 className="text-xl font-semibold mb-4 flex items-center gap-2"><Clock className="w-5 h-5 text-primary" /> Срокове за доставка</h2>
+          <h2 className="text-xl font-semibold mb-4 flex items-center gap-2"><Clock className="w-5 h-5 text-primary-strong" /> Срокове за доставка</h2>
           <div className="rounded-lg border border-border bg-card p-5 space-y-3 text-sm">
             <div className="flex justify-between">
               <span className="text-muted-foreground">Поръчки до 14:00 ч.</span>
@@ -59,24 +59,24 @@ export default function DeliveryPage() {
 
         {/* Returns */}
         <section>
-          <h2 className="text-xl font-semibold mb-4 flex items-center gap-2"><RotateCcw className="w-5 h-5 text-primary" /> Право на отказ (14 дни)</h2>
+          <h2 className="text-xl font-semibold mb-4 flex items-center gap-2"><RotateCcw className="w-5 h-5 text-primary-strong" /> Право на отказ (14 дни)</h2>
           <div className="rounded-lg border border-border bg-card p-5 space-y-3 text-sm text-muted-foreground leading-relaxed">
             <p>Имате право да се откажете от договора в рамките на <strong className="text-foreground">14 дни</strong> от получаването на стоката без да посочвате причина.</p>
-            <p>За да упражните правото си, отворете поръчката в <Link href="/account/orders" className="text-primary underline underline-offset-2">История на поръчките</Link> и натиснете <strong className="text-foreground">„Откажете се от договора тук&rdquo;</strong>. Ще получите потвърждение на екрана и копие по имейл с дата и час на подаване.</p>
-            <p>Подробните условия и стандартният формуляр за отказ са публикувани на <Link href="/terms/withdrawal" className="text-primary underline underline-offset-2">страницата за правото на отказ</Link>.</p>
+            <p>За да упражните правото си, отворете поръчката в <Link href="/account/orders" className="text-primary-strong underline underline-offset-2">История на поръчките</Link> и натиснете <strong className="text-foreground">„Откажете се от договора тук&rdquo;</strong>. Ще получите потвърждение на екрана и копие по имейл с дата и час на подаване.</p>
+            <p>Подробните условия и стандартният формуляр за отказ са публикувани на <Link href="/terms/withdrawal" className="text-primary-strong underline underline-offset-2">страницата за правото на отказ</Link>.</p>
           </div>
         </section>
 
         {/* Tracking */}
         <section>
-          <h2 className="text-xl font-semibold mb-4 flex items-center gap-2"><Package className="w-5 h-5 text-primary" /> Проследяване на пратка</h2>
+          <h2 className="text-xl font-semibold mb-4 flex items-center gap-2"><Package className="w-5 h-5 text-primary-strong" /> Проследяване на пратка</h2>
           <p className="text-sm text-muted-foreground">
             След изпращане на поръчката ще получите имейл с номер за проследяване. Можете да следите статуса на пратката директно в профила си или на сайта на съответния куриер.
           </p>
         </section>
 
         <section>
-          <h2 className="text-xl font-semibold mb-2 flex items-center gap-2"><Store className="w-5 h-5 text-primary" /> Адрес на магазина</h2>
+          <h2 className="text-xl font-semibold mb-2 flex items-center gap-2"><Store className="w-5 h-5 text-primary-strong" /> Адрес на магазина</h2>
           <p className="text-sm text-muted-foreground">ул. Витоша 15, 1000 София · Пн–Пт: 9:00–18:00 · Съб: 10:00–14:00</p>
         </section>
       </div>

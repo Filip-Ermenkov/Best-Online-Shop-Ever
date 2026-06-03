@@ -21,7 +21,7 @@ export default function AboutPage() {
         ].map(({ icon: Icon, title, description }) => (
           <div key={title} className="flex gap-4 rounded-lg border border-border bg-card p-5 card-lift">
             <div className="w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center flex-shrink-0">
-              <Icon className="w-5 h-5 text-primary" />
+              <Icon className="w-5 h-5 text-primary-strong" />
             </div>
             <div>
               <h3 className="font-semibold mb-1">{title}</h3>
@@ -51,7 +51,7 @@ export default function AboutPage() {
       <div className="text-center">
         <h2 className="text-xl font-bold mb-2">Работи ли при нас?</h2>
         <p className="text-muted-foreground text-sm">Търсим мотивирани хора в сферата на логистиката, IT и продажбите.</p>
-        <a href="mailto:careers@duda1.bg" className="inline-block mt-4 text-primary hover:underline text-sm font-medium">
+        <a href="mailto:careers@duda1.bg" className="inline-block mt-4 text-primary-strong underline text-sm font-medium">
           careers@duda1.bg
         </a>
       </div>

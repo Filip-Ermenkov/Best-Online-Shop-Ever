@@ -43,6 +43,12 @@ export default async function RootLayout({ children }: { children: React.ReactNo
   return (
     <html lang="bg" data-scroll-behavior="smooth" className={`${geist.variable} h-full antialiased`}>
       <body className="min-h-full flex flex-col">
+        {/* WCAG 2.4.1 Bypass Blocks: keyboard users land here first and can
+            jump past the header/nav straight to the page content. Styled by
+            `.skip-link` in globals.css — hidden until focused. */}
+        <a href="#main-content" className="skip-link">
+          Прескочи към съдържанието
+        </a>
         <AuthProvider initialUser={initialUser}>
           <CartProvider>
             <TooltipProvider>{children}</TooltipProvider>

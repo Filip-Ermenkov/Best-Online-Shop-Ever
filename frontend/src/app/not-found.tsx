@@ -4,7 +4,7 @@ import { Home, ArrowLeft, Search } from "lucide-react";
 export default function NotFound() {
   return (
     <div className="min-h-screen flex flex-col items-center justify-center px-4 text-center">
-      <p className="text-8xl font-bold text-primary/20 mb-4">404</p>
+      <p className="text-8xl font-bold text-primary-strong/20 mb-4">404</p>
       <h1 className="text-2xl font-bold mb-2">Страницата не е намерена</h1>
       <p className="text-muted-foreground max-w-sm mb-8">
         Страницата, която търсите, не съществува или е преместена.

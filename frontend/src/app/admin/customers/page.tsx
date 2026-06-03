@@ -63,13 +63,13 @@ export default function AdminCustomersPage() {
                           onChange={(e) => setEditDiscount(Number(e.target.value))}
                           className="w-16 h-7 text-xs"
                         />
-                        <button onClick={() => saveDiscount(c.id)} className="text-xs text-primary hover:underline">Запази</button>
+                        <button onClick={() => saveDiscount(c.id)} className="text-xs text-primary-strong underline">Запази</button>
                         <button onClick={() => setEditingId(null)} className="text-xs text-muted-foreground hover:underline">Откажи</button>
                       </div>
                     ) : (
                       <button
                         onClick={() => { setEditingId(c.id); setEditDiscount(c.discountPercent); }}
-                        className="text-sm hover:text-primary transition-colors"
+                        className="text-sm hover:text-primary-strong transition-colors"
                       >
                         {c.discountPercent}%
                       </button>
@@ -116,13 +116,13 @@ export default function AdminCustomersPage() {
                     onChange={(e) => setEditDiscount(Number(e.target.value))}
                     className="w-16 h-7 text-xs"
                   />
-                  <button onClick={() => saveDiscount(c.id)} className="text-xs text-primary hover:underline">Запази</button>
+                  <button onClick={() => saveDiscount(c.id)} className="text-xs text-primary-strong underline">Запази</button>
                   <button onClick={() => setEditingId(null)} className="text-xs text-muted-foreground hover:underline">Откажи</button>
                 </div>
               ) : (
                 <button
                   onClick={() => { setEditingId(c.id); setEditDiscount(c.discountPercent); }}
-                  className="text-sm font-medium hover:text-primary transition-colors"
+                  className="text-sm font-medium hover:text-primary-strong transition-colors"
                 >
                   {c.discountPercent}%
                 </button>

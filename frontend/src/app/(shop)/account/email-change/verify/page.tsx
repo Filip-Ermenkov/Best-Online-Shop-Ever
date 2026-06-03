@@ -222,7 +222,7 @@ export default function EmailChangeVerifyPage() {
 
         <div className="mb-6">
           <div className="w-12 h-12 rounded-full bg-primary/10 flex items-center justify-center mb-4">
-            <Mail className="w-6 h-6 text-primary" />
+            <Mail className="w-6 h-6 text-primary-strong" />
           </div>
           <h1 className="text-2xl font-bold">Потвърди новия имейл</h1>
           <p className="text-muted-foreground mt-1 text-sm">

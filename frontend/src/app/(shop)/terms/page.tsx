@@ -27,7 +27,7 @@ export default function TermsPage() {
         Потребителите имат право да се откажат от договора в срок от 14 дни от получаването на стоката, без да
         посочват причина. Подробни условия и процедурата за упражняване на правото на отказ — включително
         стандартния формуляр — са публикувани на{" "}
-        <a href="/terms/withdrawal" className="text-primary">отделна страница</a>. Накратко: от страницата с
+        <a href="/terms/withdrawal" className="text-primary-strong">отделна страница</a>. Накратко: от страницата с
         детайли на поръчката натиснете бутона „Откажете се от договора тук&rdquo; — ще получите потвърждение на
         екрана и копие по имейл.
       </p>
@@ -35,12 +35,12 @@ export default function TermsPage() {
       <h2>5. Защита на личните данни</h2>
       <p>
         Обработването на лични данни се извършва съгласно нашата{" "}
-        <a href="/privacy" className="text-primary">Политика за поверителност</a>.
+        <a href="/privacy" className="text-primary-strong">Политика за поверителност</a>.
       </p>
 
       <h2>6. Контакти</h2>
       <p>
-        За въпроси и сигнали: <a href="mailto:contact@duda1.bg" className="text-primary">contact@duda1.bg</a>
+        За въпроси и сигнали: <a href="mailto:contact@duda1.bg" className="text-primary-strong">contact@duda1.bg</a>
         <br />Телефон: +359 2 123 4567
       </p>
     </div>

@@ -69,7 +69,7 @@ export default function AdminOrderDetailPage({ params }: Props) {
                 <option key={s} value={s}>{statusConfig[s]?.label ?? s}</option>
               ))}
             </select>
-            {saved && <span className="text-xs text-green-600 font-medium">✓ Запазено</span>}
+            {saved && <span className="text-xs text-green-700 font-medium">✓ Запазено</span>}
             {order.deliveryMethod === "courier" && <WaybillDialog order={order} />}
           </div>
         </div>
@@ -107,7 +107,7 @@ export default function AdminOrderDetailPage({ params }: Props) {
               <p><span className="text-muted-foreground">Куриер:</span> {order.courierInfo.company}</p>
               <p><span className="text-muted-foreground">Товарителница:</span> {order.courierInfo.trackingNumber}</p>
               {order.courierInfo.trackingUrl && (
-                <a href={order.courierInfo.trackingUrl} target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">
+                <a href={order.courierInfo.trackingUrl} target="_blank" rel="noopener noreferrer" className="text-primary-strong underline">
                   Проследи пратката →
                 </a>
               )}
@@ -146,7 +146,7 @@ export default function AdminOrderDetailPage({ params }: Props) {
               <span>{formatPrice(order.subtotal)}</span>
             </div>
             {order.discountAmount > 0 && (
-              <div className="flex justify-between text-green-600">
+              <div className="flex justify-between text-green-700">
                 <span>Отстъпка</span>
                 <span>- {formatPrice(order.discountAmount)}</span>
               </div>
@@ -155,7 +155,7 @@ export default function AdminOrderDetailPage({ params }: Props) {
           <Separator className="my-2" />
           <div className="flex justify-between font-bold">
             <span>Общо</span>
-            <span className="text-primary">{formatPrice(order.total)}</span>
+            <span className="text-primary-strong">{formatPrice(order.total)}</span>
           </div>
         </div>
 

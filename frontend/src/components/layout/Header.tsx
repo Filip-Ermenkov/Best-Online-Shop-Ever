@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useState, useRef, useEffect, useCallback } from "react";
 import { Search, ShoppingCart, User, X, LogOut, Package, Settings } from "lucide-react";
 import { useCart } from "@/contexts/CartContext";
@@ -66,7 +67,13 @@ export default function Header() {
   const [searchQuery, setSearchQueryState] = useState("");
   const [dismissed, setDismissed] = useState(false);
   const [suggestions, setSuggestions] = useState<SuggestionItem[]>([]);
+  // Index of the keyboard-highlighted option in the listbox; -1 = none active
+  // (focus on the textbox, no option pre-selected). Drives aria-activedescendant.
+  const [activeIndex, setActiveIndex] = useState(-1);
   const searchRef = useRef<HTMLDivElement>(null);
+  const router = useRouter();
+  const SEARCH_LISTBOX_ID = "header-search-listbox";
+  const optionId = (i: number) => `header-search-option-${i}`;
 
   const trimmedQuery = searchQuery.trim();
   const hasValidQuery = trimmedQuery.length >= MIN_QUERY_LENGTH;
@@ -84,6 +91,7 @@ export default function Header() {
   const setSearchQuery = useCallback((value: string) => {
     setSearchQueryState(value);
     setDismissed(false);
+    setActiveIndex(-1); // new keystroke resets the highlighted option
   }, []);
 
   // Debounced fetch on query change. We use a single effect that re-runs on
@@ -118,6 +126,7 @@ export default function Header() {
               : null,
           })),
         );
+        setActiveIndex(-1); // fresh result set: start with no option highlighted
       } catch (err) {
         // AbortError is the expected outcome of typing fast — discard
         // silently. Other errors (network down, 500) also degrade to an
@@ -151,6 +160,42 @@ export default function Header() {
     return () => document.removeEventListener("mousedown", handleClick);
   }, []);
 
+  /**
+   * Keyboard model for the search combobox (WAI-ARIA APG "combobox with list
+   * autocomplete, manual selection"). DOM focus stays on the textbox; the
+   * highlighted option is tracked via `activeIndex` and surfaced to assistive
+   * tech through `aria-activedescendant`.
+   *   ArrowDown / ArrowUp — move the highlight (wraps at both ends).
+   *   Enter             — if an option is highlighted, go to it; otherwise the
+   *                       form submits and the full /search page handles it.
+   *   Escape            — collapse the listbox, clear the highlight.
+   */
+  function handleSearchKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
+    if (e.key === "ArrowDown") {
+      if (!showSuggestions) return;
+      e.preventDefault();
+      setActiveIndex((i) => (i + 1) % suggestions.length);
+    } else if (e.key === "ArrowUp") {
+      if (!showSuggestions) return;
+      e.preventDefault();
+      setActiveIndex((i) => (i <= 0 ? suggestions.length - 1 : i - 1));
+    } else if (e.key === "Enter") {
+      if (showSuggestions && activeIndex >= 0 && activeIndex < suggestions.length) {
+        e.preventDefault();
+        const picked = suggestions[activeIndex];
+        setSearchQuery("");
+        setDismissed(true);
+        router.push(`/products/${picked.slug}`);
+      }
+    } else if (e.key === "Escape") {
+      if (showSuggestions) {
+        e.preventDefault();
+        setDismissed(true);
+        setActiveIndex(-1);
+      }
+    }
+  }
+
   return (
     <>
       <header className="bg-white/95 backdrop-blur-sm border-b border-border sticky top-0 z-40 shadow-sm">
@@ -180,8 +225,16 @@ export default function Header() {
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 onFocus={() => setDismissed(false)}
+                onKeyDown={handleSearchKeyDown}
                 className="w-full h-9 pl-9 pr-4 text-sm rounded-md border border-input bg-background focus:outline-none focus:ring-2 focus:ring-ring"
                 aria-label="Търси продукти"
+                role="combobox"
+                aria-expanded={showSuggestions}
+                aria-controls={SEARCH_LISTBOX_ID}
+                aria-autocomplete="list"
+                aria-activedescendant={
+                  showSuggestions && activeIndex >= 0 ? optionId(activeIndex) : undefined
+                }
               />
               {searchQuery && (
                 <button
@@ -197,36 +250,57 @@ export default function Header() {
 
             {showSuggestions && (
               <div className="absolute top-full mt-1 left-0 right-0 bg-white border border-border rounded-md shadow-lg z-50">
-                {suggestions.map((p) => (
-                  <Link
-                    key={p.id}
-                    href={`/products/${p.slug}`}
-                    onClick={() => { setSearchQuery(""); setDismissed(true); }}
-                    className="flex items-center gap-3 px-3 py-2 hover:bg-muted transition-colors text-sm"
-                  >
-                    <div className="w-8 h-8 flex-shrink-0 rounded bg-muted overflow-hidden">
-                      {p.primaryImage && (
-                        // eslint-disable-next-line @next/next/no-img-element
-                        <img
-                          src={p.primaryImage.url}
-                          alt={p.primaryImage.alt}
-                          className="w-full h-full object-cover"
-                        />
-                      )}
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <p className="font-medium truncate">{p.name}</p>
-                      <p className="text-muted-foreground text-xs">{p.code}</p>
-                    </div>
-                    <span className="font-semibold text-primary whitespace-nowrap">
-                      {formatCents(p.priceCents)}
-                    </span>
-                  </Link>
-                ))}
+                {/* APG listbox popup. Options are not in the tab order
+                    (tabIndex=-1); the textbox above owns keyboard navigation
+                    and points at the active option via aria-activedescendant. */}
+                <ul
+                  id={SEARCH_LISTBOX_ID}
+                  role="listbox"
+                  aria-label="Предложения за търсене"
+                  className="py-1"
+                >
+                  {suggestions.map((p, i) => (
+                    <li
+                      key={p.id}
+                      id={optionId(i)}
+                      role="option"
+                      aria-selected={i === activeIndex}
+                      aria-label={p.name}
+                    >
+                      <Link
+                        href={`/products/${p.slug}`}
+                        tabIndex={-1}
+                        onClick={() => { setSearchQuery(""); setDismissed(true); }}
+                        onMouseEnter={() => setActiveIndex(i)}
+                        className={`flex items-center gap-3 px-3 py-2 transition-colors text-sm ${
+                          i === activeIndex ? "bg-muted" : "hover:bg-muted"
+                        }`}
+                      >
+                        <div className="w-8 h-8 flex-shrink-0 rounded bg-muted overflow-hidden">
+                          {p.primaryImage && (
+                            // eslint-disable-next-line @next/next/no-img-element
+                            <img
+                              src={p.primaryImage.url}
+                              alt=""
+                              className="w-full h-full object-cover"
+                            />
+                          )}
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <p className="font-medium truncate">{p.name}</p>
+                          <p className="text-muted-foreground text-xs">{p.code}</p>
+                        </div>
+                        <span className="font-semibold text-primary-strong whitespace-nowrap">
+                          {formatCents(p.priceCents)}
+                        </span>
+                      </Link>
+                    </li>
+                  ))}
+                </ul>
                 <Link
                   href={`/search?q=${encodeURIComponent(searchQuery)}`}
                   onClick={() => setDismissed(true)}
-                  className="block px-3 py-2 text-sm text-primary font-medium border-t border-border hover:bg-muted transition-colors text-center"
+                  className="block px-3 py-2 text-sm text-primary-strong font-medium border-t border-border hover:bg-muted transition-colors text-center"
                 >
                   Виж всички резултати за &ldquo;{searchQuery}&rdquo;
                 </Link>

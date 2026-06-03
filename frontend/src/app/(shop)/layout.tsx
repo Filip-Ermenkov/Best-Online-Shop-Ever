@@ -41,7 +41,13 @@ export default async function ShopLayout({
       <Header />
       <NavBar tree={categoryTree} />
       <EmailVerificationBanner />
-      <main className="flex-1">{children}</main>
+      {/* `id`+`tabIndex={-1}` make this the destination of the skip link and
+          a programmatic focus target. `focus:outline-none` because it's a
+          non-interactive landmark, not a control — moving focus here just
+          re-roots Tab order at the content (WCAG 2.4.1). */}
+      <main id="main-content" tabIndex={-1} className="flex-1 focus:outline-none">
+        {children}
+      </main>
       <Footer />
       <CookieBanner />
     </>

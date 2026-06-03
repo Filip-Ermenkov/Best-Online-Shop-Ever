@@ -39,7 +39,8 @@ others where appropriate.
 └── docs/
     ├── README.md         Functional spec (Bulgarian)
     ├── ARCHITECTURE.md   Technical reference + roadmap + forward-looking design
-    └── COMPLIANCE.md     Standards matrix
+    ├── COMPLIANCE.md     Standards matrix
+    └── ACCESSIBILITY.md  WCAG 2.2 AA / EAA conformance + audit + manual checklist
 ```
 
 Not yet present in the repo (mentioned in `docs/ARCHITECTURE.md` as
@@ -109,6 +110,17 @@ visible at `/account/orders`.
 npm --workspace @shop/auth  run test   # 31 unit tests (Argon2, sessions, HIBP)
 npm --workspace @shop/email run test   # 51 unit tests (12 templates + 3 transports)
 npm --workspace @shop/api   run test   # full integration suite (304 cases) vs shop_test DB
+```
+
+Accessibility (WCAG 2.2 AA / EAA) has its own layered audit — see
+[Accessibility](#accessibility-wcag-22-aa--eaa) below and
+`docs/ACCESSIBILITY.md`:
+
+```powershell
+npm --workspace shop run lint          # static jsx-a11y rules (also in CI)
+cd frontend
+npm run test:a11y:install              # one-time: fetch Chromium
+npm run test:a11y                      # runtime axe-core scan (boots next dev)
 ```
 
 Everything CI runs (typecheck + lint + tests). Approximates a green PR:
@@ -250,6 +262,14 @@ backed by the `/addresses` CRUD with a typed `AddressError` union in
 `frontend/src/lib/addresses/`. 4-digit postal-code validation client- and
 server-side. The "адресна книга" of spec §6.
 
+Accessibility (WCAG 2.2 AA / EAA) is wired across the storefront:
+contrast-fixed design tokens, a skip-to-content link, a uniform keyboard
+focus indicator, `prefers-reduced-motion` handling, an ARIA combobox
+search, live-region form errors, and an EAA Annex V statement at
+`/accessibility`. Audited statically in CI (`eslint-plugin-jsx-a11y`) and
+at runtime locally (`npm run test:a11y`, axe-core). See
+`docs/ACCESSIBILITY.md`.
+
 **Still on mock data:**
 
 - Home page banners (`frontend/src/lib/mock-data/banners.ts`) — no
@@ -274,7 +294,7 @@ request and every push to `main`:
 | Job | What it runs | Service |
 |---|---|---|
 | `typecheck` | `tsc --noEmit` across `@shop/db`, `@shop/auth`, `@shop/email`, `@shop/api` | — |
-| `lint` | `next lint` on the frontend | — |
+| `lint` | `next lint` on the frontend — includes the hardened `eslint-plugin-jsx-a11y` accessibility rules (the static layer of the WCAG audit) | — |
 | `auth-tests` | Unit tests in `@shop/auth` | — |
 | `email-tests` | Unit tests in `@shop/email` (templates + transports, SES mocked) | — |
 | `api-tests` | Integration tests in `@shop/api` | Postgres 17 |
@@ -543,6 +563,34 @@ caps body size at 16 KiB, and ALWAYS returns 204 (W3C Reporting API
 spec treats 2xx as success; surfacing 4xx only generates browser
 console noise). Verify with `frontend/public/csp-test.html` —
 three intentionally-bad CSP inputs should be blocked + reported.
+
+### Accessibility (WCAG 2.2 AA / EAA)
+
+The storefront conforms to WCAG 2.2 AA (EN 301 549 / European
+Accessibility Act). Quick manual checks:
+
+- **Keyboard:** load any page, press `Tab` once — the first stop is a
+  **"Прескочи към съдържанието"** skip link; activating it jumps focus to
+  the main content. Every interactive element shows a visible gold focus
+  ring. In the header search, type ≥ 2 characters, then `↓`/`↑` move the
+  highlighted suggestion, `Enter` opens it, `Esc` closes the list (it's a
+  WAI-ARIA combobox).
+- **Reduced motion:** turn on the OS "reduce motion" setting and reload —
+  the skeleton shimmer and entry animations stop.
+- **Contrast:** prices/links now use the darker `text-primary-strong`
+  gold (≥ 4.5:1) instead of the brand fill gold.
+- **Statement:** the EAA Annex V accessibility statement is at
+  `/accessibility` (linked from the footer as "Достъпност").
+
+Automated audit (layered — static in CI, runtime locally):
+
+```powershell
+npm --workspace shop run lint   # eslint-plugin-jsx-a11y (static, also CI)
+cd frontend; npm run test:a11y  # axe-core via Playwright (boots next dev)
+```
+
+Full detail + the manual screen-reader checklist live in
+`docs/ACCESSIBILITY.md`.
 
 ## Architecture decisions in force
 

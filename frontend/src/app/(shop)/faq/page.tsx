@@ -45,7 +45,7 @@ function FaqItem({ q, a }: { q: string; a: string }) {
     <div className="border-b border-border last:border-0">
       <button
         onClick={() => setOpen((v) => !v)}
-        className="w-full flex items-center justify-between gap-3 py-4 text-left text-sm font-medium hover:text-primary transition-colors"
+        className="w-full flex items-center justify-between gap-3 py-4 text-left text-sm font-medium hover:text-primary-strong transition-colors"
       >
         <span>{q}</span>
         <ChevronDown className={cn("w-4 h-4 flex-shrink-0 transition-transform text-muted-foreground", open && "rotate-180")} />
@@ -66,7 +66,7 @@ export default function FaqPage() {
       <div className="space-y-8">
         {faqs.map(({ category, items }) => (
           <section key={category}>
-            <h2 className="text-lg font-semibold text-primary mb-2">{category}</h2>
+            <h2 className="text-lg font-semibold text-primary-strong mb-2">{category}</h2>
             <div className="rounded-lg border border-border bg-card px-4">
               {items.map(({ q, a }) => (
                 <FaqItem key={q} q={q} a={a} />
@@ -79,7 +79,7 @@ export default function FaqPage() {
       <div className="mt-12 rounded-lg border border-border bg-muted/50 p-6 text-center">
         <p className="font-semibold mb-1">Не намерихте отговор?</p>
         <p className="text-sm text-muted-foreground mb-3">Свържете се с нас и ще ви помогнем.</p>
-        <a href="/contact" className="text-sm text-primary font-medium hover:underline">Страница за контакт →</a>
+        <a href="/contact" className="text-sm text-primary-strong font-medium underline">Страница за контакт →</a>
       </div>
     </div>
   );

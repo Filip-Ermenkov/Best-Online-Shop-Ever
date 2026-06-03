@@ -35,6 +35,12 @@
   --color-secondary: var(--secondary);
   --color-primary-foreground: var(--primary-foreground);
   --color-primary: var(--primary);
+  /* Accessible gold for use AS TEXT / links / icons on light surfaces.
+     The brand gold (--primary, oklch 0.73) is only ~2.4:1 on white — fine as
+     a fill behind dark text, but a WCAG 1.4.3 failure as small text. This
+     darker companion is >=4.5:1 on white and on muted; `text-primary-strong`
+     replaces every gold-as-text usage. See the palette block below. */
+  --color-primary-strong: var(--primary-strong);
   --color-popover-foreground: var(--popover-foreground);
   --color-popover: var(--popover);
   --color-card-foreground: var(--card-foreground);
@@ -62,22 +68,29 @@
   --card-foreground: oklch(0.18 0.02 270);
   --popover: oklch(1 0 0);
   --popover-foreground: oklch(0.18 0.02 270);
-  /* Gold as primary — CTAs, links, active states */
+  /* Gold as primary — CTAs / fills, with dark text on top (7.8:1). */
   --primary: oklch(0.73 0.10 75);
   --primary-foreground: oklch(0.18 0.02 270);
+  /* Darker gold for gold-AS-TEXT (links, prices, icons, focus ring) so it
+     clears WCAG 1.4.3 (5.6:1 on white, 5.0:1 on muted). */
+  --primary-strong: oklch(0.52 0.12 75);
   /* Soft off-white secondary */
   --secondary: oklch(0.96 0.005 270);
   --secondary-foreground: oklch(0.18 0.02 270);
   /* Very light grey muted areas */
   --muted: oklch(0.96 0.005 270);
-  --muted-foreground: oklch(0.60 0.02 270);
+  /* Secondary text. Darkened from 0.60 (was 3.95:1 on white — a 1.4.3 fail)
+     to 0.52 so small muted text clears 4.5:1 on white (5.5) and muted (4.9). */
+  --muted-foreground: oklch(0.52 0.02 270);
   /* Sage accent */
   --accent: oklch(0.65 0.07 165);
   --accent-foreground: oklch(1 0 0);
   --destructive: oklch(0.577 0.245 27.325);
   --border: oklch(0.91 0.01 270);
   --input: oklch(0.91 0.01 270);
-  --ring: oklch(0.73 0.10 75);
+  /* Focus ring uses the darker gold so the indicator itself clears the 3:1
+     non-text-contrast bar (WCAG 1.4.11 / 2.4.13). Bright gold was 2.4:1. */
+  --ring: oklch(0.52 0.12 75);
   --chart-1: oklch(0.73 0.10 75);
   --chart-2: oklch(0.65 0.07 165);
   --chart-3: oklch(0.60 0.02 270);
@@ -103,10 +116,15 @@
   --popover-foreground: oklch(0.96 0.005 270);
   --primary: oklch(0.73 0.10 75);
   --primary-foreground: oklch(0.18 0.02 270);
+  /* On dark surfaces gold-as-text already clears AA; a lighter strong gold
+     keeps links crisp (10:1 on charcoal). */
+  --primary-strong: oklch(0.80 0.10 75);
   --secondary: oklch(0.26 0.02 270);
   --secondary-foreground: oklch(0.96 0.005 270);
   --muted: oklch(0.26 0.02 270);
-  --muted-foreground: oklch(0.60 0.02 270);
+  /* Bumped from 0.60 to 0.72 so secondary text clears 4.5:1 on the dark
+     card/background (7.6 / 7.0). */
+  --muted-foreground: oklch(0.72 0.02 270);
   --accent: oklch(0.65 0.07 165);
   --accent-foreground: oklch(1 0 0);
   --destructive: oklch(0.704 0.191 22.216);
@@ -139,6 +157,61 @@
   html {
     @apply font-sans;
     scroll-behavior: smooth;
+  }
+
+  /* Uniform, high-contrast keyboard-focus indicator (WCAG 2.4.7 + 2.4.13).
+     Applies to every focusable element that doesn't opt out via `outline-none`
+     (plain links, custom controls). Component primitives layer their own
+     `focus-visible:ring` on top. Pointer focus (:focus without :focus-visible)
+     is untouched, so the visual design is unchanged for mouse users. */
+  :focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+  }
+
+  /* Skip-to-content link (WCAG 2.4.1 Bypass Blocks). Visually hidden until it
+     receives keyboard focus, then it parks top-left over the header. */
+  .skip-link {
+    position: fixed;
+    top: 0.5rem;
+    left: 0.5rem;
+    z-index: 100;
+    padding: 0.5rem 1rem;
+    border-radius: var(--radius-md);
+    background: var(--background);
+    color: var(--foreground);
+    font-weight: 600;
+    box-shadow: 0 4px 16px rgba(28, 28, 46, 0.18);
+    transform: translateY(-150%);
+    transition: transform 0.15s ease;
+  }
+  .skip-link:focus {
+    transform: translateY(0);
+  }
+}
+
+/* Respect the OS "reduce motion" setting: WCAG 2.2.2 (Pause/Stop/Hide — the
+   infinite `shimmer` skeleton is auto-playing moving content) and 2.3.3
+   (Animation from Interactions). Collapse animations/transitions to a single
+   frame and disable smooth scrolling rather than removing affordances. */
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+  .card-lift:hover {
+    transform: none;
+  }
+  .animate-shimmer {
+    animation: none !important;
+    background: oklch(0.94 0.01 270);
   }
 }
 

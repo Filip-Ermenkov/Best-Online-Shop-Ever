@@ -53,7 +53,7 @@ export default function ProductFilters({ activeSort }: ProductFiltersProps) {
                 onClick={() => setParam("sort", opt.value)}
                 className={cn(
                   "text-sm w-full text-left px-2 py-1 rounded hover:bg-muted transition-colors",
-                  activeSort === opt.value && "font-semibold text-primary",
+                  activeSort === opt.value && "font-semibold text-primary-strong",
                 )}
               >
                 {opt.label}

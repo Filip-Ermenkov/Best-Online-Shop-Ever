@@ -75,8 +75,11 @@ export default function CartDrawer({ open, onClose }: CartDrawerProps) {
         </SheetHeader>
 
         {lastError && (
-          <div className="mx-6 mt-3 flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
-            <AlertCircle className="w-4 h-4 mt-0.5 flex-shrink-0" />
+          <div
+            role="alert"
+            className="mx-6 mt-3 flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive"
+          >
+            <AlertCircle className="w-4 h-4 mt-0.5 flex-shrink-0" aria-hidden="true" />
             <span>{cartErrorCopy(lastError.kind)}</span>
           </div>
         )}
@@ -116,7 +119,7 @@ export default function CartDrawer({ open, onClose }: CartDrawerProps) {
                         {item.name}
                       </p>
                       <p className="text-xs text-muted-foreground mt-0.5">{item.code}</p>
-                      <p className={`text-sm font-semibold mt-1 ${isOos ? "text-muted-foreground" : "text-primary"}`}>
+                      <p className={`text-sm font-semibold mt-1 ${isOos ? "text-muted-foreground" : "text-primary-strong"}`}>
                         {formatCents(item.priceCents)}
                       </p>
                       {isOos && (
@@ -167,7 +170,7 @@ export default function CartDrawer({ open, onClose }: CartDrawerProps) {
                   <span>{formatCents(subtotalCents)}</span>
                 </div>
                 {discountPercent > 0 && (
-                  <div className="flex justify-between text-green-600">
+                  <div className="flex justify-between text-green-700">
                     <span>Отстъпка ({discountPercent}%)</span>
                     <span>- {formatCents(discountAmountCents)}</span>
                   </div>
@@ -176,7 +179,7 @@ export default function CartDrawer({ open, onClose }: CartDrawerProps) {
               <Separator />
               <div className="flex justify-between font-semibold">
                 <span>Общо</span>
-                <span className="text-primary text-base">{formatCents(totalCents)}</span>
+                <span className="text-primary-strong text-base">{formatCents(totalCents)}</span>
               </div>
               <ButtonLink
                 className="w-full"

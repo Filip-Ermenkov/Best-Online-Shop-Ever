@@ -75,7 +75,6 @@ export default async function SearchPage({ searchParams }: Props) {
             defaultValue={q}
             placeholder="Търси продукти..."
             className="pl-9"
-            autoFocus
           />
         </div>
         <Button type="submit">Търси</Button>

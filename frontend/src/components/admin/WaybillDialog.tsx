@@ -56,7 +56,7 @@ export default function WaybillDialog({ order }: WaybillDialogProps) {
         </DialogHeader>
         {success ? (
           <div className="py-8 text-center">
-            <p className="text-green-600 font-semibold text-lg">✓ Товарителницата е създадена!</p>
+            <p className="text-green-700 font-semibold text-lg">✓ Товарителницата е създадена!</p>
             <p className="text-sm text-muted-foreground mt-1">Поръчка {order.orderNumber}</p>
           </div>
         ) : (

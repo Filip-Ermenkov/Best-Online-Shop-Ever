@@ -296,9 +296,9 @@ export default function RegisterPage() {
 
         <p className="text-xs text-muted-foreground">
           С регистрацията приемате нашите{" "}
-          <Link href="/terms" className="text-primary hover:underline">Условия за ползване</Link>{" "}
+          <Link href="/terms" className="text-primary-strong underline">Условия за ползване</Link>{" "}
           и{" "}
-          <Link href="/privacy" className="text-primary hover:underline">Политика за поверителност</Link>.
+          <Link href="/privacy" className="text-primary-strong underline">Политика за поверителност</Link>.
         </p>
 
         <Button type="submit" className="w-full" size="lg" disabled={pending}>
@@ -309,7 +309,7 @@ export default function RegisterPage() {
       <Separator className="my-6" />
       <p className="text-center text-sm text-muted-foreground">
         Вече имате акаунт?{" "}
-        <Link href="/account/login" className="text-primary hover:underline font-medium">Вход</Link>
+        <Link href="/account/login" className="text-primary-strong underline font-medium">Вход</Link>
       </p>
     </div>
   );
