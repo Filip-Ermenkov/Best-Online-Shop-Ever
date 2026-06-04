@@ -181,15 +181,22 @@ what needs to happen to get from today's repo state to that posture.
 - `/csp-report` — accepts both legacy `application/csp-report` and
   modern `application/reports+json`. Anonymous (intentionally outside
   the auth chain).
+- `/consent` — server-side cookie-consent receipts (GDPR Art. 7(1)
+  demonstrability). `POST` records an append-only receipt and mints an
+  opaque, strictly-necessary `visitor_id` cookie; `GET` returns the
+  visitor's current choice. Anonymous (like `/csp-report`). Activates
+  the `cookie_consents` table the schema has modelled since the initial
+  migration; the banner now writes here, not just to `localStorage`.
 - `/health`, `/openapi.json`
 
-Test counts as of 2026-06-01, by `it`/`test` block: addresses 28,
-auth 48, cart 30, categories 7, csp-report 25, data-export 13,
-email-change 21, order-emails 5, orders 25, password-reset 19,
-products 15, verification 11, withdrawal 23, plus a phone-validation
-lib suite — **270 blocks**. The `csp-report` and `phone` suites are
-table-driven (`it.each`), so `vitest run` expands them and reports
-**304 cases total**, all against a real `shop_test` Postgres in CI.
+Test counts as of 2026-06-04, by `it`/`test` block: addresses 28,
+auth 48, cart 30, categories 7, consent 10, csp-report 25,
+data-export 14, email-change 21, order-emails 5, orders 25,
+password-reset 19, products 15, verification 11, withdrawal 23, plus a
+phone-validation lib suite — **281 blocks**. The `csp-report` and
+`phone` suites are table-driven (`it.each`), so `vitest run` expands
+them and reports **315 cases total**, all against a real `shop_test`
+Postgres in CI.
 
 ### Backend (`@shop/db` schema)
 
@@ -772,11 +779,15 @@ SLSA L3, Cloudflare proxy swap).
 
 ## Browsing the API
 
-The Hono RPC `AppType` is exported from `@shop/api` and consumed by
-the frontend via `hc<AppType>(API_BASE)`. Browsing the OpenAPI
-contract is at http://localhost:3001/openapi.json in dev (or behind
-your local API host). Swagger UI is not currently mounted; consume
-the JSON directly or use any external viewer.
+The OpenAPI contract is generated from the `@hono/zod-openapi` routes
+and served at http://localhost:3001/openapi.json in dev (or behind
+your local API host). Swagger UI is not currently mounted; consume the
+JSON directly or use any external viewer. Note: although `@shop/api`
+exports a Hono RPC `AppType`, the frontend deliberately does **not**
+use `hc<AppType>()` — it calls the API with plain `fetch` plus the
+concrete Zod-inferred DTOs re-exported from `@shop/api`, because
+`hc<AppType>` collapses to `unknown` under `next build` (see the
+rationale header in `frontend/src/lib/api.ts`).
 
 ## License
 

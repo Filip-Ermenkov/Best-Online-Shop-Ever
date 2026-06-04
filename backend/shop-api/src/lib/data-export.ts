@@ -153,6 +153,19 @@ const ExportOrderSchema = z.object({
   ),
 });
 
+/**
+ * One cookie-consent receipt as exported. Browser-scoped: keyed to the opaque
+ * visitor cookie rather than the account (the `cookie_consents` table is
+ * deliberately account-agnostic), so only the receipts for the browser that
+ * requested the export are included — see the builder + the visitor-scoping
+ * note in `processingInformation`.
+ */
+const ExportCookieConsentSchema = z.object({
+  id: z.string().uuid(),
+  acceptedCategories: z.array(z.string()),
+  recordedAt: z.string(),
+});
+
 export const DataExportSchema = z
   .object({
     export: z.object({
@@ -189,6 +202,7 @@ export const DataExportSchema = z
         appliedAt: z.string(),
       })
       .nullable(),
+    cookieConsents: z.array(ExportCookieConsentSchema),
     securityActivity: z.object({
       recordedLoginAttempts: z.number().int(),
       lastAttemptAt: z.string().nullable(),
@@ -243,6 +257,7 @@ function processingInformation(): DataExport["processingInformation"] {
       "Поръчки и история на поръчките, включително фактурни данни и моментни снимки на артикулите.",
       "Записи за отказ от договор (право на отказ в 14-дневен срок).",
       "Телеметрия за сигурност (опити за вход) — предоставена в обобщен вид.",
+      "Записи за съгласие за бисквитки (избрани категории, час и IP адрес), обвързани с конкретния браузър чрез анонимен идентификатор.",
     ],
     recipientCategories: [
       "Доставчик на имейл услуга за транзакционни известия (Amazon SES, регион в ЕС).",
@@ -255,6 +270,7 @@ function processingInformation(): DataExport["processingInformation"] {
       "Записи за отказ от договор: за законоустановения срок на съхранение.",
       "Опити за вход: 180 дни.",
       "Количка: докато не я изпразните или изтриете акаунта си.",
+      "Записи за съгласие за бисквитки: до оттегляне или подмяна на съгласието и за разумен период след това за целите на доказване.",
     ],
     rights: [
       "Право на достъп (чл. 15) — настоящият експорт.",
@@ -275,6 +291,7 @@ function processingInformation(): DataExport["processingInformation"] {
       "Токени за сесии и еднократни токени (верификация на имейл, нулиране на парола) — секрети, чието разкриване би било риск за сигурността.",
       "Кодове за двуфакторно възстановяване — съхраняват се само като хешове.",
       "Подробни записи на отделните опити за вход (IP адреси, потребителски агенти) — поради риск за сигурността и възможно съдържание на данни на трети лица; вместо това в раздел „securityActivity“ е включено обобщение.",
+      "Записи за съгласие за бисквитки от други браузъри или устройства — съгласието е обвързано с конкретен браузър чрез анонимен идентификатор и не може със сигурност да бъде свързано с акаунта; включени са само записите за браузъра, от който е заявен експортът.",
     ],
   };
 }
@@ -294,7 +311,10 @@ export class ExportUserMissingError extends Error {
   }
 }
 
-export async function buildUserDataExport(userId: string): Promise<DataExport> {
+export async function buildUserDataExport(
+  userId: string,
+  opts?: { visitorId?: string | null },
+): Promise<DataExport> {
   const db = getDb();
   const env = parseEnv();
 
@@ -513,6 +533,27 @@ export async function buildUserDataExport(userId: string): Promise<DataExport> {
     ? { percent: cents(discountRow.percent), appliedAt: isoReq(discountRow.appliedAt) }
     : null;
 
+  // ── Cookie-consent receipts (browser-scoped) ──────────────────────────────
+  // Consent is keyed to an opaque visitor cookie, not to the account, so we
+  // include the receipts for the browser making THIS export request — those
+  // matching the visitor id on the request. That is the set the access right
+  // can honestly associate with the requester right now; the visitor-scoping
+  // is disclosed in processingInformation. No visitor id on the request (the
+  // browser never recorded consent) ⇒ an empty list.
+  const cookieConsents: DataExport["cookieConsents"] = opts?.visitorId
+    ? (
+        await db
+          .select()
+          .from(schema.cookieConsents)
+          .where(eq(schema.cookieConsents.visitorId, opts.visitorId))
+          .orderBy(asc(schema.cookieConsents.recordedAt))
+      ).map((r) => ({
+        id: r.id,
+        acceptedCategories: r.acceptedCategories,
+        recordedAt: isoReq(r.recordedAt),
+      }))
+    : [];
+
   // ── Security activity summary (NOT the raw rows — see file header) ────────
   // login_attempts is keyed by email text (not user_id). Two cheap queries
   // (count + most-recent) rather than an aggregate `max`, so the timestamp
@@ -536,7 +577,7 @@ export async function buildUserDataExport(userId: string): Promise<DataExport> {
 
   return {
     export: {
-      schemaVersion: "1.0",
+      schemaVersion: "1.1",
       generatedAt: isoReq(new Date()),
       format: "application/json",
       legalBasis: [
@@ -567,6 +608,7 @@ export async function buildUserDataExport(userId: string): Promise<DataExport> {
     cart,
     orders,
     accountDiscount,
+    cookieConsents,
     securityActivity,
     processingInformation: processingInformation(),
   };

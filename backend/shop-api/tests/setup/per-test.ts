@@ -42,6 +42,10 @@ const TABLES_TO_TRUNCATE = [
   "login_attempts",
   "email_verification_tokens",
   "password_reset_tokens",
+  // Consent — account-agnostic (keyed on the opaque visitor cookie, no FK to
+  // users), so a TRUNCATE … CASCADE on users does NOT clear it. List it
+  // explicitly or consent rows leak across tests.
+  "cookie_consents",
   // Settings / content
   "settings",
   "tos_versions",

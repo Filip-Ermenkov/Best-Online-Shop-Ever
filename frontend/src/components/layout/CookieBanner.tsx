@@ -5,9 +5,17 @@ import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
+import { recordConsent } from "@/lib/consent/client";
+import type { ConsentCategory } from "@/lib/consent/types";
 import { X } from "lucide-react";
 
-type CookiePrefs = { functional: boolean; analytics: boolean };
+/**
+ * Opt-in (non-essential) categories. These mirror the server enum
+ * `cookie_consent_category` exactly (analytics, marketing) so the choice the
+ * visitor makes here maps 1:1 onto the durable consent receipt. "Essential"
+ * cookies are always-on, need no consent, and are never recorded.
+ */
+type CookiePrefs = { analytics: boolean; marketing: boolean };
 
 const STORAGE_KEY = "cookie_consent";
 
@@ -31,6 +39,10 @@ const STORAGE_KEY = "cookie_consent";
  *     pass's `stored === null` check evaluates false and the server emits
  *     no banner markup. Avoids the SSR-flash where the banner appears for
  *     one frame before hydration corrects it.
+ *
+ * localStorage is the source of truth for BANNER VISIBILITY only. The durable,
+ * demonstrable consent record (GDPR Art. 7(1)) is written server-side via
+ * `recordConsent` — see `commit` below and `lib/consent/client.ts`.
  */
 const CONSENT_CHANGED_EVENT = "shop:cookie-consent-changed";
 
@@ -55,6 +67,14 @@ function writeConsent(value: object): void {
   window.dispatchEvent(new Event(CONSENT_CHANGED_EVENT));
 }
 
+/** Map the banner's checkbox state onto the server's opt-in category set. */
+function toCategories(p: CookiePrefs): ConsentCategory[] {
+  const out: ConsentCategory[] = [];
+  if (p.analytics) out.push("analytics");
+  if (p.marketing) out.push("marketing");
+  return out;
+}
+
 export default function CookieBanner() {
   const stored = useSyncExternalStore(
     subscribeConsent,
@@ -64,18 +84,28 @@ export default function CookieBanner() {
   const visible = stored === null;
 
   const [showDetails, setShowDetails] = useState(false);
-  const [prefs, setPrefs] = useState<CookiePrefs>({ functional: false, analytics: false });
+  const [prefs, setPrefs] = useState<CookiePrefs>({ analytics: false, marketing: false });
+
+  /**
+   * Persist a choice: (1) write the durable server-side receipt best-effort —
+   * fire-and-forget, never blocks or throws — and (2) flip the local visibility
+   * flag so the banner hides immediately.
+   */
+  function commit(chosen: CookiePrefs) {
+    void recordConsent(toCategories(chosen));
+    writeConsent({ essential: true, ...chosen });
+  }
 
   function acceptAll() {
-    writeConsent({ essential: true, functional: true, analytics: true });
+    commit({ analytics: true, marketing: true });
   }
 
   function rejectAll() {
-    writeConsent({ essential: true, functional: false, analytics: false });
+    commit({ analytics: false, marketing: false });
   }
 
   function savePrefs() {
-    writeConsent({ essential: true, ...prefs });
+    commit(prefs);
   }
 
   if (!visible) return null;
@@ -111,17 +141,6 @@ export default function CookieBanner() {
             </div>
             <div className="flex items-start gap-3">
               <Checkbox
-                id="functional"
-                checked={prefs.functional}
-                onCheckedChange={(v) => setPrefs((p) => ({ ...p, functional: !!v }))}
-              />
-              <div>
-                <Label htmlFor="functional" className="font-medium">Функционални</Label>
-                <p className="text-xs text-muted-foreground">Запомнят предпочитания (напр. език, запазена количка).</p>
-              </div>
-            </div>
-            <div className="flex items-start gap-3">
-              <Checkbox
                 id="analytics"
                 checked={prefs.analytics}
                 onCheckedChange={(v) => setPrefs((p) => ({ ...p, analytics: !!v }))}
@@ -129,6 +148,17 @@ export default function CookieBanner() {
               <div>
                 <Label htmlFor="analytics" className="font-medium">Аналитични</Label>
                 <p className="text-xs text-muted-foreground">Помагат ни да разберем как се използва сайтът (анонимно).</p>
+              </div>
+            </div>
+            <div className="flex items-start gap-3">
+              <Checkbox
+                id="marketing"
+                checked={prefs.marketing}
+                onCheckedChange={(v) => setPrefs((p) => ({ ...p, marketing: !!v }))}
+              />
+              <div>
+                <Label htmlFor="marketing" className="font-medium">Маркетингови</Label>
+                <p className="text-xs text-muted-foreground">Позволяват показване на подходящи оферти и реклами.</p>
               </div>
             </div>
           </div>

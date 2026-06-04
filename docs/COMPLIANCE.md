@@ -427,11 +427,11 @@ Bulgarian shop selling to EU residents — full GDPR scope.
 
 | Article | Requirement | Status |
 |---|---|---|
-| Art. 5 | Lawfulness, fairness, transparency | ✅ Privacy policy page at `/privacy`; cookie-consent schema (`cookie_consents` table) ready |
+| Art. 5 | Lawfulness, fairness, transparency | ✅ Privacy policy page at `/privacy`; cookie consent recorded server-side in `cookie_consents` (see Art. 7) |
 | Art. 5(1)(c) | Data minimisation | ✅ Only collects required fields per account type |
 | Art. 5(1)(e) | Storage limitation | ⚠️ No retention sweep for old `login_attempts` (scheduler-fn not built — Roadmap item 23) |
 | Art. 6 | Lawful basis | ✅ Contract + legitimate interest + consent |
-| Art. 7 | Conditions for consent | ⚠️ Cookie consent UI exists client-side (`frontend/src/components/layout/CookieBanner.tsx`, choice persisted to `localStorage`); server-side `cookie_consents` table is in schema but not yet wired |
+| Art. 7 | Conditions for consent | ✅ Server-side consent receipts (June 3, 2026). `CookieBanner` records each choice via `POST /consent`, which writes an append-only, demonstrable receipt to `cookie_consents` (opaque `visitor_id` cookie, timestamp, accepted categories; policy version on the `cookie_consent_recorded` audit event) — satisfying Art. 7(1) "the controller shall be able to demonstrate that the data subject has consented." `localStorage` now drives only banner visibility. Receipts are disclosed in the GDPR export, browser-scoped. Route + rationale in `backend/shop-api/src/routes/consent.ts` |
 | Art. 12 | Transparent information | ✅ Privacy policy + clear UI copy |
 | Art. 15 | Right of access | ✅ `POST /auth/me/export` (May 31, 2026). Current-password re-auth + per-user frequency cap. Returns a structured JSON copy of all personal data PLUS a `processingInformation` block (purposes, data categories, recipient categories, retention, the catalogue of rights, supervisory authority, automated-decision-making statement) that satisfies the access right's transparency obligations alongside the Art. 20 portable payload. Builder + Zod-typed envelope in `backend/shop-api/src/lib/data-export.ts`. Credentials and secrets are excluded and the exclusions are disclosed in `processingInformation.dataNotIncluded` |
 | Art. 16 | Right to rectification | ✅ Self-service `/account/profile` wired to `PATCH /auth/me` (May 23, 2026). Account-type-aware. Phone normalised to Bulgarian E.164 server-side. Audit trail via structured Pino `profile_updated` event (field NAMES only — never values). EIK / email / password / role / accountType are deliberately read-only or have dedicated flows. **Delivery-address rectification shipped 2026-06-01** via the address book (`/addresses` CRUD + `/account/addresses` UI): create / partial-update / soft-delete, same field-NAMES-only `address_created/updated/deleted` audit logging |
@@ -439,7 +439,7 @@ Bulgarian shop selling to EU residents — full GDPR scope.
 | Art. 17(3)(b) | Legal-obligation retention exemption | ✅ Bulgarian Accountancy Act 10-year invoice retention; EU 2011/83/EU + 2023/2673 complaint retention. Disclosed concurrently in the post-deletion notification email |
 | Art. 18 | Right to restriction | ❌ No explicit "freeze processing" flow |
 | Art. 20 | Right to data portability | ✅ `POST /auth/me/export` (May 31, 2026). Same endpoint as Art. 15. The data the subject provided (account, profile, addresses, cart, order history) is emitted in a structured, commonly-used, machine-readable format (JSON; ISO-8601 timestamps, integer-cent money, English keys) per Recital 68 / WP29 guidance. Best-effort `auth.data-exported` security-notification email on success. (The `addresses` array became user-populatable on 2026-06-01 with the address-book CRUD — before that the schema field always serialised empty.) |
-| Art. 21 | Right to object | ⚠️ Marketing-consent rejection not yet wired; broader object-to-processing flow not built |
+| Art. 21 | Right to object | ⚠️ Cookie-level marketing rejection is now wired and recorded server-side (`POST /consent`, June 3, 2026); a broader authenticated object-to-processing flow is not yet built |
 | Art. 25 | Privacy by design | ✅ PII redaction in logs; pseudonymised session tokens |
 | Art. 32 | Security of processing | ⚠️ Code-level controls ✅; encryption at rest depends on deployment |
 | Art. 33 | Breach notification to supervisory authority within 72h | ❌ No playbook documented. Roadmap item 31 |

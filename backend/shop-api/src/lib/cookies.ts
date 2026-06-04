@@ -1,5 +1,6 @@
+import { randomUUID } from "node:crypto";
 import type { Context } from "hono";
-import { deleteCookie, setCookie } from "hono/cookie";
+import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import { parseEnv } from "./env.js";
 
 /**
@@ -84,4 +85,67 @@ export function clearSessionCookie(c: Context): void {
     secure: isProd,
     sameSite: "Lax",
   });
+}
+
+// ─── Visitor (cookie-consent) identifier ──────────────────────────────────
+//
+// An opaque, pseudonymous identifier used to key cookie-consent receipts (the
+// `cookie_consents` table). This cookie is ITSELF strictly necessary — it
+// carries no PII, exists only so the controller can tie a stored consent
+// record to the browser that gave it (GDPR Art. 7(1): the controller "shall
+// be able to demonstrate that the data subject has consented"), and is
+// therefore exempt from the very consent it underpins (ePrivacy / EDPB).
+//
+// Same env-aware naming + attribute stack as the session cookie: `__Host-`
+// prefix + Secure in production, both dropped on localhost so the cookie
+// rides plain http in dev. HttpOnly because only the server reads it — the
+// banner tracks its own visibility in localStorage; the durable, demonstrable
+// record lives server-side. SameSite=Lax so the cookie travels on the
+// same-site shop → shop-api fetch (the session cookie relies on the same).
+
+/** Cookie name. Branches on env at call time, mirroring sessionCookieName(). */
+export function visitorCookieName(): string {
+  return parseEnv().NODE_ENV === "production"
+    ? "__Host-shop_vid"
+    : "shop_vid";
+}
+
+/**
+ * 365 days. Long enough that the identifier is stable across visits (so a
+ * returning visitor's consent receipts share one key), and comfortably inside
+ * the 400-day browser cap on cookie lifetime (Chrome since 2022). When the
+ * stored consent should be re-asked is a separate, app-level decision driven
+ * by the receipt's `recordedAt`, not by this cookie's expiry.
+ */
+export const VISITOR_COOKIE_MAX_AGE_SEC = 365 * 24 * 60 * 60;
+
+/**
+ * Return the caller's visitor id, minting + setting one if the cookie is
+ * absent. Idempotent within a browser: a caller that already holds the cookie
+ * keeps the same id, so consent receipts written across visits share a stable
+ * key. Call this from write paths (recording consent).
+ */
+export function getOrSetVisitorId(c: Context): string {
+  const existing = getCookie(c, visitorCookieName());
+  if (existing && existing.length > 0) return existing;
+
+  const isProd = parseEnv().NODE_ENV === "production";
+  const id = randomUUID();
+  setCookie(c, visitorCookieName(), id, {
+    path: "/",
+    httpOnly: true,
+    secure: isProd,
+    sameSite: "Lax",
+    maxAge: VISITOR_COOKIE_MAX_AGE_SEC,
+  });
+  return id;
+}
+
+/**
+ * Read the visitor id WITHOUT minting one. Read-only paths (e.g. the GDPR data
+ * export, which should not create an identifier as a side effect of a read)
+ * use this; it returns null when the browser has never recorded consent.
+ */
+export function getVisitorId(c: Context): string | null {
+  return getCookie(c, visitorCookieName()) ?? null;
 }
