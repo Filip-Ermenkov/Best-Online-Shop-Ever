@@ -57,3 +57,12 @@ export type { DataExport } from "./lib/data-export.js";
 // its lib/addresses fetch helpers with this concrete shape so callers get the
 // right type regardless of how the workspace symlink resolves AppType.
 export type { Address } from "./routes/addresses.js";
+
+// Cookie-consent receipt DTOs from routes/consent.ts. The frontend annotates
+// its lib/consent client with these concrete shapes (GDPR Art. 7 server-side
+// consent receipts), independent of how the workspace symlink resolves AppType.
+export type {
+  ConsentCategory,
+  ConsentReceipt,
+  ConsentState,
+} from "./routes/consent.js";

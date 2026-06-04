@@ -206,7 +206,7 @@ runnable locally via `@hono/node-server`. Routes mounted in
 `backend/shop-api/src/app.ts`:
 
 - `/products`, `/categories`, `/auth/*`, `/cart/*`, `/orders/*`,
-  `/addresses/*`, `/csp-report`, `/health`, `/openapi.json`.
+  `/addresses/*`, `/consent`, `/csp-report`, `/health`, `/openapi.json`.
 
 **Target (three Lambdas):**
 
@@ -1564,6 +1564,28 @@ Ranked by `(impact ÷ effort)` — highest leverage first. Items marked
       disclosed: the category menu has no full `menubar` keyboard model
       (arrow-key traversal); previews now open on hover *and* keyboard
       focus, and every category stays keyboard-reachable via the panel.
+
+41. ✅ **Server-side cookie-consent receipts (GDPR Art. 7(1))** (June 3,
+    2026). The consent banner had only ever written the choice to
+    `localStorage` — a record the data subject owns and can erase, which
+    the *controller* cannot produce on demand: the opposite of what Art.
+    7(1) requires ("the controller shall be able to demonstrate that the
+    data subject has consented"). New anonymous `/consent` route on
+    `shop-api` — `POST` records an append-only receipt and mints an
+    opaque, strictly-necessary `visitor_id` cookie; `GET` returns the
+    current choice — activating the `cookie_consents` table modelled
+    since the initial migration (the same "wire a table the schema
+    already had" move as the address book, item 20). Choices are
+    normalised (dedup + sort), payloads are `.strict()`, the IP is
+    coerced through an `inet` guard, and a durable `cookie_consent_
+    recorded` audit event pins the policy version. Receipts are disclosed
+    in the GDPR export, browser-scoped (`schemaVersion` 1.0 → 1.1). The
+    banner's categories were realigned to the spec's {analytics,
+    marketing} (the component had drifted to {functional, analytics}) and
+    now POST best-effort to the route, while `localStorage` keeps driving
+    only banner visibility. Fully sandbox/Windows-testable (no AWS): 10
+    new `consent` integration cases + a consent assertion in the export
+    suite.
 
 **Doing items 15–27 closes every meaningful 2026 gap in ~4–6
 working days. Items 28–33 raise the quality bar further at ~3 more

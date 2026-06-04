@@ -15,6 +15,7 @@ import { addressesRoutes } from "./routes/addresses.js";
 import { authRoutes } from "./routes/auth.js";
 import { cartRoutes } from "./routes/cart.js";
 import { categoriesRoutes } from "./routes/categories.js";
+import { consentRoutes } from "./routes/consent.js";
 import { cspRoutes } from "./routes/csp.js";
 import { ordersRoutes } from "./routes/orders.js";
 import { productsRoutes } from "./routes/products.js";
@@ -171,6 +172,10 @@ export function buildApp() {
   app.route("/cart", cartRoutes);
   app.route("/orders", ordersRoutes);
   app.route("/addresses", addressesRoutes);
+  // Cookie-consent receipts — anonymous, no currentUser middleware
+  // (intentional): consent is collected from guests too and is independent of
+  // any login. Keyed on an opaque visitor cookie; see routes/consent.ts.
+  app.route("/consent", consentRoutes);
   // CSP violation reports — anonymous, no currentUser middleware (intentional).
   // Always returns 204 No Content; see backend/shop-api/src/routes/csp.ts for
   // the full design rationale.

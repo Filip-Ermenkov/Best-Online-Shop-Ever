@@ -3,7 +3,7 @@ import { schema } from "@shop/db";
 import { eq } from "drizzle-orm";
 import { beforeAll, describe, expect, it } from "vitest";
 import { buildApp } from "../../src/app.js";
-import { sessionCookieName } from "../../src/lib/cookies.js";
+import { sessionCookieName, visitorCookieName } from "../../src/lib/cookies.js";
 import { getDb } from "../../src/lib/db.js";
 import { getStubTransportForTests } from "../../src/lib/emails.js";
 import type { DataExport } from "../../src/lib/data-export.js";
@@ -365,6 +365,48 @@ describe("POST /auth/me/export — includes the user's records", () => {
     expect(body.addresses).toEqual([]);
     expect(body.cart.items).toEqual([]);
     expect(body.accountDiscount).toBeNull();
+    // No visitor cookie on this request ⇒ no consent receipts associated.
+    expect(body.cookieConsents).toEqual([]);
+  });
+
+  it("includes the requesting browser's cookie-consent receipts (Art. 7)", async () => {
+    const { cookie } = await seedPersonalCustomer();
+
+    // Record a consent choice and capture the opaque visitor cookie the route
+    // mints. The export re-associates receipts with the CURRENT browser by
+    // reading this same cookie (see lib/data-export.ts + auth.ts).
+    const consentRes = await app.request("/consent", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ acceptedCategories: ["analytics"] }),
+    });
+    expect(consentRes.status).toBe(201);
+    const vid = consentRes.headers
+      .get("set-cookie")
+      ?.match(new RegExp(`(?:^|;\\s*)${visitorCookieName()}=([^;]+)`))?.[1];
+    expect(vid).toBeTruthy();
+
+    // Export with BOTH the session cookie (identity) and the visitor cookie
+    // (browser scope) on the request.
+    const res = await app.request("/auth/me/export", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Cookie: `${sessionCookieName()}=${cookie}; ${visitorCookieName()}=${vid}`,
+      },
+      body: JSON.stringify({ currentPassword: VALID_PASSWORD }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as DataExport;
+
+    // The consent receipt for THIS browser is disclosed, and the export schema
+    // version reflects the added section.
+    expect(body.export.schemaVersion).toBe("1.1");
+    expect(body.cookieConsents).toHaveLength(1);
+    expect(body.cookieConsents[0]?.acceptedCategories).toEqual(["analytics"]);
+    expect(Number.isNaN(Date.parse(body.cookieConsents[0]!.recordedAt))).toBe(
+      false,
+    );
   });
 });
 

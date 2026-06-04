@@ -12,6 +12,7 @@ import type { Context } from "hono";
 import { getCookie } from "hono/cookie";
 import {
   clearSessionCookie,
+  getVisitorId,
   sessionCookieName,
   setSessionCookie,
 } from "../lib/cookies.js";
@@ -1697,7 +1698,10 @@ authRoutes.openapi(exportMeRoute, async (c) => {
   // ── Build the export ─────────────────────────────────────────────────
   let payload: DataExport;
   try {
-    payload = await buildUserDataExport(user.id);
+    // Pass the requesting browser's visitor id (if any) so the export can
+    // include the cookie-consent receipts associated with THIS browser. The
+    // builder discloses the visitor-scoping in processingInformation.
+    payload = await buildUserDataExport(user.id, { visitorId: getVisitorId(c) });
   } catch (err) {
     if (err instanceof ExportUserMissingError) {
       // Row vanished between session validation and now — same flat 401.
