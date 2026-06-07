@@ -1,0 +1,17 @@
+# Terraform working files
+.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
+crash.*.log
+.artifacts/
+
+# Real variable + backend files may carry environment specifics — keep only the
+# committed .example templates. (Neither should ever hold secrets.)
+*.tfvars
+!*.tfvars.example
+backend.hcl
+!backend.hcl.example
+
+# NOTE: .terraform.lock.hcl is intentionally NOT ignored — commit it after the
+# first `terraform init` so provider versions are reproducible across machines.

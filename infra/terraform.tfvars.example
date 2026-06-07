@@ -1,0 +1,55 @@
+# Copy to terraform.tfvars and edit. NEVER put the Neon URL or any secret here —
+# the DATABASE_URL is set out-of-band in SSM after the first apply (see README).
+# terraform.tfvars is gitignored; this .example file is the committed template.
+
+# ─── Identity ────────────────────────────────────────────────────────────────
+project     = "best-online-shop"
+environment = "prod"
+aws_region  = "eu-central-1"
+
+# ─── Runtime config injected into the Lambda (all non-secret) ────────────────
+cors_origins        = "https://shop.example.com"
+public_app_base_url = "https://shop.example.com"
+email_from          = "Best Online Shop <noreply@shop.example.com>"
+email_transport     = "ses" # ses | console | stub
+log_level           = "warn"
+cdn_base_url        = "" # set to the image CloudFront/R2 origin once it exists
+
+# ─── Edge (CloudFront) ───────────────────────────────────────────────────────
+# enable_cdn defaults true (secure-by-default: Function URL becomes AWS_IAM-only).
+# Leave api_domain_name empty to serve on the default *.cloudfront.net domain
+# (no ACM/DNS needed); set it to put the API on your own subdomain.
+enable_cdn      = true
+api_domain_name = "" # e.g. "api.shop.example.com"
+enable_waf      = false # AWS-native WAF; the cost model prefers Cloudflare's free WAF
+
+# ─── DNS (Route 53) ──────────────────────────────────────────────────────────
+# Off by default — the cost model prefers Cloudflare DNS. Turn on only to keep
+# DNS in AWS; then set root_domain_name.
+enable_dns       = false
+root_domain_name = "" # e.g. "shop.example.com"
+
+# ─── Frontend (Amplify) ──────────────────────────────────────────────────────
+# You can instead connect the repo in the Amplify console (no token in state).
+enable_amplify         = false
+amplify_repository_url = "" # e.g. "https://github.com/Filip-Ermenkov/Best-Online-Shop-Ever"
+# github_access_token  → pass via env: export TF_VAR_github_access_token=ghp_xxx
+
+# ─── Email (SES) ─────────────────────────────────────────────────────────────
+enable_ses = false
+ses_domain = "" # e.g. "shop.example.com"
+
+# ─── CI/CD (GitHub OIDC) ─────────────────────────────────────────────────────
+enable_github_oidc = true
+github_owner       = "Filip-Ermenkov"
+github_repo        = "Best-Online-Shop-Ever"
+github_deploy_ref  = "refs/heads/main"
+
+# ─── Observability ───────────────────────────────────────────────────────────
+alarm_email             = "" # e.g. "ops@shop.example.com" (confirm the SNS subscription email)
+enable_admin_alarms     = false # turn on once admin-api exists
+enable_scheduler_alarms = false # turn on once scheduler-fn exists
+
+# ─── Cost / security knobs ───────────────────────────────────────────────────
+enable_kms_cmk      = true # ~$1/mo; false = AWS-managed keys, €0 tier
+enable_xray_tracing = true

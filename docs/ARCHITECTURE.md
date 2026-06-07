@@ -1449,9 +1449,31 @@ Ranked by `(impact ÷ effort)` — highest leverage first. Items marked
     after the template + wire-up shipped). Re-upgrade the storefront
     browsing row in this doc (done in 2026-05-28 after item 15
     shipped).
-17. ❌ **First production deploy.** Create `infra/` with the
-    minimal Terraform that provisions the actual running shop.
-    1–2 days.
+17. 🟡 **First production deploy — IaC authored & validated; apply
+    pending.** `infra/` now exists (2026-06-05): a modular Terraform
+    stack — remote S3 state backend with native locking + a `bootstrap`
+    sub-stack; a customer-managed KMS key; the one runtime secret in
+    SSM Parameter Store (placeholder-seeded, real value set out-of-band
+    so it never enters state via that resource); the `shop-api` Lambda
+    (Node 22, arm64, `handler.handler`) with a Function URL, a
+    pre-created 14-day CloudWatch log group, active X-Ray tracing, and
+    a least-privilege execution role; CloudFront with **OAC + sigv4**
+    in front of the Function URL (`AWS_IAM`-only, secure-by-default,
+    works on the default `*.cloudfront.net` domain with no DNS); the
+    five §3.10 alarms on an SNS topic (admin-login + scheduler ones
+    gated until those Lambdas exist); and a GitHub **OIDC** deploy role
+    (no long-lived keys). Opt-in layers: WAF (managed rule sets +
+    rate-limit + Log4Shell KnownBadInputs), Route 53, SES (DKIM + MAIL
+    FROM + config set), Amplify. Plus an esbuild Lambda bundle
+    (`@shop/api` `build:lambda`; `argon2` shipped unbundled, `@aws-sdk/*`
+    left to the runtime) and a CI gate (`.github/workflows/infra.yml`).
+    Verified: `terraform fmt` + `validate`, `tflint` (AWS ruleset), and
+    `checkov` (121 passed / 0 failed; 16 documented accepted findings in
+    `infra/.checkov.yaml`) all green. **NOT yet applied** — the first
+    `terraform apply` needs AWS credentials + a Neon project (and, for a
+    custom domain, DNS); that privileged step is what remains. The IaC
+    turns item 17 from a 1–2-day greenfield task into a ~30-min apply.
+    See `infra/README.md`.
 18. ❌ **ADOT distributed tracing** on `shop-api`. Closes the OWASP
     A09 + NIST CSF Detect gap. ~1 day.
 19. ❌ **First real DR drill** against a Neon PITR branch. Write
@@ -1714,7 +1736,11 @@ Briefly, every acronym in this document and its siblings:
 - **ISR** — Incremental Static Regeneration (Next.js).
 - **MFA** — Multi-Factor Authentication.
 - **NIS2** — EU directive on cybersecurity.
-- **OIDC** — OpenID Connect.
+- **OAC** — CloudFront Origin Access Control. Signs CloudFront→origin
+  requests with sigv4 so the origin (here the `shop-api` Lambda
+  Function URL) accepts traffic only from a specific distribution.
+- **OIDC** — OpenID Connect. Used so GitHub Actions assumes an AWS IAM
+  role via short-lived federated tokens — no long-lived access keys.
 - **OpenSLO** — YAML format for declarative SLO definitions.
 - **OpenTelemetry / OTel** — vendor-neutral standard for traces,
   metrics, logs.

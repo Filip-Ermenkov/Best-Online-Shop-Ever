@@ -1,0 +1,35 @@
+# Checkov configuration for infra/.
+#
+# `skip-check` is the ACCEPTED-FINDINGS REGISTER: every entry is a conscious,
+# documented decision, not a silenced warning. The prose rationale lives in
+# infra/README.md → "Accepted findings & hardening backlog". Everything not
+# listed here must pass.
+framework:
+  - terraform
+
+skip-check:
+  # ── CloudFront: inherent to a single-origin API distribution ──────────────
+  - CKV_AWS_86  # Access logging — needs a logs bucket; tracked as backlog, not shipped in the first cut.
+  - CKV_AWS_374 # Geo restriction — intentionally open; geo-blocking an e-commerce API blocks legitimate EU/diaspora customers.
+  - CKV_AWS_310 # Origin failover — single Lambda origin; nothing to fail over to.
+  - CKV_AWS_305 # Default root object — this is an API, not a static site.
+  - CKV_AWS_174 # Viewer TLS — inherent to the default *.cloudfront.net cert; the custom-domain path pins TLSv1.2_2021.
+
+  # ── CloudWatch ────────────────────────────────────────────────────────────
+  - CKV_AWS_338 # Log retention ≥1yr — deliberate 14-day retention per ARCHITECTURE §10.4 cost model.
+
+  # ── Lambda ────────────────────────────────────────────────────────────────
+  - CKV_AWS_272 # Code signing — supply-chain integrity is covered by SLSA L2 + signed SBOMs; code signing is growth-stage.
+  - CKV_AWS_117 # VPC — Neon is reached over HTTPS; a VPC adds NAT cost + cold-start latency for no security gain.
+  - CKV_AWS_116 # DLQ — shop-api is invoked synchronously (request/response); async DLQ does not apply. Email durability is roadmap item 21 (SQS).
+
+  # ── S3 state bucket ───────────────────────────────────────────────────────
+  - CKV_AWS_18  # Access logging — would need a second logging bucket; the bucket is private + versioned + TLS-only + KMS.
+  - CKV_AWS_144 # Cross-region replication — single-region by GDPR (eu-central-1) design.
+  - CKV2_AWS_62 # Event notifications — not applicable to a Terraform state bucket.
+
+  # ── Opt-in layers (off by default; enable the control with the feature) ───
+  - CKV2_AWS_39 # Route 53 query logging — opt-in DNS path (Cloudflare is the documented preference).
+  - CKV2_AWS_38 # Route 53 DNSSEC — opt-in DNS path; enable when AWS DNS is the system of record.
+  - CKV2_AWS_31 # WAF logging — needs a us-east-1 log destination; enable alongside WAF.
+  - CKV2_AWS_47 # CloudFront↔WAF Log4j AMR — WAF is opt-in (off by default); when enabled it includes the KnownBadInputs (Log4Shell) rule.
