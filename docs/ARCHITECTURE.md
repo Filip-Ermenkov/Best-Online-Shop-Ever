@@ -14,8 +14,9 @@
 > specification. Read that to learn *what* the shop does; this doc
 > covers *how* it's built.
 >
-> Last updated: 2026-05-26. Reality-aligned: this revision corrects
-> claims that previously implied the deployment was live.
+> Last updated: 2026-06-07. Reality-aligned: the `infra/` IaC is now
+> live-apply-validated (a test deploy returned 200 end-to-end); no
+> maintained production environment is kept running yet.
 
 ---
 
@@ -71,9 +72,11 @@ Functional scope is in `docs/README.md`. Deployment status is in
 
 The diagram below is the **target** posture. Every box marked **[T]**
 exists in the repo and can run locally; every box marked **[P]** is
-planned but not yet provisioned. As of 2026-05-26 only the **[T]**
-components are real; the AWS plumbing is documented design, not
-running infrastructure.
+planned but not yet provisioned. As of 2026-06-07 the **[T]** components
+run locally and the **[P]** AWS plumbing is now defined as
+live-apply-validated Terraform in `infra/` (a test `terraform apply`
+returned HTTP 200 end-to-end), though no environment is durably
+maintained yet.
 
 ```
                               Internet
@@ -1320,8 +1323,10 @@ These are baked-in for good reasons; revisiting them costs you weeks.
 The Security A grade comes from the code-level posture (Argon2id,
 constant-time login, strict CSP, HIBP, SLSA L2, SBOM signing, RFC
 9116 disclosure, GDPR Art. 16 + 17 self-service). The B grade on
-Reliability and Operational Excellence reflects the fact that none
-of the AWS plumbing is provisioned yet.
+Reliability and Operational Excellence reflects the absence of a
+durably-running production environment: the IaC is live-apply-validated
+(item 17), but scheduled DR drills, formal SLOs, burn-rate alerting, and
+a status page still need a maintained deployment.
 
 **Cross-checked against 2026 industry standards beyond AWS WA:**
 
@@ -1449,8 +1454,8 @@ Ranked by `(impact ÷ effort)` — highest leverage first. Items marked
     after the template + wire-up shipped). Re-upgrade the storefront
     browsing row in this doc (done in 2026-05-28 after item 15
     shipped).
-17. 🟡 **First production deploy — IaC authored & validated; apply
-    pending.** `infra/` now exists (2026-06-05): a modular Terraform
+17. 🟡 **First production deploy — IaC live-apply-validated 2026-06-07;
+    maintained prod env pending.** `infra/` now exists: a modular Terraform
     stack — remote S3 state backend with native locking + a `bootstrap`
     sub-stack; a customer-managed KMS key; the one runtime secret in
     SSM Parameter Store (placeholder-seeded, real value set out-of-band
@@ -1469,11 +1474,15 @@ Ranked by `(impact ÷ effort)` — highest leverage first. Items marked
     left to the runtime) and a CI gate (`.github/workflows/infra.yml`).
     Verified: `terraform fmt` + `validate`, `tflint` (AWS ruleset), and
     `checkov` (121 passed / 0 failed; 16 documented accepted findings in
-    `infra/.checkov.yaml`) all green. **NOT yet applied** — the first
-    `terraform apply` needs AWS credentials + a Neon project (and, for a
-    custom domain, DNS); that privileged step is what remains. The IaC
-    turns item 17 from a 1–2-day greenfield task into a ~30-min apply.
-    See `infra/README.md`.
+    `infra/.checkov.yaml`) all green. **Live-apply-validated 2026-06-07** —
+    a successful end-to-end `terraform apply` returned HTTP 200 through
+    CloudFront → OAC → Lambda. Two apply-time fixes were folded in: the
+    Function URL CORS `allow_methods` (AWS rejects methods >6 chars, e.g.
+    OPTIONS), and the post-Oct-2025 requirement that CloudFront OAC also
+    hold `lambda:InvokeFunction` (not just `lambda:InvokeFunctionUrl`).
+    What remains for a *maintained* production environment: a custom
+    domain, the schema migrated to Neon, and the frontend deployed. See
+    `infra/README.md`.
 18. ❌ **ADOT distributed tracing** on `shop-api`. Closes the OWASP
     A09 + NIST CSF Detect gap. ~1 day.
 19. ❌ **First real DR drill** against a Neon PITR branch. Write

@@ -131,3 +131,16 @@ resource "aws_lambda_permission" "cloudfront_invoke_url" {
   source_arn             = aws_cloudfront_distribution.api[0].arn
   function_url_auth_type = "AWS_IAM"
 }
+
+# Since October 2025 AWS also requires lambda:InvokeFunction (in addition to
+# lambda:InvokeFunctionUrl) for CloudFront OAC to invoke a Function URL — without
+# it the Function URL returns 403 even when the OAC signature and everything else
+# are correct. Scoped to this one distribution via source_arn.
+resource "aws_lambda_permission" "cloudfront_invoke_function" {
+  count         = var.enable_cdn ? 1 : 0
+  statement_id  = "AllowCloudFrontInvokeFunction"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.shop_api.function_name
+  principal     = "cloudfront.amazonaws.com"
+  source_arn    = aws_cloudfront_distribution.api[0].arn
+}

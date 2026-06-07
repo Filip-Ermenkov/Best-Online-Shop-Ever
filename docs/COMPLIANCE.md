@@ -11,15 +11,16 @@
 >   `ARCHITECTURE.md` §15
 > - N/A — out of scope for this product (justified below the table)
 >
-> **Important framing.** As of 2026-05-26 the codebase is not yet
-> deployed to production AWS. Some controls below are met by
-> in-repo code that runs locally but will not be *operationally*
-> verifiable until the deployment exists. Where this distinction
-> matters the "Notes" column is explicit; the bare ✅/⚠️/❌ refers to
-> whether the *control* is in place, not whether it is running in
-> production.
+> **Important framing.** As of 2026-06-07 the `infra/` Terraform is
+> live-apply-validated (a test `terraform apply` returned HTTP 200
+> end-to-end) but no *maintained* production environment exists. Some
+> controls below are met by in-repo code and IaC that deploy on demand
+> but are not *operationally* verifiable until a durable deployment is
+> kept running. Where this distinction matters the "Notes" column is
+> explicit; the bare ✅/⚠️/❌ refers to whether the *control* is in
+> place, not whether it is running in production.
 >
-> Last updated: 2026-05-26.
+> Last updated: 2026-06-07.
 
 ---
 
@@ -87,12 +88,12 @@ exercised until deployment, the cell is annotated.
 
 | Best practice | Status | Notes |
 |---|---|---|
-| Infrastructure as Code (Terraform) | ⚠️ | `infra/` authored + statically validated (terraform fmt/validate, tflint, checkov all green) 2026-06-05; **not yet applied** to a live account. Roadmap item 17 |
+| Infrastructure as Code (Terraform) | ✅ | `infra/` authored, validated (fmt/validate/tflint/checkov green), and **live-apply-validated 2026-06-07** — a successful end-to-end `terraform apply` returned HTTP 200 through CloudFront→OAC→Lambda. Roadmap item 17 |
 | Automated CI/CD | ✅ | GitHub Actions, 5 parallel jobs in ci.yml + CodeQL + SBOM workflows |
 | Atomic blue/green deployments | N/A today | Target: AWS Amplify atomic deploys once deployed |
 | Structured JSON logs | ✅ | Pino + PII redaction. Runs locally; lands in CloudWatch once deployed |
 | Per-request correlation IDs | ✅ | `X-Request-Id` |
-| CloudWatch alarms on key metrics | ⚠️ | All 5 alarms (5xx rate, admin logins, p99 duration, scheduler failure, SES bounces) authored in `infra/observability.tf`; admin/scheduler ones gated until those Lambdas exist. Not yet applied |
+| CloudWatch alarms on key metrics | ✅ | 5 alarms (5xx rate, admin logins, p99 duration, scheduler failure, SES bounces) in `infra/observability.tf`; the 5xx-rate + p99 alarms deploy by default and were live-applied 2026-06-07 (admin/scheduler/SES ones gated until those components exist) |
 | Cron via managed service | ❌ Today | Target: EventBridge Scheduler invoking `scheduler-fn`. Scheduler Lambda not built |
 | Runbooks documented | ⚠️ | DR procedure + MFA recovery documented in ARCHITECTURE.md §12. No incident response playbook yet |
 | **Distributed tracing** | ❌ | Not yet added. Roadmap item 18 (ADOT) |

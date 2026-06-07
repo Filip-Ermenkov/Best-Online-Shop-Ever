@@ -14,6 +14,10 @@ email_from          = "Best Online Shop <noreply@shop.example.com>"
 email_transport     = "ses" # ses | console | stub
 log_level           = "warn"
 cdn_base_url        = "" # set to the image CloudFront/R2 origin once it exists
+lambda_architecture = "x86_64"
+# New AWS accounts cap total Lambda concurrency low. If `terraform apply` errors
+# on reserved concurrency, uncomment the next line (-1 = unreserved):
+# lambda_reserved_concurrency = -1
 
 # ─── Edge (CloudFront) ───────────────────────────────────────────────────────
 # enable_cdn defaults true (secure-by-default: Function URL becomes AWS_IAM-only).
@@ -40,7 +44,7 @@ enable_ses = false
 ses_domain = "" # e.g. "shop.example.com"
 
 # ─── CI/CD (GitHub OIDC) ─────────────────────────────────────────────────────
-enable_github_oidc = true
+enable_github_oidc = false
 github_owner       = "Filip-Ermenkov"
 github_repo        = "Best-Online-Shop-Ever"
 github_deploy_ref  = "refs/heads/main"
