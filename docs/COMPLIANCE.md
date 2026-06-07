@@ -87,12 +87,12 @@ exercised until deployment, the cell is annotated.
 
 | Best practice | Status | Notes |
 |---|---|---|
-| Infrastructure as Code (Terraform) | ❌ | `infra/` directory does not yet exist. Roadmap item 18 |
+| Infrastructure as Code (Terraform) | ⚠️ | `infra/` authored + statically validated (terraform fmt/validate, tflint, checkov all green) 2026-06-05; **not yet applied** to a live account. Roadmap item 17 |
 | Automated CI/CD | ✅ | GitHub Actions, 5 parallel jobs in ci.yml + CodeQL + SBOM workflows |
 | Atomic blue/green deployments | N/A today | Target: AWS Amplify atomic deploys once deployed |
 | Structured JSON logs | ✅ | Pino + PII redaction. Runs locally; lands in CloudWatch once deployed |
 | Per-request correlation IDs | ✅ | `X-Request-Id` |
-| CloudWatch alarms on key metrics | ❌ Today | Target: 5 alarms (5xx rate, admin logins, p99 duration, scheduler failure, SES bounces). Not deployed |
+| CloudWatch alarms on key metrics | ⚠️ | All 5 alarms (5xx rate, admin logins, p99 duration, scheduler failure, SES bounces) authored in `infra/observability.tf`; admin/scheduler ones gated until those Lambdas exist. Not yet applied |
 | Cron via managed service | ❌ Today | Target: EventBridge Scheduler invoking `scheduler-fn`. Scheduler Lambda not built |
 | Runbooks documented | ⚠️ | DR procedure + MFA recovery documented in ARCHITECTURE.md §12. No incident response playbook yet |
 | **Distributed tracing** | ❌ | Not yet added. Roadmap item 18 (ADOT) |

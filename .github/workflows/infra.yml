@@ -1,0 +1,107 @@
+# =============================================================================
+# Infrastructure-as-Code quality gate for infra/.
+#
+# This is the deploy-less verification layer: it proves the Terraform is
+# formatted, internally valid, lint-clean, and free of security
+# misconfigurations — WITHOUT touching AWS. A live `terraform apply` needs
+# credentials + a Neon project + (optionally) a domain and runs from a separate,
+# privileged workflow that assumes the GitHub OIDC deploy role (infra/cicd.tf).
+#
+# Steps:
+#   - terraform fmt -check   — canonical formatting.
+#   - terraform validate     — types, references, provider-schema correctness
+#                              (root stack + the bootstrap stack, separately).
+#   - tflint                 — provider-aware lint (AWS ruleset).
+#   - checkov                — static security/compliance scan; the small set of
+#                              consciously-accepted findings lives in
+#                              infra/.checkov.yaml with a justification each.
+#
+# Security hardening (mirrors ci.yml, per the same 2026 supply-chain guidance):
+#   - The only third-party action is actions/checkout, pinned to a full commit
+#     SHA. Terraform and TFLint are installed from version-pinned release
+#     archives over HTTPS rather than via additional (mutable) marketplace
+#     actions — fewer trust roots, fully reproducible.
+#   - Top-level `permissions: contents: read` (least privilege; no id-token here
+#     because this job never talks to AWS).
+#   - `persist-credentials: false` on checkout.
+#   - `concurrency.cancel-in-progress: true`.
+#   - No secrets. GITHUB_TOKEN is used read-only for the TFLint plugin download
+#     to dodge the unauthenticated GitHub API rate limit.
+
+name: Infra (Terraform)
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'infra/**'
+      - '.github/workflows/infra.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'infra/**'
+      - '.github/workflows/infra.yml'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  # Pinned, reproducible toolchain. Bump deliberately.
+  TERRAFORM_VERSION: '1.15.5'
+  TFLINT_VERSION: 'v0.63.1'
+  CHECKOV_VERSION: '3.2.533'
+
+jobs:
+  validate:
+    name: fmt · validate · tflint · checkov
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        # actions/checkout v6.0.2 — 09 Jan 2026 (same pin as ci.yml)
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+
+      - name: Install Terraform ${{ env.TERRAFORM_VERSION }}
+        run: |
+          curl -fsSLo /tmp/tf.zip "https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_linux_amd64.zip"
+          sudo unzip -o /tmp/tf.zip -d /usr/local/bin
+          terraform version
+
+      - name: Install TFLint ${{ env.TFLINT_VERSION }}
+        run: |
+          curl -fsSLo /tmp/tflint.zip "https://github.com/terraform-linters/tflint/releases/download/${TFLINT_VERSION}/tflint_linux_amd64.zip"
+          sudo unzip -o /tmp/tflint.zip -d /usr/local/bin
+          tflint --version
+
+      - name: terraform fmt
+        run: terraform fmt -check -recursive infra
+
+      - name: terraform validate (root stack)
+        run: |
+          terraform -chdir=infra init -backend=false -input=false
+          terraform -chdir=infra validate
+
+      - name: terraform validate (bootstrap stack)
+        run: |
+          terraform -chdir=infra/bootstrap init -backend=false -input=false
+          terraform -chdir=infra/bootstrap validate
+
+      - name: TFLint
+        env:
+          # Read-only; only used so the AWS ruleset plugin download isn't rate-limited.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cd infra
+          tflint --init
+          tflint --recursive --no-color
+
+      - name: Checkov
+        run: |
+          python3 -m pip install --quiet "checkov==${CHECKOV_VERSION}"
+          checkov -d infra --config-file infra/.checkov.yaml --compact --quiet

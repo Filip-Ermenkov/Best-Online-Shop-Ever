@@ -35,7 +35,8 @@ others where appropriate.
 │   ├── auth/             Pure auth crypto primitives (@shop/auth)
 │   ├── email/            Transactional email — SES + console + stub (@shop/email)
 │   └── shop-api/         Hono API: catalog read + auth + cart + orders + CSP reporting (@shop/api)
-├── .github/workflows/    CI: typecheck, lint, tests (5 jobs in ci.yml) + CodeQL SAST + SBOM/Sigstore
+├── infra/                Terraform IaC for the first AWS deploy — authored + validated, NOT yet applied (see infra/README.md)
+├── .github/workflows/    CI: typecheck, lint, tests (5 jobs in ci.yml) + CodeQL SAST + SBOM/Sigstore + infra (fmt/validate/tflint/checkov)
 └── docs/
     ├── README.md         Functional spec (Bulgarian)
     ├── ARCHITECTURE.md   Technical reference + roadmap + forward-looking design
@@ -43,12 +44,13 @@ others where appropriate.
     └── ACCESSIBILITY.md  WCAG 2.2 AA / EAA conformance + audit + manual checklist
 ```
 
-Not yet present in the repo (mentioned in `docs/ARCHITECTURE.md` as
+`infra/` now exists — a complete, statically-validated Terraform stack
+for the first AWS deploy (it has **not** been applied yet; that needs
+AWS credentials). See `infra/README.md`.
+
+Still not present in the repo (mentioned in `docs/ARCHITECTURE.md` as
 future work):
 
-- `infra/` — Terraform IaC. The runbook for "what AWS resources back
-  this codebase" lives in the architecture doc as prose; there is no
-  IaC yet.
 - `backend/admin-api/` — admin Lambda. Admin flows are currently
   stubbed on the frontend with mock data; there is no admin API.
 - `backend/scheduler-fn/` — scheduled-Lambda for the three cron rules
@@ -152,7 +154,7 @@ they aren't. The honest state:
 | WAF / CloudFront / Route 53 | Not provisioned |
 | `admin-api` Lambda | Not built |
 | `scheduler-fn` Lambda | Not built |
-| Terraform / IaC | Not started |
+| Terraform / IaC | **Authored + statically validated** (`infra/`); fmt + validate + tflint + checkov all green. NOT yet applied to a live account |
 
 The architecture documentation (`docs/ARCHITECTURE.md`) describes the
 intended production posture. The roadmap (§15 of that file) tracks
@@ -316,6 +318,15 @@ workspace using `@cyclonedx/cyclonedx-npm`, signs each one via
 `actions/attest-build-provenance` (GitHub OIDC → Sigstore Fulcio →
 Rekor transparency log), and attaches them to releases. The verifier
 recipe is in `docs/ARCHITECTURE.md` §9.5.
+
+`.github/workflows/infra.yml` gates the `infra/` Terraform on every PR
+that touches it: `terraform fmt -check`, `terraform validate` (root +
+bootstrap stacks), `tflint` (AWS ruleset), and `checkov` (with the
+accepted-findings register in `infra/.checkov.yaml`). Terraform and
+TFLint are installed from version-pinned release archives rather than
+extra marketplace actions, so `actions/checkout` stays the only
+third-party action. This is a deploy-less gate — `terraform apply`
+runs from a separate privileged path (OIDC deploy role), never here.
 
 Hardening posture (applies to every workflow):
 
@@ -696,9 +707,13 @@ can already see (wrong current password, new == current).
 What's documented elsewhere but doesn't exist or has drifted from
 reality, as of 2026-05-26:
 
-- **`infra/` directory** — referenced throughout the docs; not
-  created. Mentioned in `docs/COMPLIANCE.md` Pillar 1 as IaC ⚠️
-  (downgraded from ✅ on 2026-05-26 after audit).
+- **`infra/` directory** — now authored and statically validated
+  (Terraform: state backend, KMS, SSM, shop-api Lambda + Function URL
+  + log group + least-privilege role, CloudFront/OAC, 5 alarms, GitHub
+  OIDC deploy role; opt-in WAF/Route 53/SES/Amplify). **Not yet
+  applied** to a live AWS account — the first `terraform apply` needs
+  credentials + a Neon project. `docs/COMPLIANCE.md` Pillar 1 IaC row
+  is now ⚠️ "authored, not applied".
 - **`admin-api` Lambda** — referenced in `docs/ARCHITECTURE.md` §3.4;
   not created. All `/admin/*` frontend pages render mock data.
 - **`scheduler-fn` Lambda** — referenced in §3.8; not created.
@@ -741,10 +756,14 @@ In priority order (also tracked in `docs/ARCHITECTURE.md` §15):
 
 1. **First production deploy.** Until at least one Amplify deploy
    and one Lambda deploy have actually run, the entire architecture
-   is hypothesis. Create a minimal `infra/` with the Terraform that
-   provisions: Amplify app, `shop-api` Lambda, Lambda function URL,
-   CloudFront, ACM cert, SSM Parameter Store entries, CloudWatch
-   log group, 5 alarms. 1–2 days.
+   is hypothesis. The `infra/` Terraform that provisions it
+   (`shop-api` Lambda, Function URL, CloudFront/OAC, ACM, SSM, KMS,
+   CloudWatch log group, 5 alarms, GitHub OIDC deploy role; opt-in
+   WAF/Route 53/SES/Amplify) is now **authored and statically
+   validated** — `terraform validate`, `tflint`, and `checkov` are
+   all green. What remains is the privileged `terraform apply` (AWS
+   credentials + a Neon project), which the IaC turns into a ~30-min
+   job. Follow `infra/README.md`.
 2. **ADOT distributed tracing.** Closes the OWASP A09 + NIST CSF
    Detect gap. ~1 day. Becomes the foundation for the first real
    DR drill.
