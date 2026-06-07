@@ -5,10 +5,12 @@
 Bulgarian-language B2C and B2B e-commerce platform. Cash on delivery
 or pay-at-store only — no card data. Single-tenant, single-admin.
 Target deployment is AWS Frankfurt (`eu-central-1`) for GDPR data
-residency, but **as of 2026-05-26 the codebase is not yet deployed to
-AWS** — see the [Deployment status](#deployment-status) section below
-for an honest read on what is shipped, what is wired but not
-deployed, and what is still a roadmap item.
+residency. As of 2026-06-07 the `infra/` Terraform is **validated by a
+successful end-to-end `terraform apply`** — a live deploy returned HTTP
+200 through CloudFront → OAC → Lambda — but no *maintained* production
+environment exists yet (no custom domain, schema, or frontend). See the
+[Deployment status](#deployment-status) section below for an honest read
+on what is shipped, what deploys, and what is still a roadmap item.
 
 ## Documentation map
 
@@ -35,7 +37,7 @@ others where appropriate.
 │   ├── auth/             Pure auth crypto primitives (@shop/auth)
 │   ├── email/            Transactional email — SES + console + stub (@shop/email)
 │   └── shop-api/         Hono API: catalog read + auth + cart + orders + CSP reporting (@shop/api)
-├── infra/                Terraform IaC for the first AWS deploy — authored + validated, NOT yet applied (see infra/README.md)
+├── infra/                Terraform IaC for the first AWS deploy — live-apply-validated 2026-06-07 (deploy returned 200 end-to-end); see infra/README.md
 ├── .github/workflows/    CI: typecheck, lint, tests (5 jobs in ci.yml) + CodeQL SAST + SBOM/Sigstore + infra (fmt/validate/tflint/checkov)
 └── docs/
     ├── README.md         Functional spec (Bulgarian)
@@ -154,7 +156,7 @@ they aren't. The honest state:
 | WAF / CloudFront / Route 53 | Not provisioned |
 | `admin-api` Lambda | Not built |
 | `scheduler-fn` Lambda | Not built |
-| Terraform / IaC | **Authored + statically validated** (`infra/`); fmt + validate + tflint + checkov all green. NOT yet applied to a live account |
+| Terraform / IaC | **Live-apply-validated** (`infra/`) — a successful end-to-end `terraform apply` (2026-06-07) returned HTTP 200 through CloudFront→OAC→Lambda; fmt/validate/tflint/checkov green. A maintained prod env (domain + migrated schema + frontend) is the next step |
 
 The architecture documentation (`docs/ARCHITECTURE.md`) describes the
 intended production posture. The roadmap (§15 of that file) tracks
@@ -705,15 +707,18 @@ can already see (wrong current password, new == current).
 ## Known gaps
 
 What's documented elsewhere but doesn't exist or has drifted from
-reality, as of 2026-05-26:
+reality, as of 2026-06-07:
 
-- **`infra/` directory** — now authored and statically validated
-  (Terraform: state backend, KMS, SSM, shop-api Lambda + Function URL
-  + log group + least-privilege role, CloudFront/OAC, 5 alarms, GitHub
-  OIDC deploy role; opt-in WAF/Route 53/SES/Amplify). **Not yet
-  applied** to a live AWS account — the first `terraform apply` needs
-  credentials + a Neon project. `docs/COMPLIANCE.md` Pillar 1 IaC row
-  is now ⚠️ "authored, not applied".
+- **`infra/` directory** — authored, statically validated, and now
+  **proven by a successful live `terraform apply`** (2026-06-07): a
+  deploy returned HTTP 200 end-to-end through CloudFront → OAC →
+  Lambda. Two apply-time fixes were folded in: the Function URL CORS
+  `allow_methods` (AWS rejects methods >6 chars, e.g. `OPTIONS`), and
+  the post-Oct-2025 requirement that CloudFront OAC also hold
+  `lambda:InvokeFunction` (not just `lambda:InvokeFunctionUrl`). What
+  is NOT yet done: a *maintained* production environment — a custom
+  domain, the schema migrated to Neon, and the frontend deployed (the
+  test deploy can be torn down with `terraform destroy`).
 - **`admin-api` Lambda** — referenced in `docs/ARCHITECTURE.md` §3.4;
   not created. All `/admin/*` frontend pages render mock data.
 - **`scheduler-fn` Lambda** — referenced in §3.8; not created.
@@ -754,16 +759,15 @@ reality, as of 2026-05-26:
 
 In priority order (also tracked in `docs/ARCHITECTURE.md` §15):
 
-1. **First production deploy.** Until at least one Amplify deploy
-   and one Lambda deploy have actually run, the entire architecture
-   is hypothesis. The `infra/` Terraform that provisions it
-   (`shop-api` Lambda, Function URL, CloudFront/OAC, ACM, SSM, KMS,
+1. **First production deploy.** The `infra/` Terraform that provisions
+   it (`shop-api` Lambda, Function URL, CloudFront/OAC, ACM, SSM, KMS,
    CloudWatch log group, 5 alarms, GitHub OIDC deploy role; opt-in
-   WAF/Route 53/SES/Amplify) is now **authored and statically
-   validated** — `terraform validate`, `tflint`, and `checkov` are
-   all green. What remains is the privileged `terraform apply` (AWS
-   credentials + a Neon project), which the IaC turns into a ~30-min
-   job. Follow `infra/README.md`.
+   WAF/Route 53/SES/Amplify) has now **run end-to-end**: a live
+   `terraform apply` (2026-06-07) returned HTTP 200 through
+   CloudFront → OAC → Lambda, so the architecture is no longer
+   hypothesis. What remains for a *maintained* production environment:
+   a custom domain, migrating the schema to Neon, and deploying the
+   frontend. Follow `infra/README.md`.
 2. **ADOT distributed tracing.** Closes the OWASP A09 + NIST CSF
    Detect gap. ~1 day. Becomes the foundation for the first real
    DR drill.

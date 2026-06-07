@@ -88,7 +88,11 @@ resource "aws_lambda_function_url" "shop_api" {
 
   cors {
     allow_origins = var.cors_origins == "" ? ["*"] : split(",", var.cors_origins)
-    allow_methods = ["GET", "POST", "PATCH", "DELETE", "OPTIONS"]
+    # Lambda Function URL CORS accepts only GET/HEAD/POST/PUT/PATCH/DELETE/* (each
+    # ≤6 chars). OPTIONS is NOT valid here — the Function URL answers preflight
+    # automatically. (Note: the CloudFront distribution's allowed_methods is a
+    # separate field that DOES include OPTIONS; only this Function-URL list excludes it.)
+    allow_methods = ["GET", "POST", "PATCH", "DELETE"]
     allow_headers = ["content-type", "authorization", "idempotency-key", "x-request-id"]
     # Credentials + wildcard origin is an invalid CORS combination, so only send
     # credentials once an explicit origin allowlist is configured.
