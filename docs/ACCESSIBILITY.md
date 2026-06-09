@@ -195,8 +195,13 @@ sensibly*. Walk these by hand.
   enhancement. The hover-zone wrapper carries a documented
   `eslint-disable jsx-a11y/no-static-element-interactions` (it wraps a native
   `<Link>`, so it takes no interactive role of its own).
-- **Admin panel** (`/admin/*`) is operator-only, still on mock data, and out of
-  scope for the customer statement; it has not had a full audit.
+- **Admin panel** (`/admin/*`) is operator-only and out of scope for the
+  customer statement. The CRUD pages are still on mock data; the admin
+  **sign-in gate** (`AdminAuthGate`, login → MFA → TOTP enrolment) is real
+  and *is* linted by `jsx-a11y` (it lives under `src/components/admin/`,
+  outside the `src/app/admin/**` lint exclusion — labelled controls, live-
+  region errors, an SVG QR with an `aria-label`), but the panel as a whole
+  has not had a full screen-reader audit.
 - **Third-party content** (courier-office maps) will be assessed when ingested.
 
 ---

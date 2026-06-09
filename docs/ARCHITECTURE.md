@@ -14,9 +14,12 @@
 > specification. Read that to learn *what* the shop does; this doc
 > covers *how* it's built.
 >
-> Last updated: 2026-06-07. Reality-aligned: the `infra/` IaC is now
-> live-apply-validated (a test deploy returned 200 end-to-end); no
-> maintained production environment is kept running yet.
+> Last updated: 2026-06-08. Reality-aligned: the `infra/` IaC is
+> live-apply-validated (a test deploy returned 200 end-to-end), and the
+> **admin authentication backend** (mandatory TOTP MFA, `/admin/auth/*`)
+> shipped 2026-06-08 — see §3.4 and §15 item 35. No maintained
+> production environment is kept running yet; the admin frontend UI is
+> pending.
 
 ---
 
@@ -59,9 +62,13 @@ Three actors are present in the codebase:
   personal`) or corporate (`accountType = corporate` with VAT/EIK
   fields).
 - **Administrator** — exactly one role per the spec, on a separate
-  subdomain. **The admin auth flow and the admin Lambda are not yet
-  built.** The frontend `/admin/*` pages currently render mock data
-  only.
+  subdomain (target). **The admin authentication backend is now built**
+  (2026-06-08): `/admin/auth/*` on `shop-api` does mandatory TOTP MFA
+  (AAL2), enrolment, and recovery codes — see §3.4. The admin **sign-in
+  frontend** also shipped 2026-06-08: `/admin` renders an inline
+  `AdminAuthGate` (login → MFA → enrolment) wired to those endpoints. What
+  is still pending: the admin CRUD **pages** (still mock data) and the
+  dedicated **`admin-api`** Lambda the rest of the admin panel will live on.
 
 Functional scope is in `docs/README.md`. Deployment status is in
 `README.md` ("Deployment status" section).
@@ -216,7 +223,11 @@ runnable locally via `@hono/node-server`. Routes mounted in
 - **`shop-api`** — customer-facing. The Hono app already in the repo.
 - **`admin-api`** — admin panel backend. Order / product / category /
   customer / discount CRUD, banner management, content versioning,
-  backup orchestration. **Not yet written.**
+  backup orchestration. **Not yet written.** Note: admin
+  *authentication* is already built and currently lives in `shop-api`
+  under `/admin/auth/*` (mandatory TOTP MFA — see below); it is
+  self-contained, portable Hono code that will move here when the admin
+  CRUD surface justifies a separate Lambda + subdomain.
 - **`scheduler-fn`** — three cron rules: daily catalog backup, hourly
   expired-pickup check, daily unverified-account cleanup. **Not yet
   written.**
@@ -246,6 +257,25 @@ Authentication primitives live in `@shop/auth`:
   success the hash rotates, every OTHER session for the user is
   dropped (the initiating session is preserved), and a best-effort
   notification email fires.
+- **Admin authentication — mandatory TOTP MFA** (shipped 2026-06-08):
+  `/admin/auth/*` on `shop-api`. **AAL2** (NIST SP 800-63B-4) — password
+  *and* an RFC 6238 time-based OTP. Two-step so no session is minted
+  before both factors pass: `POST /login` verifies the password and
+  returns a short-lived HMAC-signed challenge (`mfa_required` or
+  `enrollment_required`); `POST /mfa` verifies the TOTP code (or a
+  single-use recovery code) against that challenge and only then opens
+  the session; `POST /mfa/setup` + `/mfa/setup/confirm` handle
+  first-login enrolment and emit 10 single-use recovery codes once. The
+  crypto primitives (TOTP, recovery codes, AES-256-GCM secret-at-rest,
+  challenge HMAC) live in `@shop/auth`; the DB plumbing in
+  `@shop/api`'s `lib/admin-mfa.ts`. Hardening beyond customer auth:
+  30-min / 5-fail lockout (vs 15-min), 30-min session idle (vs 2 h), the
+  TOTP secret AES-256-GCM-encrypted at rest with a key held only in SSM
+  (the DB never sees it), a replay guard (`users.mfa_last_used_step`)
+  making every code single-use even inside its skew window, and a
+  uniform `404` on the admin surface for non-admins (no enumeration of
+  its existence). This is the documented prerequisite (§15 item 35) for
+  the `admin-api` slice (item 22). Pending: the admin frontend UI.
 
 Errors follow **RFC 9457 Problem Details**. Logs use **Pino with
 PII redaction**, structured JSON, per-request child logger keyed on
@@ -553,7 +583,7 @@ In-scope threats and primary defences:
 | DDoS L3/L4 | (Target) AWS Shield Standard | None |
 | DDoS L7 | (Target) WAF rate-limit rules + Lambda concurrency ceiling | None |
 | Stolen cookie | Drop-all-sessions on reset/email-change; orphaned-cookie cleanup on `/auth/me` | Idle timeout (2h without "Remember me") |
-| Admin compromise | (Target) TOTP MFA mandatory + separate subdomain + stricter WAF | (Target) 30-min idle timeout, 5-fail 30-min lockout |
+| Admin compromise | ✅ TOTP MFA mandatory (`/admin/auth/*`, AAL2) + ✅ 30-min idle + ✅ 5-fail/30-min lockout; (Target) separate subdomain + stricter WAF | ✅ Replay-guarded single-use codes; secret AES-256-GCM at rest; uniform 404 (no surface enumeration) |
 | Order replay | `Idempotency-Key` UNIQUE | None needed |
 | Data-at-rest exfiltration | (Target) Neon encryption + S3 SSE | Tokens hashed; password hashes can't be reversed |
 | Data-in-transit interception | TLS 1.3 + HSTS preload | CSP `upgrade-insecure-requests` |
@@ -1208,8 +1238,10 @@ exists); the admin Lambda and scheduler-fn would wire it up.
 
 ### 12.4 Procedure (admin MFA seed lost)
 
-**Today:** Admin MFA is documented but not built. This procedure
-applies once admin-api ships with TOTP.
+**Status:** Admin MFA shipped 2026-06-08 (`/admin/auth/*`, mandatory
+TOTP). This procedure covers a lost TOTP seed; the single-use recovery
+codes issued at enrolment are the primary recovery path, with the SQL
+reset below as the last-resort break-glass.
 
 The shop has exactly one administrator account, gated by mandatory
 TOTP MFA on a separate subdomain (target state). Losing the TOTP
@@ -1314,7 +1346,7 @@ These are baked-in for good reasons; revisiting them costs you weeks.
 | Pillar | Today | What's missing for A+ |
 |---|---|---|
 | Operational Excellence | B | Production deploy, distributed tracing, formal SLOs + burn-rate alerting, DORA metrics, scheduled DR drills, incident postmortem template, status page |
-| Security | A | Customer MFA option (growth-stage); admin auth flow (not yet built) |
+| Security | A | Customer MFA option (growth-stage); admin auth ✅ (TOTP MFA shipped end-to-end 2026-06-08 — backend + sign-in UI) |
 | Reliability | B− | Production deploy, SQS retry queue, DR drill cadence, public status page |
 | Performance Efficiency | B+ | Synthetic monitoring, RUM, query-latency SLOs per endpoint |
 | Cost Optimization | B− | Cloudflare swap (the big one), CloudWatch retention to 14d |
@@ -1322,7 +1354,9 @@ These are baked-in for good reasons; revisiting them costs you weeks.
 
 The Security A grade comes from the code-level posture (Argon2id,
 constant-time login, strict CSP, HIBP, SLSA L2, SBOM signing, RFC
-9116 disclosure, GDPR Art. 16 + 17 self-service). The B grade on
+9116 disclosure, GDPR Art. 16 + 17 self-service, and — since
+2026-06-08 — admin TOTP MFA at AAL2 with replay-guarded codes and a
+secret encrypted at rest). The B grade on
 Reliability and Operational Excellence reflects the absence of a
 durably-running production environment: the IaC is live-apply-validated
 (item 17), but scheduled DR drills, formal SLOs, burn-rate alerting, and
@@ -1341,8 +1375,10 @@ a status page still need a maintained deployment.
 | OWASP Top 10 2025 — A09 Logging Failures | ⚠️ | Distributed tracing |
 | OWASP ASVS 6.0 L1 | ✅ Compliant | — |
 | OWASP ASVS 6.0 V6.2 (password lifecycle) | ✅ Met | — |
-| OWASP ASVS 6.0 L2 | ⚠️ Gaps | Customer MFA |
+| OWASP ASVS 6.0 V6 (multifactor) — admin | ✅ Met | Mandatory TOTP MFA on `/admin/auth/*` (2026-06-08) |
+| OWASP ASVS 6.0 L2 | ⚠️ Gaps | Customer MFA (admin MFA ✅; customer MFA growth-stage) |
 | NIST SP 800-63B-4 | ✅ Met | — |
+| NIST SP 800-63B-4 AAL2 (admin) | ✅ Met | Password + TOTP; single-use look-up secrets (recovery codes) |
 | NIST SP 800-207 (Zero Trust) | ✅ Spirit | — |
 | SLSA v1.1 | ✅ Level 2 | Level 3 only if contractual need |
 | CIS Controls v8.1 IG1 | ✅ Met | — |
@@ -1517,6 +1553,10 @@ Ranked by `(impact ÷ effort)` — highest leverage first. Items marked
     the manual `status='accepted'` psql. Wire
     `sendOrderStatusUpdateEmail` (item 14) into each admin status
     transition while you're there — one line per branch. 2–3 days.
+    **Unblocked 2026-06-08:** the admin-auth prerequisite (item 35
+    backend) now exists at `/admin/auth/*`. The first admin slice can
+    be built behind `requireAdmin` in `shop-api` today and lifted onto a
+    dedicated `admin-api` Lambda when the CRUD surface justifies it.
 23. ❌ **Scheduler-fn Lambda** + the three cron rules. ½ day.
 24. ❌ **Formalise SLOs in `slos.yaml` (OpenSLO format).** 1 hour.
 25. ❌ **Burn-rate CloudWatch composite alarms.** 1 hour.
@@ -1538,9 +1578,24 @@ Ranked by `(impact ÷ effort)` — highest leverage first. Items marked
 
 34. ❌ **Customer MFA (TOTP / WebAuthn).** ~3 days. Moves OWASP
     ASVS to L2.
-35. ❌ **Admin TOTP enrolment + recovery codes UI.** ~2 days. The
-    schema exists; the flow is missing. Required before §15.22's
-    admin-api goes anywhere near production.
+35. ✅ **Admin TOTP enrolment + recovery codes — shipped end-to-end
+    2026-06-08 (backend + sign-in frontend).** The full server-side flow
+    exists at `/admin/auth/*` on `shop-api`: mandatory TOTP MFA (AAL2), two-step
+    login (password → signed challenge → TOTP/recovery → session),
+    first-login enrolment (`/mfa/setup` + `/mfa/setup/confirm`), 10
+    single-use recovery codes, a 30-min/5-fail admin lockout, a 30-min
+    admin session idle, the TOTP secret AES-256-GCM-encrypted at rest
+    (key in SSM only), and an RFC 6238 replay guard
+    (`users.mfa_last_used_step`). Crypto primitives in `@shop/auth`
+    (validated against the RFC 6238 Appendix B vectors), DB plumbing in
+    `@shop/api lib/admin-mfa.ts`, bootstrap via `@shop/api admin:create`,
+    full integration + unit tests. Migration `0003_admin_mfa_replay_guard`
+    activates the dormant `mfa_*` columns. The **frontend** shipped too:
+    `frontend/src/app/admin/layout.tsx` renders an inline `AdminAuthGate`
+    (login → MFA → first-login TOTP enrolment with manual secret entry →
+    recovery codes) wired via a typed `lib/admin` client. **What remains**
+    is structural — when the admin CRUD surface grows, extract the module
+    onto a dedicated `admin-api` Lambda + subdomain.
 36. ✅ **GDPR Art. 15 + Art. 20 self-service data export** (May 31,
     2026). Pulled forward from growth-stage: it is a standing legal
     obligation with a one-month statutory response window (Art. 12(3)),

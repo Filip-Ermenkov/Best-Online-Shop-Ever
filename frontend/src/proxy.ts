@@ -269,18 +269,14 @@ export function proxy(req: NextRequest) {
     return withStrictCsp(req, NextResponse.redirect(url));
   }
 
-  // /admin/* requires SOME session. The proxy can't tell admin from customer
-  // (the cookie is opaque). Real role check happens in the admin layout —
-  // a customer with a session lands on /admin, hits the layout's role check,
-  // and gets a 403 there. Keeping role enforcement at the data layer means
-  // the cookie remains opaque and we don't have to decode session state in
-  // the proxy runtime.
-  if (!loggedIn && pathname.startsWith("/admin")) {
-    const url = req.nextUrl.clone();
-    url.pathname = "/account/login";
-    url.search = `?next=${encodeURIComponent(pathname + search)}`;
-    return withStrictCsp(req, NextResponse.redirect(url));
-  }
+  // /admin/* is NOT redirected here. The admin section has its own dedicated
+  // sign-in surface: app/admin/layout.tsx renders the <AdminAuthGate> (the
+  // mandatory-TOTP login/enrolment flow) in place for any non-admin visitor —
+  // anonymous OR a logged-in customer. Bouncing anonymous /admin traffic to the
+  // customer /account/login (the previous behaviour) would send admins to the
+  // wrong door; letting it through lets the layout show the right one. The role
+  // check stays at the data layer (getServerUser → /auth/me), so the cookie
+  // remains opaque to the proxy. The strict CSP below still applies.
 
   // Passthrough — full strict-CSP application including forwarded x-nonce.
   return withStrictCsp(req, NextResponse.next());

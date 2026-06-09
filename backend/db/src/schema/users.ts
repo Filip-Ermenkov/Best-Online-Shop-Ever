@@ -1,5 +1,6 @@
 import { sql } from "drizzle-orm";
 import {
+  bigint,
   boolean,
   index,
   integer,
@@ -48,8 +49,20 @@ export const users = pgTable(
     // MFA — required for admin, optional but recommended for customers (future).
     // mfaSecretEncrypted is encrypted with the application key (never plaintext at rest).
     // Even if the DB is dumped, the secret cannot generate codes without the app key.
+    // Concretely AES-256-GCM via @shop/auth mfa-crypto.ts; the key lives in SSM,
+    // never in this table. mfaEnabled flips true only after the enrolling device
+    // proves one TOTP code (so a half-finished enrolment can't gate login).
     mfaEnabled: boolean("mfa_enabled").notNull().default(false),
     mfaSecretEncrypted: text("mfa_secret_encrypted"),
+    // Replay guard (RFC 6238 single-use within the skew window). The last TOTP
+    // time-step counter successfully consumed; verification rejects any code at
+    // a step ≤ this, so a code can be redeemed at most once even inside its 30s
+    // validity window. bigint (mode:number) — a 30s step index stays well within
+    // JS safe-integer range for millennia. Null until the first successful MFA.
+    mfaLastUsedStep: bigint("mfa_last_used_step", { mode: "number" }),
+    // When TOTP enrolment was confirmed (the moment mfaEnabled went true). Drives
+    // the audit trail and any "your MFA was changed" out-of-band notice.
+    mfaEnrolledAt: timestamp("mfa_enrolled_at", { withTimezone: true }),
 
     deletedAt: timestamp("deleted_at", { withTimezone: true }),
     anonymizedAt: timestamp("anonymized_at", { withTimezone: true }),

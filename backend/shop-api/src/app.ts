@@ -11,6 +11,7 @@ import { ApiError, badRequest, internal, type Problem } from "./lib/errors.js";
 import { logger as baseLogger, requestLogger } from "./lib/logger.js";
 import { validationHook } from "./lib/validation-hook.js";
 import { currentUser, type AuthVariables } from "./middleware/auth.js";
+import { adminAuthRoutes } from "./routes/admin/auth.js";
 import { addressesRoutes } from "./routes/addresses.js";
 import { authRoutes } from "./routes/auth.js";
 import { cartRoutes } from "./routes/cart.js";
@@ -163,12 +164,17 @@ export function buildApp() {
   app.use("/orders", currentUser);
   app.use("/addresses/*", currentUser);
   app.use("/addresses", currentUser);
+  // Admin auth surface. currentUser resolves the cookie so GET /admin/auth/me
+  // can gate on role; the login / mfa / enrolment routes are pre-session and
+  // simply see no user. The mandatory-TOTP flow lives in routes/admin/auth.ts.
+  app.use("/admin/auth/*", currentUser);
 
   app.get("/health", (c) => c.json({ ok: true }));
 
   app.route("/products", productsRoutes);
   app.route("/categories", categoriesRoutes);
   app.route("/auth", authRoutes);
+  app.route("/admin/auth", adminAuthRoutes);
   app.route("/cart", cartRoutes);
   app.route("/orders", ordersRoutes);
   app.route("/addresses", addressesRoutes);
