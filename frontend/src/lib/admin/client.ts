@@ -50,7 +50,10 @@ async function readProblem(res: Response): Promise<ProblemResponse | undefined> 
 
 /** Pull an ISO-8601 instant out of the lockout detail string, if present. */
 function parseUnlockAt(detail?: string): string | undefined {
-  const m = detail?.match(/\d{4}-\d{2}-\d{2}T[\d:.]+Z/);
+  // Bounded quantifiers only — no unbounded `+` over a shared character class —
+  // so there is no super-linear backtracking even on an adversarial `detail`
+  // (it comes from an HTTP response body). Matches Date#toISOString output.
+  const m = detail?.match(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z/);
   return m?.[0];
 }
 

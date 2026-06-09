@@ -76,12 +76,27 @@ export function base32Encode(buf: Buffer): string {
  * of these forms). Throws on any character outside the alphabet.
  */
 export function base32Decode(input: string): Buffer {
-  const clean = input.replace(/=+$/g, "").replace(/\s+/g, "").toUpperCase();
   let bits = 0;
   let value = 0;
   const out: number[] = [];
-  for (const ch of clean) {
-    const idx = BASE32_ALPHABET.indexOf(ch);
+  // Single linear pass: skip `=` padding and ASCII whitespace, uppercase each
+  // remaining char, reject anything outside the alphabet. Done inline rather
+  // than with a `replace(/=+$/, …)` pre-strip so there is NO super-linear regex
+  // backtracking on adversarial input such as a long run of '=' — the function
+  // is an exported library entry point (CodeQL js/polynomial-redos).
+  for (const ch of input) {
+    if (
+      ch === "=" ||
+      ch === " " ||
+      ch === "\t" ||
+      ch === "\n" ||
+      ch === "\r" ||
+      ch === "\f" ||
+      ch === "\v"
+    ) {
+      continue;
+    }
+    const idx = BASE32_ALPHABET.indexOf(ch.toUpperCase());
     if (idx === -1) {
       throw new Error("Invalid Base32 character in TOTP secret");
     }
