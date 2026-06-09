@@ -21,6 +21,14 @@ import { getDb } from "./db.js";
 /** Idle timeout for non-rememberMe sessions: 2 hours, per spec README §8. */
 const IDLE_TIMEOUT_MS = 2 * 60 * 60 * 1000;
 
+/**
+ * Tighter idle timeout for admin sessions: 30 minutes, per docs/ARCHITECTURE.md
+ * §5.1 (admin compromise row: "30-min idle timeout"). Admins never get a
+ * rememberMe (the admin login flow forces it false), so an admin session always
+ * rides this short idle window — a forgotten admin tab self-expires fast.
+ */
+const ADMIN_IDLE_TIMEOUT_MS = 30 * 60 * 1000;
+
 /** Absolute lifetime for rememberMe sessions: 30 days, per spec README §8. */
 const REMEMBER_ME_LIFETIME_MS = 30 * 24 * 60 * 60 * 1000;
 
@@ -32,6 +40,12 @@ export interface CreateSessionInput {
   rememberMe: boolean;
   ipAddress?: string | null;
   userAgent?: string | null;
+  /**
+   * The user's role, so the session picks the right idle window (admins get the
+   * 30-minute window). Defaults to "customer" when omitted — every existing
+   * caller keeps its current 2-hour idle behaviour unchanged.
+   */
+  role?: UserRole;
 }
 
 export interface CreatedSession {
@@ -46,7 +60,7 @@ export async function createSession(
   const db = getDb();
   const token = generateSessionToken();
   const idHash = hashSessionToken(token);
-  const expiresAt = computeExpiresAt(input.rememberMe);
+  const expiresAt = computeExpiresAt(input.rememberMe, input.role ?? "customer");
 
   await db.insert(schema.sessions).values({
     idHash,
@@ -127,7 +141,7 @@ export async function validateSession(
     return null;
   }
 
-  const newExpiresAt = computeExpiresAt(row.rememberMe);
+  const newExpiresAt = computeExpiresAt(row.rememberMe, row.userRole);
   await db
     .update(schema.sessions)
     .set({ expiresAt: newExpiresAt, lastActiveAt: now })
@@ -200,8 +214,10 @@ export async function purgeExpiredSessions(): Promise<number> {
   return Number(n);
 }
 
-function computeExpiresAt(rememberMe: boolean): Date {
-  return new Date(
-    Date.now() + (rememberMe ? REMEMBER_ME_LIFETIME_MS : IDLE_TIMEOUT_MS),
-  );
+function computeExpiresAt(rememberMe: boolean, role: UserRole): Date {
+  if (rememberMe) {
+    return new Date(Date.now() + REMEMBER_ME_LIFETIME_MS);
+  }
+  const idle = role === "admin" ? ADMIN_IDLE_TIMEOUT_MS : IDLE_TIMEOUT_MS;
+  return new Date(Date.now() + idle);
 }

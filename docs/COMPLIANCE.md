@@ -111,7 +111,7 @@ exercised until deployment, the cell is annotated.
 | TLS 1.3 + HSTS preload | ⚠️ Code ready | HSTS header emitted in production builds via `next.config.ts`. Operational verification requires deployment behind CloudFront/ACM |
 | Argon2id password hashing | ✅ | `m=19456, t=2, p=1`, RFC 9106 |
 | Constant-time login | ✅ | Defeats enumeration via timing — DUMMY_PASSWORD_HASH fallback for unknown emails |
-| **MFA for admin** | ❌ | Admin auth flow not built. Schema has `totp_secret` columns; no enrolment / verify routes exist. Roadmap item 35 |
+| **MFA for admin** | ✅ | Mandatory TOTP MFA shipped 2026-06-08 (`/admin/auth/*` on `shop-api`): RFC 6238 TOTP + single-use recovery codes, secret AES-256-GCM-encrypted at rest, replay guard, 30-min/5-fail lockout. Activates the `mfa_*` columns. Roadmap item 35 ✅ (backend + sign-in frontend) |
 | IAM least privilege per Lambda | N/A today | Target: three separate execution roles once deployed |
 | Secrets in Parameter Store | N/A today | Target: SSM Parameter Store. Today: `.env` files for local dev |
 | Parametrized queries (no SQLi vector) | ✅ | Drizzle ORM |
@@ -278,7 +278,7 @@ Published 2024–2025 (eighth edition). Notable changes vs 2021:
 | A04 | Cryptographic Failures | ⚠️ | TLS 1.3 + HSTS code-ready; AES at rest depends on deployed Neon/S3. Argon2id (RFC 9106), 32-byte CSPRNG tokens, SHA-256-at-rest all in code |
 | A05 | Injection | ✅ | Zod validation + Drizzle parametrized queries everywhere; WAF SQLi managed rules planned |
 | A06 | Insecure Design | ✅ | Idempotency, optimistic locking, line-item snapshots, expand-contract migrations, account-discount server-controlled |
-| A07 | Authentication Failures | ⚠️ | Customer-side ✅ (Argon2id RFC 9106, constant-time login, per-email lockout, NIST 800-63B-4 + HIBP). Admin MFA documented but **admin auth flow not built** (Roadmap item 35). Customer MFA is a growth-stage residual (Roadmap item 34) |
+| A07 | Authentication Failures | ✅ | Customer-side ✅ (Argon2id RFC 9106, constant-time login, per-email lockout, NIST 800-63B-4 + HIBP). **Admin MFA shipped 2026-06-08** — mandatory TOTP at AAL2 (`/admin/auth/*`, Roadmap item 35 backend). Customer MFA remains a growth-stage residual (Roadmap item 34) |
 | A08 | Software and Data Integrity Failures | ✅ | Every SBOM signed via Sigstore Fulcio/Rekor, keyless OIDC, transparency log. Verification in ARCHITECTURE.md §9.5 |
 | A09 | Security Logging and Monitoring Failures | ⚠️ | Pino structured logs ✅; CSP violation reporting ✅ (May 2026); distributed tracing ❌. Roadmap item 18 |
 | A10 | Mishandling of Exceptional Conditions (new) | ✅ | RFC 9457 Problem Details on every error; graceful degradation; best-effort emails never block |
@@ -303,7 +303,7 @@ L3 (high-assurance / critical systems).
 | Chapter | L1 status | L2 status | Notes |
 |---|---|---|---|
 | V1 Architecture, Design and Threat Modeling | ⚠️ | ⚠️ | Architecture documented; formal STRIDE threat model missing |
-| V2 Authentication | ✅ | ⚠️ | L1 met for customers; L2 needs customer MFA (Roadmap 33). V6.2 self-service password change shipped May 22, 2026 |
+| V2 Authentication | ✅ | ⚠️ | L1 met for customers; admin is L2 (mandatory TOTP MFA, AAL2, shipped 2026-06-08); customer L2 MFA still pending (Roadmap 34). V6.2 self-service password change shipped May 22, 2026 |
 | V3 Session Management | ✅ | ✅ | 256-bit tokens, hashed at rest, all-session-drop on reset/email-change/account-deletion |
 | V4 Access Control | ✅ | ✅ | Two-tier middleware; explicit gates |
 | V5 Validation, Sanitization, Encoding | ✅ | ✅ | Zod `.strict()` on every endpoint |
@@ -317,8 +317,9 @@ L3 (high-assurance / critical systems).
 | V13 API and Web Service | ✅ | ✅ | Hono + zod-openapi + RFC 9457 |
 | V14 Configuration | ⚠️ | ⚠️ | `.env` for local dev; Parameter Store planned for production |
 
-**Net:** **L1-compliant** for customer-facing flows in code. **L2
-gaps:** customer MFA (Roadmap 33); admin auth flow (Roadmap 34).
+**Net:** **L1-compliant** for customer-facing flows in code; **admin
+auth is L2** (mandatory TOTP MFA, AAL2, shipped 2026-06-08, Roadmap item
+35). **Remaining L2 gap:** customer MFA (Roadmap item 34, growth-stage).
 
 ---
 
@@ -340,7 +341,7 @@ breach-list checks.
 | Drop sessions on password change | ✅ | `/auth/reset-password` drops ALL sessions (unauthenticated flow). `/auth/change-password` drops every OTHER session, keeps the initiating one |
 | Out-of-band notification at email change | ✅ | Old + new addresses notified |
 | AAL1 for customer accounts | ✅ | Password + cookie session |
-| AAL2 for admin via TOTP MFA | ❌ | Admin auth flow not built. Schema has `totp_secret` columns. Roadmap item 35 |
+| AAL2 for admin via TOTP MFA | ✅ | Shipped 2026-06-08. `/admin/auth/*`: password + RFC 6238 TOTP, two-step (no session before both factors), enrolment + 10 single-use recovery codes (look-up secrets), replay guard, secret AES-256-GCM at rest. Roadmap item 35 ✅ (backend + sign-in frontend) |
 
 ---
 

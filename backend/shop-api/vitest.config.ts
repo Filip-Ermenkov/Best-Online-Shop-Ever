@@ -23,6 +23,14 @@ process.env.DATABASE_URL ??=
   "postgresql://shop:shop@localhost:5432/shop_test";
 process.env.NODE_ENV ??= "test";
 process.env.LOG_LEVEL ??= "silent";
+// Admin MFA test keys — a fixed 32-byte (AES-256) encryption key and a
+// challenge HMAC key, so the /admin/auth suite exercises the real
+// encrypt/decrypt + signed-challenge paths deterministically (never used
+// outside tests; production sets these via SSM).
+const ADMIN_MFA_ENCRYPTION_KEY = Buffer.alloc(32, 7).toString("base64");
+const ADMIN_MFA_CHALLENGE_KEY = "test-admin-mfa-challenge-key-fixed";
+process.env.ADMIN_MFA_ENCRYPTION_KEY ??= ADMIN_MFA_ENCRYPTION_KEY;
+process.env.ADMIN_MFA_CHALLENGE_KEY ??= ADMIN_MFA_CHALLENGE_KEY;
 // Force the in-memory stub transport so tests never hit AWS and can assert
 // on what was "sent". Per-test setup resets the recorder before each test.
 process.env.EMAIL_TRANSPORT ??= "stub";
@@ -59,6 +67,8 @@ export default defineConfig({
       EMAIL_TRANSPORT: "stub",
       PUBLIC_APP_BASE_URL: "http://localhost:3000",
       BREACHED_PASSWORD_CHECK_ENABLED: "false",
+      ADMIN_MFA_ENCRYPTION_KEY,
+      ADMIN_MFA_CHALLENGE_KEY,
     },
   },
 });

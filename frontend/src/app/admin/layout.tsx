@@ -1,21 +1,28 @@
-import { redirect } from "next/navigation";
 import { getServerUser } from "@/lib/auth/server";
+import AdminAuthGate from "@/components/admin/AdminAuthGate";
 import AdminLayoutShell from "./_layout-shell";
 
 /**
- * Admin layout — server component. Performs the role check that the proxy
- * cannot (the session cookie is opaque, role isn't encoded in it). The
- * proxy already redirected anonymous traffic to /account/login, so by the
- * time we reach here we have *some* user. We then enforce role === "admin".
+ * Admin layout — server component and the admin auth boundary.
  *
- * Customer who lands on /admin (e.g. via a bookmarked URL) is bounced back
- * to / rather than seeing a hard 403 — fewer support tickets, same
- * security posture (they don't see admin content).
+ * The session cookie is opaque (role isn't encoded in it), so the real role
+ * check happens here, server-side, via getServerUser() → GET /auth/me. When the
+ * visitor is NOT an authenticated admin we render the `<AdminAuthGate>` (the
+ * mandatory-TOTP login/enrolment flow) IN PLACE rather than redirecting. That
+ * deliberately avoids a separate /admin/login route — a redirect target under
+ * /admin would be re-wrapped by this very layout and loop. On success the gate
+ * calls router.refresh(), this server layout re-runs, now resolves an admin
+ * session, and renders the panel.
+ *
+ * Admin sessions are only ever minted after password + TOTP (see
+ * backend/shop-api/src/routes/admin/auth.ts), so `role === "admin"` here already
+ * implies AAL2 was satisfied.
  */
 export default async function AdminLayout({ children }: { children: React.ReactNode }) {
   const user = await getServerUser();
-  if (!user) redirect("/account/login?next=/admin");
-  if (user.role !== "admin") redirect("/");
+  if (!user || user.role !== "admin") {
+    return <AdminAuthGate signedInAsNonAdmin={!!user} />;
+  }
 
   return <AdminLayoutShell>{children}</AdminLayoutShell>;
 }

@@ -53,8 +53,11 @@ AWS credentials). See `infra/README.md`.
 Still not present in the repo (mentioned in `docs/ARCHITECTURE.md` as
 future work):
 
-- `backend/admin-api/` — admin Lambda. Admin flows are currently
-  stubbed on the frontend with mock data; there is no admin API.
+- `backend/admin-api/` — admin Lambda. Admin **CRUD** flows (orders,
+  products, categories…) are still stubbed on the frontend with mock
+  data; there is no admin-api Lambda yet. (Admin **authentication** is
+  real — it ships in `shop-api` under `/admin/auth/*` with the `/admin`
+  sign-in UI; only the CRUD surface remains mock.)
 - `backend/scheduler-fn/` — scheduled-Lambda for the three cron rules
   (daily catalog backup, hourly pickup expiry, daily unverified-account
   cleanup). Not built.
@@ -111,7 +114,7 @@ visible at `/account/orders`.
 ### Tests
 
 ```powershell
-npm --workspace @shop/auth  run test   # 31 unit tests (Argon2, sessions, HIBP)
+npm --workspace @shop/auth  run test   # 70 unit tests (Argon2, sessions, HIBP, TOTP, recovery codes, AES-GCM, challenge)
 npm --workspace @shop/email run test   # 51 unit tests (12 templates + 3 transports)
 npm --workspace @shop/api   run test   # full integration suite (304 cases) vs shop_test DB
 ```
@@ -154,7 +157,8 @@ they aren't. The honest state:
 | Database | Local Docker Postgres 17 works; Neon production instance not provisioned |
 | Email | `console` transport works locally; `ses` transport code exists but SES production DNS not configured |
 | WAF / CloudFront / Route 53 | Not provisioned |
-| `admin-api` Lambda | Not built |
+| Admin authentication (TOTP MFA) | **Shipped end-to-end** — `shop-api` `/admin/auth/*` + the `/admin` frontend `AdminAuthGate` (login → MFA → enrolment) |
+| `admin-api` Lambda | Not built (admin auth currently lives in `shop-api`; extract when the admin CRUD surface grows) |
 | `scheduler-fn` Lambda | Not built |
 | Terraform / IaC | **Live-apply-validated** (`infra/`) — a successful end-to-end `terraform apply` (2026-06-07) returned HTTP 200 through CloudFront→OAC→Lambda; fmt/validate/tflint/checkov green. A maintained prod env (domain + migrated schema + frontend) is the next step |
 
@@ -182,6 +186,21 @@ what needs to happen to get from today's repo state to that posture.
   per-user ownership-scoped, 4-digit Bulgarian postal-code validation,
   20-address cap. Activates the `addresses` table the GDPR export and
   account-deletion already reference.
+- `/admin/auth/*` — **admin authentication with mandatory TOTP MFA**
+  (AAL2: password + RFC 6238 time-based OTP). Two-step so no session is
+  ever issued before both factors pass: `POST /login` (password →
+  signed `mfa_required` / `enrollment_required` challenge), `POST /mfa`
+  (challenge + 6-digit TOTP or single-use recovery code → admin
+  session), `POST /mfa/setup` + `POST /mfa/setup/confirm` (first-login
+  TOTP enrolment → 10 single-use recovery codes, shown once),
+  `POST /logout`, `GET /me` (`requireAdmin`-gated). Stricter posture
+  than customer auth: 30-min / 5-fail lockout, 30-min session idle, the
+  TOTP secret AES-256-GCM-encrypted at rest, a replay guard that makes
+  each code single-use even inside its skew window, and a uniform `404`
+  on the admin surface for non-admins (no enumeration). Activates the
+  dormant `mfa_enabled` / `mfa_secret_encrypted` / `mfa_recovery_codes`
+  columns the schema has carried since the first migration. See the
+  [Admin authentication](#admin-authentication-totp-mfa) smoke test.
 - `/csp-report` — accepts both legacy `application/csp-report` and
   modern `application/reports+json`. Anonymous (intentionally outside
   the auth chain).
@@ -193,28 +212,40 @@ what needs to happen to get from today's repo state to that posture.
   migration; the banner now writes here, not just to `localStorage`.
 - `/health`, `/openapi.json`
 
-Test counts as of 2026-06-04, by `it`/`test` block: addresses 28,
-auth 48, cart 30, categories 7, consent 10, csp-report 25,
-data-export 14, email-change 21, order-emails 5, orders 25,
-password-reset 19, products 15, verification 11, withdrawal 23, plus a
-phone-validation lib suite — **281 blocks**. The `csp-report` and
-`phone` suites are table-driven (`it.each`), so `vitest run` expands
-them and reports **315 cases total**, all against a real `shop_test`
-Postgres in CI.
+Test counts as of 2026-06-08, by `it`/`test` block: addresses 28,
+admin-auth 17, auth 48, cart 30, categories 7, consent 10,
+csp-report 25, data-export 14, email-change 21, order-emails 5,
+orders 25, password-reset 19, products 15, verification 11,
+withdrawal 23, plus a phone-validation lib suite — **298 blocks**. The
+`csp-report` and `phone` suites are table-driven (`it.each`), so
+`vitest run` expands them and reports **332 cases total**, all against a
+real `shop_test` Postgres in CI.
 
 ### Backend (`@shop/db` schema)
 
-30 tables, 32 FKs, 44 indexes, 10 enums, 3 migrations
+30 tables, 32 FKs, 44 indexes, 10 enums, 4 migrations
 (`0000_initial.sql`, `0001_orders_sequence.sql`,
-`0002_complaints_withdrawal.sql`). Idempotent seed in
+`0002_complaints_withdrawal.sql`,
+`0003_admin_mfa_replay_guard.sql` — adds `users.mfa_last_used_step` +
+`mfa_enrolled_at` for the admin TOTP flow). Idempotent seed in
 `backend/db/scripts/seed.ts`.
 
 ### Backend (`@shop/auth`)
 
 Argon2id helpers (`m=19456, t=2, p=1`), session token
 generation/hashing, `DUMMY_PASSWORD_HASH`, and HIBP k-anonymity
-breached-password screening. 31 unit tests across `breached-password`,
-`password`, `session-tokens`.
+breached-password screening. Plus the admin-MFA crypto primitives
+(2026-06-08): RFC 6238 **TOTP** (generate / verify with a ±1-step skew
+window and a single-use replay guard), single-use **recovery codes**
+(Argon2id-hashed), **AES-256-GCM** encryption of the TOTP secret at
+rest, and the HMAC **challenge token** that binds the password step to
+the TOTP step. 31 original unit tests across `breached-password`,
+`password`, `session-tokens`, plus new suites for `totp` (validated
+against the **RFC 6238 Appendix B** reference vectors), `mfa-crypto`,
+`recovery-codes`, and `challenge`. Pure functions only — the stateful
+half (DB lookups, replay-step persistence, lockout) lives in
+`@shop/api`'s `lib/admin-mfa.ts`, so the same crypto serves shop-api,
+a future admin-api, and cron lambdas.
 
 ### Backend (`@shop/email`)
 
@@ -569,6 +600,62 @@ earlier `/api-demo` Hono-RPC smoke-test page was removed; the real
 storefront pages are the canonical example of how to consume the
 typed client from a Server Component.
 
+### Admin authentication (TOTP MFA)
+
+The single admin account authenticates with a password **and** a TOTP
+code (AAL2). There is no self-service admin registration — bootstrap the
+one admin out of band, then enrol TOTP on first login.
+
+One-time setup (PowerShell, from the repo root, with the API env ready):
+
+```powershell
+# 1. Generate the two admin secrets and add them to backend\shop-api\.env
+npm --workspace @shop/api run admin:create -- --print-keys
+#   → copy ADMIN_MFA_ENCRYPTION_KEY and ADMIN_MFA_CHALLENGE_KEY into .env
+
+# 2. Create the admin row (env vars preferred over flags — avoids shell history)
+$env:ADMIN_EMAIL="admin@shop.bg"; $env:ADMIN_PASSWORD="a long passphrase"
+npm --workspace @shop/api run admin:create
+```
+
+Then exercise the flow against `npm run api:dev` (http://localhost:3001):
+
+```bash
+# First login → enrollment_required (the admin has no TOTP yet)
+curl -s -X POST localhost:3001/admin/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"admin@shop.bg","password":"a long passphrase"}'
+#   → { "status":"enrollment_required", "challenge":"…" }
+
+# Provision a secret (returns an otpauth:// URI — paste into any authenticator,
+# or render it as a QR). Add the secret to your authenticator app.
+curl -s -X POST localhost:3001/admin/auth/mfa/setup \
+  -H 'Content-Type: application/json' -d '{"challenge":"<enrol challenge>"}'
+#   → { "secret":"…", "otpauthUri":"otpauth://totp/…", "challenge":"…" }
+
+# Confirm with a live 6-digit code → MFA enabled, session cookie set,
+# 10 recovery codes returned ONCE.
+curl -s -X POST localhost:3001/admin/auth/mfa/setup/confirm \
+  -H 'Content-Type: application/json' -d '{"challenge":"<setup challenge>","code":"123456"}'
+
+# Subsequent logins: /login → status "mfa_required" → POST /mfa with the
+# current 6-digit code (or a recovery code) → admin session cookie.
+```
+
+Things worth checking: replaying the same TOTP code twice is rejected
+(single-use within the window); a recovery code works once and then
+can't be reused; five wrong attempts lock the email for 30 minutes;
+`GET /admin/auth/me` returns `404` (not `401`) without an admin session
+so the surface isn't confirmable. The full behaviour is covered by
+`backend/shop-api/tests/routes/admin-auth.test.ts` and the `@shop/auth`
+unit suites (`totp`, `mfa-crypto`, `recovery-codes`, `challenge` —
+including the RFC 6238 Appendix B reference vectors).
+
+> **Note — one-time migration step.** This slice adds migration
+> `0003_admin_mfa_replay_guard` (two columns on `users`). Run
+> `npm run db:reset` (or `cd backend/db && npm run db:migrate`) before
+> the API/tests so the new columns exist.
+
 ### CSP violation reporting
 
 The strict `'nonce-X' 'strict-dynamic'` CSP shipped to the frontend
@@ -732,11 +819,16 @@ reality, as of 2026-06-07:
   `admin-api` slice.
 - **Customer MFA (TOTP / WebAuthn)** — schema exists
   (`mfaRecoveryCodes` table), no flow. Roadmap item, growth-stage.
-- **Admin auth (TOTP)** — the architecture doc treats this as
-  shipped (mandatory TOTP MFA on a separate subdomain). The schema
-  carries `totp_secret` columns; no admin auth flow exists in the
-  frontend or `shop-api`. The admin login page at `/admin/login`
-  is a stub.
+- **Admin auth (TOTP)** — **shipped end-to-end (2026-06-08)**, backend
+  and frontend. `/admin/auth/*` on `shop-api` does mandatory TOTP MFA
+  (login → challenge → TOTP/recovery → session), enrolment, and recovery
+  codes, with full integration tests and the `@shop/api admin:create`
+  bootstrap script. The frontend `/admin` section now renders an inline
+  `AdminAuthGate` (login → MFA → first-login TOTP enrolment with manual
+  secret entry → recovery codes) wired to those endpoints; the gating
+  lives in `frontend/src/app/admin/layout.tsx`. What remains is purely
+  structural: extracting the module onto a dedicated `admin-api` Lambda +
+  subdomain once the admin CRUD surface grows. Roadmap item 35 is done.
 - **Banner slides API** — the home-page carousel still imports from
   `frontend/src/lib/mock-data/banners.ts`. A real `banner_slides`
   endpoint + admin CRUD ships with the admin-api slice.

@@ -86,6 +86,35 @@ const EnvSchema = z.object({
     .enum(["true", "false"])
     .default("true")
     .transform((s) => s === "true"),
+
+  // ─── Admin MFA (TOTP) ────────────────────────────────────────────────────
+  //
+  // These gate ONLY the /admin/* surface. They intentionally default to "" so
+  // the customer-facing app boots without them — an unconfigured admin key
+  // surfaces as a clean 500 on an admin route (via loadMfaKey throwing), never
+  // as a boot failure that takes down the storefront. Set both in production
+  // via SSM Parameter Store (SecureString); generate with
+  // `npm --workspace @shop/api run admin:create -- --print-keys` or
+  // `openssl rand -base64 32`.
+  /**
+   * Base64-encoded 32-byte (AES-256) key. Encrypts the TOTP shared secret at
+   * rest in users.mfa_secret_encrypted (AES-256-GCM, @shop/auth mfa-crypto.ts).
+   * The DB never holds this key, so a DB dump alone cannot mint TOTP codes.
+   * Rotating it re-keys nothing automatically — re-enrol the admin after a
+   * rotation (single admin, rare event).
+   */
+  ADMIN_MFA_ENCRYPTION_KEY: z.string().default(""),
+  /**
+   * HMAC key for the short-lived login challenge tokens that bind the password
+   * step to the TOTP step (@shop/auth challenge.ts). Separate from the
+   * encryption key by purpose. Any sufficiently long random string.
+   */
+  ADMIN_MFA_CHALLENGE_KEY: z.string().default(""),
+  /**
+   * Issuer label shown in the admin's authenticator app and embedded in the
+   * otpauth:// provisioning URI.
+   */
+  ADMIN_MFA_ISSUER: z.string().default("Best Online Shop (Admin)"),
 });
 
 export type Env = z.infer<typeof EnvSchema>;

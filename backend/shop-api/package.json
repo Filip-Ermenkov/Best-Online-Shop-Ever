@@ -13,6 +13,7 @@
   "scripts": {
     "dev": "tsx watch src/server.ts",
     "start": "tsx src/server.ts",
+    "admin:create": "tsx scripts/create-admin.ts",
     "build:lambda": "node build.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
