@@ -4,12 +4,11 @@ import type { OutgoingEmail } from "../types.js";
  * Order status-update — sent to the customer each time the admin transitions
  * an order through one of the customer-visible states.
  *
- * Today the admin-api Lambda (and therefore the route that would fire this)
- * does not exist; admin status transitions happen via direct DB updates
- * (see README "Known gaps" → "Order status update email" and
- * `docs/ARCHITECTURE.md` §15 item 8). The template + helper land here so the
- * future admin-orders slice can wire them in a single line without having
- * to design the copy / compliance language from scratch.
+ * Wired since 2026-06-10: the admin order-management slice
+ * (`shop-api routes/admin/orders.ts`, POST /admin/orders/:n/status) renders
+ * and sends this template via `lib/order-emails.ts#sendOrderStatusUpdateEmail`
+ * after every customer-visible transition commits (docs/ARCHITECTURE.md §15
+ * items 14 + 22).
  *
  * Statuses we send for ("customer-visible transitions"):
  *

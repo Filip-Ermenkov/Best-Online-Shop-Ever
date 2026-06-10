@@ -133,13 +133,16 @@ ops.ts         catalog_backups · admin_audit_log · cookie_consents
 - **IDs**: `uuid` with `gen_random_uuid()` default, except where a stable
   business key already exists (`settings.key`, `tos_versions.version_number`).
   Switching to UUIDv7 later is a default-change, not a type change.
-- **Money**: integer cents in `numeric(10,2)` or `numeric(12,2)`. Never floats.
-  The API converts cents ↔ EUR at the boundary.
+- **Money**: integer cents in `numeric(10,0)` / `numeric(12,0)` (scale 0 —
+  the cent IS the unit). Never floats. The API converts cents ↔ EUR at the
+  boundary.
 - **Timestamps**: `timestamp with time zone` (timestamptz), default `now()`,
   application-managed `updated_at` via Drizzle's `$onUpdate`.
 - **Soft delete**: nullable `deleted_at`. Queries must `WHERE deleted_at IS NULL`.
-- **Optimistic locking**: `version` column on `orders` (extend to other rows
-  if and when concurrent admin editing is observed in practice).
+- **Optimistic locking**: `version` column on `orders` — actively enforced
+  since 2026-06-10 by the admin status-transition route (`expectedVersion`
+  echo; stale screen → `409 /problems/order-version-conflict`). Extend to
+  other rows if and when concurrent admin editing is observed in practice.
 - **Idempotency**: `idempotency_key` unique on `orders`; keys are
   application-generated UUIDs accompanying every checkout request.
 - **Snapshots**: `order_items` carries product code/name/price; the original
