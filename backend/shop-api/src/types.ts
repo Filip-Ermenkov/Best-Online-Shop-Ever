@@ -66,3 +66,17 @@ export type {
   ConsentReceipt,
   ConsentState,
 } from "./routes/consent.js";
+
+// Admin order-management DTOs from routes/admin/orders.ts. The admin frontend
+// (frontend/src/lib/admin/orders/) annotates its typed client with these.
+export type {
+  AdminOrderSummary,
+  AdminOrdersPage,
+  AdminOrderDetail,
+  AdminOrderStatusHistoryEntry,
+} from "./routes/admin/orders.js";
+
+// The pure order-status state machine (docs/README.md §7). `allowedTargets`
+// arrives on every AdminOrderDetail, so the frontend never re-derives the
+// table — but the types travel with it.
+export type { OrderStatus, TransitionTarget } from "./lib/order-status.js";

@@ -53,11 +53,12 @@ AWS credentials). See `infra/README.md`.
 Still not present in the repo (mentioned in `docs/ARCHITECTURE.md` as
 future work):
 
-- `backend/admin-api/` — admin Lambda. Admin **CRUD** flows (orders,
-  products, categories…) are still stubbed on the frontend with mock
-  data; there is no admin-api Lambda yet. (Admin **authentication** is
-  real — it ships in `shop-api` under `/admin/auth/*` with the `/admin`
-  sign-in UI; only the CRUD surface remains mock.)
+- `backend/admin-api/` — admin Lambda. There is no separate admin-api
+  Lambda yet: admin **authentication** (`/admin/auth/*`) and the first
+  admin CRUD slice — **order management** (`/admin/orders/*`, shipped
+  2026-06-10) — live in `shop-api` as portable `routes/admin/*` modules.
+  The REMAINING admin CRUD flows (products, categories, customers,
+  banners, settings) are still stubbed on the frontend with mock data.
 - `backend/scheduler-fn/` — scheduled-Lambda for the three cron rules
   (daily catalog backup, hourly pickup expiry, daily unverified-account
   cleanup). Not built.
@@ -116,7 +117,7 @@ visible at `/account/orders`.
 ```powershell
 npm --workspace @shop/auth  run test   # 70 unit tests (Argon2, sessions, HIBP, TOTP, recovery codes, AES-GCM, challenge)
 npm --workspace @shop/email run test   # 51 unit tests (12 templates + 3 transports)
-npm --workspace @shop/api   run test   # full integration suite (304 cases) vs shop_test DB
+npm --workspace @shop/api   run test   # full integration suite (358 cases) vs shop_test DB
 ```
 
 Accessibility (WCAG 2.2 AA / EAA) has its own layered audit — see
@@ -158,7 +159,8 @@ they aren't. The honest state:
 | Email | `console` transport works locally; `ses` transport code exists but SES production DNS not configured |
 | WAF / CloudFront / Route 53 | Not provisioned |
 | Admin authentication (TOTP MFA) | **Shipped end-to-end** — `shop-api` `/admin/auth/*` + the `/admin` frontend `AdminAuthGate` (login → MFA → enrolment) |
-| `admin-api` Lambda | Not built (admin auth currently lives in `shop-api`; extract when the admin CRUD surface grows) |
+| Admin order management | **Shipped end-to-end (2026-06-10)** — `shop-api` `/admin/orders/*` (list + filters + search, detail + history, state-machine status transitions with optimistic locking + customer emails, CSV export) + the real `/admin/orders` UI |
+| `admin-api` Lambda | Not built (admin auth + the orders slice currently live in `shop-api`; extract when the admin CRUD surface grows) |
 | `scheduler-fn` Lambda | Not built |
 | Terraform / IaC | **Live-apply-validated** (`infra/`) — a successful end-to-end `terraform apply` (2026-06-07) returned HTTP 200 through CloudFront→OAC→Lambda; fmt/validate/tflint/checkov green. A maintained prod env (domain + migrated schema + frontend) is the next step |
 
@@ -201,6 +203,25 @@ what needs to happen to get from today's repo state to that posture.
   dormant `mfa_enabled` / `mfa_secret_encrypted` / `mfa_recovery_codes`
   columns the schema has carried since the first migration. See the
   [Admin authentication](#admin-authentication-totp-mfa) smoke test.
+- `/admin/orders/*` — **admin order management** (2026-06-10), the
+  first real admin CRUD slice, `requireAdmin`-gated (uniform `404` for
+  non-admins): `GET /admin/orders` (offset-paginated list, 25/page with
+  total count; filters: status, payment method, customer type,
+  Europe/Sofia date range; search across order number / email / phone /
+  company name), `GET /admin/orders/:orderNumber` (full detail incl.
+  line-item snapshots, delivery + corporate snapshots, the
+  `order_status_history` audit timeline, and the server-computed
+  `allowedTargets`), `POST /admin/orders/:orderNumber/status` (the spec
+  §7 state machine validated server-side; `expectedVersion` optimistic
+  locking → `409 /problems/order-version-conflict` for a stale tab;
+  illegal hop → `409 /problems/invalid-status-transition`; courier +
+  tracking required for `shipped`, future `pickupDeadline` for
+  `ready_for_pickup`; audit entry in the same transaction; the
+  Bulgarian `order-status-update` email fires best-effort on every
+  customer-visible hop — `returned` is silent by design), and
+  `GET /admin/orders/export.csv` (filter-aware CSV: RFC 4180, UTF-8
+  BOM for Excel Cyrillic, OWASP formula-injection escaping). Retires
+  the manual `UPDATE orders SET status=…` psql.
 - `/csp-report` — accepts both legacy `application/csp-report` and
   modern `application/reports+json`. Anonymous (intentionally outside
   the auth chain).
@@ -212,14 +233,14 @@ what needs to happen to get from today's repo state to that posture.
   migration; the banner now writes here, not just to `localStorage`.
 - `/health`, `/openapi.json`
 
-Test counts as of 2026-06-08, by `it`/`test` block: addresses 28,
-admin-auth 17, auth 48, cart 30, categories 7, consent 10,
-csp-report 25, data-export 14, email-change 21, order-emails 5,
-orders 25, password-reset 19, products 15, verification 11,
-withdrawal 23, plus a phone-validation lib suite — **298 blocks**. The
-`csp-report` and `phone` suites are table-driven (`it.each`), so
-`vitest run` expands them and reports **332 cases total**, all against a
-real `shop_test` Postgres in CI.
+Test counts as of 2026-06-10, by `it`/`test` block: addresses 28,
+admin-auth 17, **admin-orders 26**, auth 48, cart 30, categories 7,
+consent 10, csp-report 25, data-export 14, email-change 21,
+order-emails 5, orders 25, password-reset 19, products 15,
+verification 11, withdrawal 23, plus a phone-validation lib suite —
+**324 blocks**. The `csp-report` and `phone` suites are table-driven
+(`it.each`), so `vitest run` expands them and reports **358 cases
+total**, all against a real `shop_test` Postgres in CI.
 
 ### Backend (`@shop/db` schema)
 
@@ -269,10 +290,12 @@ templates currently exist:
     withdrawal-rights pointer per EU 2023/2673 Art. 8 + Art. 6(1)(h).
 11. `order-status-update` — status-aware copy for each customer-visible
     transition (`accepted`, `ready_for_pickup`, `shipped`, `delivered`,
-    `cancelled`). Template + helper land here ready for the future
-    `admin-api` Lambda to wire — admin status transitions today still
-    happen via direct DB updates, so the wire-up is one line away once
-    that slice lands.
+    `cancelled`). **Wired since 2026-06-10**: `POST
+    /admin/orders/:orderNumber/status` sends it best-effort after each
+    customer-visible transition commits (`returned` is internal
+    bookkeeping and intentionally silent). The `accepted` copy points
+    at the 14-day withdrawal mechanism — that transition starts the
+    window (`orders.accepted_at`).
 12. `data-exported` — out-of-band security notice sent when a customer
     runs the GDPR Art. 15/20 self-service data export (`POST
     /auth/me/export`). Carries no payload and no link (the data went
@@ -320,9 +343,11 @@ at runtime locally (`npm run test:a11y`, axe-core). See
   (`frontend/src/lib/mock-data/courier-offices.ts`) — Bulgarian
   Econt/Speedy office lists are real-world data not yet ingested into
   the DB.
-- **Every admin page** under `/admin/*` (banners, categories,
-  products, customers, orders, archive, settings) renders mock data;
-  there is no admin API behind any of these screens.
+- **Most admin pages** under `/admin/*` (dashboard tiles, banners,
+  categories, products, customers, archive, settings) render mock
+  data — no admin API behind those screens yet. **Exception:** the
+  admin **orders** screens (`/admin/orders` + `/admin/orders/[orderNumber]`)
+  are real as of 2026-06-10, backed by `/admin/orders/*` on `shop-api`.
 
 Category-tree browsing (`/products/[...path]`) and search (`/search`)
 moved off mock data on 2026-05-28 — see [Storefront browsing](#storefront-browsing)
@@ -594,11 +619,12 @@ Results requirement that `BreadcrumbList.item` is a full URL. The
 images yet, rather than emitting `image: []` which the Rich Results
 test flags as a missing-required-field error.
 
-The home banners and admin pages still render from
-`frontend/src/lib/mock-data/*` — both await later slices. The
-earlier `/api-demo` Hono-RPC smoke-test page was removed; the real
-storefront pages are the canonical example of how to consume the
-typed client from a Server Component.
+The home banners and the non-orders admin pages still render from
+`frontend/src/lib/mock-data/*` — they await later slices (the admin
+**orders** pages went real on 2026-06-10). The earlier `/api-demo`
+Hono-RPC smoke-test page was removed; the real storefront pages are
+the canonical example of how to consume the typed client from a
+Server Component.
 
 ### Admin authentication (TOTP MFA)
 
@@ -655,6 +681,44 @@ including the RFC 6238 Appendix B reference vectors).
 > `0003_admin_mfa_replay_guard` (two columns on `users`). Run
 > `npm run db:reset` (or `cd backend/db && npm run db:migrate`) before
 > the API/tests so the new columns exist.
+
+### Admin order management
+
+With the admin signed in (previous section), open http://localhost:3000/admin/orders.
+The list renders from `GET /admin/orders` — newest first, 25/page,
+with status / payment / customer-type / date filters, a search box
+(order number, email, phone, company), pagination controls top and
+bottom, and an **Експорт CSV** button that downloads the current
+filter view (UTF-8 BOM — Cyrillic opens correctly in Excel).
+
+Place an order as a verified customer first (see
+[Order placement](#order-placement)), then click **Виж** on it:
+
+- The detail page shows the line-item snapshots, delivery/corporate
+  data, and the status timeline (`order_status_history`).
+- The action buttons are exactly the server's `allowedTargets` for the
+  order's status × payment method (spec §7 state machine). A
+  cash-on-delivery order in „Обработва се" offers **Изпрати поръчката**
+  (requires courier + tracking number) and **Откажи поръчката**; a
+  pickup order offers **Маркирай като готова за вземане** (requires a
+  future deadline) instead.
+- Every action goes through an inline confirmation step (order summary
+  + Потвърди / Назад), per the spec's irreversibility rule.
+- Each customer-visible transition queues the Bulgarian
+  `order-status-update` email — watch `api:dev`'s stdout under the
+  `console` transport (the `shipped` email carries the courier +
+  tracking number; the `accepted` one points at the withdrawal right).
+- **Optimistic locking:** open the same order in two tabs, transition
+  it in tab A, then try a transition in tab B. Tab B gets the spec's
+  „Поръчката е вече актуализирана…" notice and auto-refreshes to the
+  current state — the stale action never lands (`409
+  /problems/order-version-conflict` under the hood; the audit history
+  shows exactly one entry for the hop).
+- A `ready_for_pickup` order whose deadline has passed is marked red
+  with an „Изтекъл срок за вземане" warning in the list and detail.
+
+The full behaviour is covered by
+`backend/shop-api/tests/routes/admin-orders.test.ts` (26 cases).
 
 ### CSP violation reporting
 
@@ -807,16 +871,17 @@ reality, as of 2026-06-07:
   domain, the schema migrated to Neon, and the frontend deployed (the
   test deploy can be torn down with `terraform destroy`).
 - **`admin-api` Lambda** — referenced in `docs/ARCHITECTURE.md` §3.4;
-  not created. All `/admin/*` frontend pages render mock data.
+  not created as a separate Lambda. The admin surface that exists
+  (auth + the orders slice) lives in `shop-api` under `routes/admin/*`;
+  the non-orders `/admin/*` frontend pages render mock data.
 - **`scheduler-fn` Lambda** — referenced in §3.8; not created.
   Three cron rules (daily catalog backup, hourly pickup expiry,
   daily unverified-account cleanup) are documented design but do
   not run.
-- **Order status update wire-up** — the template and helper exist
-  (`backend/email/src/templates/order-status-update.ts` + `lib/order-emails.ts`),
-  but admin status transitions today still happen via direct DB updates,
-  so the helper is not yet called from any route. Ships with the
-  `admin-api` slice.
+- ~~**Order status update wire-up**~~ ✅ Shipped 2026-06-10 with the
+  admin orders slice — `POST /admin/orders/:orderNumber/status` calls
+  `sendOrderStatusUpdateEmail` after each customer-visible transition
+  commits.
 - **Customer MFA (TOTP / WebAuthn)** — schema exists
   (`mfaRecoveryCodes` table), no flow. Roadmap item, growth-stage.
 - **Admin auth (TOTP)** — **shipped end-to-end (2026-06-08)**, backend
@@ -880,17 +945,21 @@ In priority order (also tracked in `docs/ARCHITECTURE.md` §15):
    render from the live `@shop/api` catalog. Banner slides remain on
    mock data (no banners endpoint); admin pages remain on mock data
    (no admin-api).
-7. **Admin-api Lambda + first admin slice.** Pick the highest-leverage
-   admin slice (probably orders, so the manual `status='accepted'`
-   psql can go away). Requires admin auth flow — likely TOTP per the
-   spec, but a password-only first cut may be acceptable for a single
-   admin behind WAF until customer demand justifies the MFA work.
-   2–3 days.
+7. ~~**First admin slice (orders).**~~ ✅ Shipped 2026-06-10 —
+   `/admin/orders/*` on `shop-api` behind `requireAdmin` (list +
+   filters + search + CSV export, detail + audit timeline,
+   state-machine status transitions with optimistic locking and the
+   customer status-update emails) plus the real `/admin/orders` UI.
+   The manual `status='accepted'` psql is retired. What remains from
+   the original item: the dedicated `admin-api` Lambda extraction and
+   the other admin CRUD slices (products, categories, customers,
+   banners, settings).
 
-Items currently described as "shipped" but actually pending
-(admin-api, scheduler-fn, infra) should be brought into reality
-before any further "growth-stage" items (customer MFA, multi-region,
-SLSA L3, Cloudflare proxy swap).
+Items currently described in the architecture but not yet real
+(the remaining admin CRUD slices, the `admin-api` Lambda split,
+`scheduler-fn`, a maintained production deploy) should be brought
+into reality before any further "growth-stage" items (customer MFA,
+multi-region, SLSA L3, Cloudflare proxy swap).
 
 ## Browsing the API
 

@@ -66,9 +66,13 @@ Three actors are present in the codebase:
   (2026-06-08): `/admin/auth/*` on `shop-api` does mandatory TOTP MFA
   (AAL2), enrolment, and recovery codes — see §3.4. The admin **sign-in
   frontend** also shipped 2026-06-08: `/admin` renders an inline
-  `AdminAuthGate` (login → MFA → enrolment) wired to those endpoints. What
-  is still pending: the admin CRUD **pages** (still mock data) and the
-  dedicated **`admin-api`** Lambda the rest of the admin panel will live on.
+  `AdminAuthGate` (login → MFA → enrolment) wired to those endpoints. The
+  first real admin CRUD slice — **order management** (`/admin/orders` list +
+  detail + state-machine status transitions + CSV export) — shipped
+  2026-06-10, backend and frontend. Still pending: the REMAINING admin CRUD
+  pages (products, categories, customers, banners, archive, settings — mock
+  data) and the dedicated **`admin-api`** Lambda the admin panel will
+  eventually live on.
 
 Functional scope is in `docs/README.md`. Deployment status is in
 `README.md` ("Deployment status" section).
@@ -185,9 +189,15 @@ without WAF.
 - Pages around auth (`/account/login`, `/account/register`,
   `/account/profile`, `/account/email-change`,
   `/account/reset-password`, `/account/delete`), cart, and orders are
-  all real and wired to `@shop/api`.
-- Pages still on mock data: home banners, `/products/[...path]`
-  category browsing, `/search`, every `/admin/*` page.
+  all real and wired to `@shop/api`. Storefront browsing
+  (`/products/[...path]`, `/search`, home product rails) moved to the
+  live catalog API 2026-05-28. The admin sign-in (2026-06-08) and the
+  admin **orders** pages (list + detail + status transitions,
+  2026-06-10) are real.
+- Pages still on mock data: home banner carousel, the checkout
+  courier-office picker, and the remaining `/admin/*` pages
+  (dashboard, products, categories, customers, banners, archive,
+  settings).
 
 **Target (deployment):** AWS Amplify Hosting, two apps (shop + admin)
 on two CloudFront distributions.
@@ -223,11 +233,13 @@ runnable locally via `@hono/node-server`. Routes mounted in
 - **`shop-api`** — customer-facing. The Hono app already in the repo.
 - **`admin-api`** — admin panel backend. Order / product / category /
   customer / discount CRUD, banner management, content versioning,
-  backup orchestration. **Not yet written.** Note: admin
-  *authentication* is already built and currently lives in `shop-api`
-  under `/admin/auth/*` (mandatory TOTP MFA — see below); it is
-  self-contained, portable Hono code that will move here when the admin
-  CRUD surface justifies a separate Lambda + subdomain.
+  backup orchestration. **Not yet split out.** Admin *authentication*
+  (`/admin/auth/*`, mandatory TOTP MFA — see below) and the first CRUD
+  slice — **order management** (`/admin/orders` list / detail /
+  state-machine status transitions / CSV export, shipped 2026-06-10) —
+  live in `shop-api` today as self-contained, portable Hono modules
+  (`routes/admin/*`) that will move here when the admin CRUD surface
+  justifies a separate Lambda + subdomain.
 - **`scheduler-fn`** — three cron rules: daily catalog backup, hourly
   expired-pickup check, daily unverified-account cleanup. **Not yet
   written.**
@@ -274,8 +286,9 @@ Authentication primitives live in `@shop/auth`:
   (the DB never sees it), a replay guard (`users.mfa_last_used_step`)
   making every code single-use even inside its skew window, and a
   uniform `404` on the admin surface for non-admins (no enumeration of
-  its existence). This is the documented prerequisite (§15 item 35) for
-  the `admin-api` slice (item 22). Pending: the admin frontend UI.
+  its existence). This was the documented prerequisite (§15 item 35) for
+  the admin CRUD surface (item 22), whose first slice — order management
+  at `/admin/orders/*` — shipped behind `requireAdmin` on 2026-06-10.
 
 Errors follow **RFC 9457 Problem Details**. Logs use **Pino with
 PII redaction**, structured JSON, per-request child logger keyed on
@@ -365,10 +378,10 @@ rendered server-side:
     referencing чл. 50 ЗЗП + EU Directive 2023/2673.
 11. Order status update (`order-status-update`) — status-aware copy
     for each customer-visible transition (`accepted`,
-    `ready_for_pickup`, `shipped`, `delivered`, `cancelled`). The
-    template and send helper exist; admin status transitions today
-    still happen via direct DB updates so the wire-up lives one line
-    away in the future `admin-api` slice.
+    `ready_for_pickup`, `shipped`, `delivered`, `cancelled`). Wired
+    since 2026-06-10: `POST /admin/orders/:n/status` fires it
+    best-effort after every customer-visible transition commits
+    (`returned` is internal bookkeeping and sends nothing).
 12. Data-export security notice (`data-exported`) — out-of-band
     "your data was exported" notice, fires from `POST /auth/me/export`
     the moment the GDPR Art. 15/20 export is generated. Carries no
@@ -534,17 +547,20 @@ A customer named Иван places an order:
    - seed status history
    - snapshot delivery address
    - clear the cart
-9. Transaction commits. **No emails fire today** — order-confirmation
-   and admin-notification email templates don't exist yet. (Order
-   placement is otherwise complete and persisted; this is on the
-   roadmap as a quick follow-up.)
+9. Transaction commits, then the Bulgarian order-confirmation email
+   fires best-effort (`orders.order-confirmation`, the EU 2023/2673
+   durable-medium confirmation — wired 2026-06-04).
 10. He sees the success page. Order number formatted
     `2026-05-00042` from a Postgres sequence + Sofia-month prefix.
-11. *(Target only)* Admin sees the new order in the dashboard —
-    admin-api not built today.
-12. *(Target only)* Days later, admin marks the order "accepted."
-    That starts the 14-day withdrawal clock; `accepted_at` gets a
-    timestamp.
+11. Admin sees the new order at `/admin/orders` (real since
+    2026-06-10 — list, filters, search; the dashboard TILES are still
+    mock).
+12. Days later, admin walks the order through the §7 state machine
+    from the `/admin/orders/:n` detail page (`POST
+    /admin/orders/:n/status` — optimistic-locked, audit-logged,
+    each customer-visible hop emailing the customer). Marking it
+    "accepted" starts the 14-day withdrawal clock; `accepted_at`
+    gets a timestamp.
 13. Иван decides to withdraw. He clicks "Откажете се от договора
     тук." Page POSTs to `/orders/:n/withdrawal`. Server inserts a
     `complaints` row (idempotently — partial unique index on
@@ -552,9 +568,11 @@ A customer named Иван places an order:
     `Promise.allSettled` — customer ack and admin notification.
     Both are best-effort.
 
-Today, step 12 requires manual psql (`UPDATE orders SET
-status='accepted', accepted_at=now() WHERE order_number=…`). That's
-not a defect of the architecture, just an unbuilt admin slice.
+(Until 2026-06-10, step 12 required manual psql — `UPDATE orders SET
+status='accepted' …`. The admin orders slice retired that: every
+transition now goes through the validated state machine, bumps the
+optimistic-locking `version`, appends to `order_status_history` in
+the same transaction, and notifies the customer.)
 
 ---
 
@@ -1309,7 +1327,20 @@ These are baked-in for good reasons; revisiting them costs you weeks.
   the deployment target can change without rewriting the API.
 - **Zod 4 + `@hono/zod-openapi`** — the API contract is the code.
 - **RFC 9457 Problem Details** — every error has a consistent shape.
-- **Cursor (keyset) pagination** — offset pagination is O(n).
+- **Cursor (keyset) pagination on the PUBLIC catalog** — offset
+  pagination is O(n) and drifts under concurrent inserts. Deliberate
+  exception (2026-06-10): the ADMIN `/admin/orders` list uses offset
+  pagination — a back-office table needs a total count and
+  "page N of M" controls (spec: 25/page, buttons top + bottom), the
+  audience is one admin, and `(status, created_at)` is indexed.
+- **Order status transitions are a server-validated state machine**
+  (2026-06-10) — `lib/order-status.ts` encodes the §7 lifecycle 1:1;
+  the admin UI renders the server-computed `allowedTargets`, never
+  its own table. Illegal hop → 409 `/problems/invalid-status-transition`;
+  stale `expectedVersion` → 409 `/problems/order-version-conflict`
+  (version-in-payload optimistic locking per the spec's UI contract,
+  with the audit `order_status_history` INSERT in the same
+  transaction as the UPDATE).
 - **`__Host-`-prefixed cookies in prod** — the prefix forbids
   unsecure transmission, cross-domain leaks, and HttpOnly bypass.
 - **Argon2id `m=19456, t=2, p=1`** — RFC 9106 + OWASP 2024 low-
@@ -1433,10 +1464,12 @@ Ranked by `(impact ÷ effort)` — highest leverage first. Items marked
     but does not fail the order. Idempotency-replay does NOT re-send.
     Closes the EU 2011/83/EU Art. 8(7) durable-medium-of-contract gap
     that was previously blank.
-14. ✅ **Order-status-update email template** — `orders.order-status-update`
+14. ✅ **Order-status-update email template + wire-up** — `orders.order-status-update`
     template + `sendOrderStatusUpdateEmail` helper. Status-aware copy
     for `accepted` / `ready_for_pickup` / `shipped` / `delivered` /
-    `cancelled`. Awaiting wire-up from the future `admin-api` slice.
+    `cancelled`. Wired 2026-06-10 into `POST /admin/orders/:n/status`
+    (item 22) — fires best-effort after each customer-visible
+    transition commits.
 15. ✅ **Real storefront browsing** (2026-05-28; JSON-LD + type
     plumbing follow-up 2026-05-29). Home page, `/search`,
     `/products/[...path]`, and the header autocomplete all moved
@@ -1460,8 +1493,9 @@ Ranked by `(impact ÷ effort)` — highest leverage first. Items marked
     autocomplete is a debounced (200 ms) client-side fetch to
     `/products?q=…&limit=5` with AbortController-cancellation on
     resumed typing. Banner slides on the home carousel remain on
-    mock data (no banners endpoint exists) and admin pages remain
-    on mock data (admin-api not yet built). 2026-05-29 follow-up:
+    mock data (no banners endpoint exists); the admin ORDERS pages
+    went real on 2026-06-10 (the remaining admin pages are still
+    mock). 2026-05-29 follow-up:
     `@shop/api` now exports concrete Zod-inferred DTO types
     (`ProductSummary`, `ProductsPage`, `ProductDetail`,
     `CategoryNode`, `CategoryTree`, etc.) from `src/types.ts`,
@@ -1549,14 +1583,32 @@ Ranked by `(impact ÷ effort)` — highest leverage first. Items marked
     confirmation-of-contract margin. With the order-confirmation
     email already wired (item 13), this is the single remaining
     lift on the email-reliability side. 4 hours.
-22. ❌ **Admin-api Lambda + first admin slice** (orders). Removes
-    the manual `status='accepted'` psql. Wire
-    `sendOrderStatusUpdateEmail` (item 14) into each admin status
-    transition while you're there — one line per branch. 2–3 days.
-    **Unblocked 2026-06-08:** the admin-auth prerequisite (item 35
-    backend) now exists at `/admin/auth/*`. The first admin slice can
-    be built behind `requireAdmin` in `shop-api` today and lifted onto a
-    dedicated `admin-api` Lambda when the CRUD surface justifies it.
+22. ✅ **First admin CRUD slice (orders) — shipped end-to-end
+    2026-06-10**, backend + frontend, behind `requireAdmin` in
+    `shop-api` (per the 2026-06-08 plan: build in shop-api now, lift
+    onto a dedicated `admin-api` Lambda when the surface justifies it).
+    Retires the manual `status='accepted'` psql. Backend
+    (`routes/admin/orders.ts` + the pure state machine
+    `lib/order-status.ts`): paged list (offset, total count, 25/page)
+    with status / payment / customer-type / date-range filters and
+    search across number, e-mail, phone, company; full detail with
+    line items, snapshots, `order_status_history` audit timeline and
+    server-computed `allowedTargets`; `POST /:n/status` — the §7
+    state machine validated server-side, version-based optimistic
+    locking (stale screen → 409 `/problems/order-version-conflict`),
+    audit entry in the same transaction, `sendOrderStatusUpdateEmail`
+    (item 14) fired best-effort per customer-visible hop; CSV export
+    honouring the filters (RFC 4180, UTF-8 BOM, OWASP formula-
+    injection escaping). Frontend: `/admin/orders` +
+    `/admin/orders/[orderNumber]` real (components/admin/
+    OrdersExplorer + OrderDetailPanel, typed client in
+    lib/admin/orders/), with the spec's confirmation step, required
+    companion fields, expired-pickup marking, and the verbatim
+    conflict-refresh UX. 26 integration tests
+    (admin-orders.test.ts). **What remains of the original item:**
+    the dedicated `admin-api` Lambda extraction (structural, with
+    item 35's module) and the OTHER admin CRUD slices — products,
+    categories, customers, banners, settings (each its own slice).
 23. ❌ **Scheduler-fn Lambda** + the three cron rules. ½ day.
 24. ❌ **Formalise SLOs in `slos.yaml` (OpenSLO format).** 1 hour.
 25. ❌ **Burn-rate CloudWatch composite alarms.** 1 hour.
@@ -1713,8 +1765,9 @@ a second tenant is coming.
 ### 16.3 Search infrastructure threshold
 
 `docs/README.md` describes search as a product feature; the
-storefront `/search` is currently mock data. The intended first
-implementation is Postgres `tsvector` + a `pg_trgm` index on
+storefront `/search` is wired to `/products?q=…` (simple `ILIKE`
+matching on name + code) since 2026-05-28. The intended first
+upgrade is Postgres `tsvector` + a `pg_trgm` index on
 `products.name`. That topology scales comfortably to roughly 50K
 active SKUs with p95 latency under 200 ms. The migration door past
 that threshold is Meilisearch (self-hosted small instance, ~€10/mo)

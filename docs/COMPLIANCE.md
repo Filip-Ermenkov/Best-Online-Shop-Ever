@@ -152,7 +152,7 @@ exercised until deployment, the cell is annotated.
 | Expand-contract migration discipline | ✅ | Documented + practised |
 | Honest SPOF acknowledgement | ✅ | Neon Free/Launch documented as SPOF in ARCHITECTURE.md §6 |
 | **Formal RTO/RPO targets** | ❌ | Targets documented in ARCHITECTURE.md §6.2; not yet operationalised |
-| **SQS retry queue for SES** | ❌ | Withdrawal-receipt + order-confirmation durable-medium audit margin. Roadmap item 21 |
+| **SQS retry queue for SES** | ❌ | Withdrawal-receipt + order-confirmation + order-status-update durable-medium audit margin. Roadmap item 21 |
 | **DR drill cadence** | ❌ | Roadmap item 19 |
 | **Public status page** | ❌ | Roadmap item 30 |
 | **Multi-region failover** | ❌ | Roadmap item 37 (deferred until contractual SLA) |
@@ -499,6 +499,7 @@ ships in compliance ahead of the deadline.
 | **Confirmation of contract on durable medium (Art. 8(7), 2011/83/EU as amended by 2023/2673)** | ✅ `orders.order-confirmation` email fires from `POST /orders` after the checkout transaction commits. Includes the trader identity, line snapshots with frozen prices, money totals, payment + delivery arrangement, and a 14-day withdrawal-rights pointer (Art. 6(1)(h)). Idempotency-replay does NOT re-send. Backed by 5 integration tests in `backend/shop-api/tests/routes/order-emails.test.ts` |
 | Confirmation includes pre-contract information (Art. 6) | ✅ Order snapshot carries main characteristics of the goods + total price (incl. any applied discount) + payment / delivery arrangement; withdrawal-rights are surfaced both in the email and on the per-order page at `/account/orders/{n}` |
 | Confirmation is durable for the consumer (Art. 2(10)) | ✅ Email saved in the customer's mailbox (the canonical durable medium per the directive's recitals); plus a first-party `/account/orders/{n}` read path that does not depend on a third party |
+| Withdrawal-window start is communicated to the consumer | ✅ Since 2026-06-10 the admin `accepted` transition (`POST /admin/orders/:n/status`) stamps `accepted_at` — the canonical 14-day window start — and best-effort sends the `orders.order-status-update` `accepted` email, whose copy points at the withdrawal mechanism (Art. 6(1)(h)). Every other customer-visible transition (shipped / ready-for-pickup / delivered / cancelled) notifies the customer the same way; transitions are state-machine-validated and audit-logged in `order_status_history` |
 | Email send-failure does not break the audit trail | ⚠️ Order-placement does not block on the email (best-effort); a transport failure logs `order_confirmation_email_failed` and the `/account/orders/{n}` page is the independent durable-medium read path. SQS retry queue (Roadmap item 21) closes the formal audit margin |
 | Penalty for missing button | (Window extends to 12 months + 14 days) |
 

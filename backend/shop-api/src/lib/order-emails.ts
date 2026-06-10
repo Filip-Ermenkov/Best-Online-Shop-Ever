@@ -21,12 +21,12 @@ import { deriveSupportEmail } from "./withdrawal.js";
  * to deliver "within a reasonable time after the conclusion of the
  * contract … and at the latest at the time of delivery".
  *
- * The order-status-update send is wired here for future use by the
- * admin-api Lambda (see `docs/ARCHITECTURE.md` §15 item 8). Today
- * status transitions happen via direct DB updates; once the admin
- * slice lands, it can call `sendOrderStatusUpdateEmail` immediately
- * after each transition without re-deriving the copy or compliance
- * language.
+ * The order-status-update send is called by the admin order-management
+ * slice (`routes/admin/orders.ts`, POST /admin/orders/:n/status) after
+ * each customer-visible transition commits — `accepted`,
+ * `ready_for_pickup`, `shipped`, `delivered`, `cancelled`. The
+ * `returned` transition is internal bookkeeping and sends nothing (see
+ * the template's design notes).
  *
  * Both helpers follow the same posture as the withdrawal helpers:
  *
@@ -110,8 +110,8 @@ export interface SendOrderStatusUpdateInput {
 }
 
 /**
- * Best-effort send of an order-status-update email. Future admin-api
- * caller pattern:
+ * Best-effort send of an order-status-update email. Called by the admin
+ * transition route AFTER its transaction commits:
  *
  *     await db.transaction(async (tx) => {
  *       await tx.update(orders).set({ status: nextStatus, ... });

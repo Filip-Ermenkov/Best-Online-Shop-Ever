@@ -1,3 +1,9 @@
+> **Project note.** This file is the stock `create-next-app` boilerplate and
+> intentionally makes no claims about the shop. For what this frontend
+> actually implements (storefront, account flows, cart/checkout, admin
+> sign-in + admin orders) and how to run/test it, see the root `README.md`
+> and `docs/ARCHITECTURE.md` §5.
+
 This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
 
 ## Getting Started

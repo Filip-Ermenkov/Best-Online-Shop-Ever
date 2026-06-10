@@ -153,7 +153,9 @@ Tracked honestly rather than silently skipped:
 - **Default-cert CloudFront** (no custom domain) can't pin a minimum TLS version
   — inherent to `*.cloudfront.net`. Set `api_domain_name` for TLS 1.2_2021.
 - **admin-api / scheduler-fn alarms** are gated off because those Lambdas don't
-  exist yet (roadmap items 22–23). Flip `enable_admin_alarms` /
-  `enable_scheduler_alarms` when they land.
+  exist as separate functions yet — the admin surface (auth + the 2026-06-10
+  orders slice) currently lives inside `shop-api` (item 22's remaining Lambda
+  extraction; scheduler-fn is item 23). Flip `enable_admin_alarms` /
+  `enable_scheduler_alarms` when they land as their own Lambdas.
 
 These are recorded in `.checkov.yaml` where they correspond to a specific check.

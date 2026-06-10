@@ -83,7 +83,9 @@ export default function AdminDashboard() {
               {orders.map((o) => (
                 <tr key={o.id} className="border-b border-border last:border-0 hover:bg-muted/30 transition-colors">
                   <td className="px-4 py-3">
-                    <Link href={`/admin/orders/${o.id}`} className="text-primary-strong underline font-medium">{o.orderNumber}</Link>
+                    {/* Detail routes key on the PUBLIC order number (real API);
+                        this dashboard is still mock data — a separate slice. */}
+                    <Link href={`/admin/orders/${o.orderNumber}`} className="text-primary-strong underline font-medium">{o.orderNumber}</Link>
                   </td>
                   <td className="px-4 py-3 text-muted-foreground">{o.customerEmail}</td>
                   <td className="px-4 py-3">

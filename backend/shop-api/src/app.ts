@@ -12,6 +12,7 @@ import { logger as baseLogger, requestLogger } from "./lib/logger.js";
 import { validationHook } from "./lib/validation-hook.js";
 import { currentUser, type AuthVariables } from "./middleware/auth.js";
 import { adminAuthRoutes } from "./routes/admin/auth.js";
+import { adminOrdersRoutes } from "./routes/admin/orders.js";
 import { addressesRoutes } from "./routes/addresses.js";
 import { authRoutes } from "./routes/auth.js";
 import { cartRoutes } from "./routes/cart.js";
@@ -168,6 +169,9 @@ export function buildApp() {
   // can gate on role; the login / mfa / enrolment routes are pre-session and
   // simply see no user. The mandatory-TOTP flow lives in routes/admin/auth.ts.
   app.use("/admin/auth/*", currentUser);
+  // Admin order management — every route requireAdmin-gated inside the router.
+  app.use("/admin/orders/*", currentUser);
+  app.use("/admin/orders", currentUser);
 
   app.get("/health", (c) => c.json({ ok: true }));
 
@@ -175,6 +179,7 @@ export function buildApp() {
   app.route("/categories", categoriesRoutes);
   app.route("/auth", authRoutes);
   app.route("/admin/auth", adminAuthRoutes);
+  app.route("/admin/orders", adminOrdersRoutes);
   app.route("/cart", cartRoutes);
   app.route("/orders", ordersRoutes);
   app.route("/addresses", addressesRoutes);

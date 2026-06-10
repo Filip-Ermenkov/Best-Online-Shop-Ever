@@ -74,12 +74,15 @@ const eslintConfig = defineConfig([
 
   // The admin panel is operator-only and EXPLICITLY OUT OF SCOPE for the
   // WCAG 2.2 AA / EAA customer conformance (docs/COMPLIANCE.md §13 and the
-  // /accessibility statement both say so). It renders mock data today and gets
-  // a dedicated a11y audit when the admin-api slice ships (ARCHITECTURE.md §15
-  // item 22). The two label heuristics fire there on empty action-column table
-  // headers and on checkboxes that ARE labelled via the design-system <Label>
-  // (which the rule can't follow) — i.e. noise, not real defects — so they are
-  // scoped off here rather than papered over with invented labels.
+  // /accessibility statement both say so). The REAL admin screens (the
+  // sign-in gate and, since 2026-06-10, the orders slice) live under
+  // src/components/admin/** where the full rule set applies; what remains
+  // under src/app/admin/** is mock-data scaffolding awaiting its slices
+  // (ARCHITECTURE.md §15 item 22 follow-ons). The two label heuristics fire
+  // there on empty action-column table headers and on checkboxes that ARE
+  // labelled via the design-system <Label> (which the rule can't follow) —
+  // i.e. noise, not real defects — so they are scoped off here rather than
+  // papered over with invented labels.
   {
     files: ["src/app/admin/**/*.tsx"],
     rules: {

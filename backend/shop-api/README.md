@@ -1,6 +1,15 @@
-# @shop/api — public read API
+# @shop/api — the shop API
 
 Hono on Lambda. Same handler runs locally on Node via `@hono/node-server`.
+
+> **Scope note.** This README was written for the original catalog read
+> slice and keeps its quick-start + design-rationale role. The API has
+> since grown far beyond it — auth (incl. GDPR self-service), cart,
+> orders + 14-day withdrawal, address book, consent receipts, CSP
+> reporting, **admin auth (TOTP MFA)** and **admin order management**
+> (`/admin/orders/*`, 2026-06-10). The authoritative, up-to-date route
+> inventory lives in the root `README.md` → "What's wired up"; the
+> machine-readable contract is `GET /openapi.json`.
 
 ## Quick start
 
@@ -40,7 +49,7 @@ npm run test
 # every test runs after a TRUNCATE — full isolation, no leakage.
 ```
 
-## Endpoints
+## Endpoints (original catalog slice — see scope note above for the rest)
 
 - `GET /health` — liveness probe.
 - `GET /products` — paginated catalog list. Query params:
@@ -69,8 +78,11 @@ unambiguous to clients and CDNs.
 OpenAPI 3.1 generated from typed Zod routes. The schemas are also the
 runtime validators — no drift between docs and behaviour.
 
-Hono RPC for the frontend. Import `AppType` from `@shop/api`, hand it to
-`hc<AppType>(baseUrl)`, get a fully typed client. No code generation step.
+Typed DTOs for the frontend. `@shop/api` re-exports concrete Zod-inferred
+shapes from `src/types.ts` (`ProductsPage`, `AdminOrderDetail`, …) that the
+frontend's plain-`fetch` clients annotate with. (The earlier `hc<AppType>`
+Hono-RPC approach was abandoned — it collapses to `unknown` under
+`next build`; see the root README "Browsing the API".)
 
 Drizzle, not Prisma. ~45 ms cold start vs ~320 ms; 7 KB driver vs 1.6 MB.
 On Lambda this is the difference between a snappy first request and
