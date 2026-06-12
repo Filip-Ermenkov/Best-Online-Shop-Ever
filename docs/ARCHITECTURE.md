@@ -130,8 +130,10 @@ maintained yet.
    └──────────────────┘
 
    [P] EventBridge ──► [P] Lambda scheduler-fn (3 cron rules) — not yet written
-   [T] Lambda * ──► [T] Amazon SES (code), 9 transactional templates
-   [P] Lambda * ──► [P] CloudWatch Logs / Metrics / 5 Alarms
+   [T] Lambda shop-api ──► [T] SQS email queue (+DLQ) ──► [T] Lambda email-fn ──► SES
+                           (code + IaC, 2026-06-12; flag enable_email_queue)
+   [T] Lambda * ──► [T] Amazon SES (code), 12 transactional templates
+   [P] Lambda * ──► [P] CloudWatch Logs / Metrics / 7 Alarms
    [P] Lambda * ──► [P] SSM Parameter Store (runtime secrets)
    [P] ACM ──► [P] CloudFront + Amplify (auto-renew TLS)
 ```
@@ -355,9 +357,9 @@ eliminate one AWS lock-in point. See §10.
 ### 3.7 Email — Amazon SES
 
 **Today (code):** `@shop/email` exposes an `EmailTransport`
-interface with three implementations (`ses`, `console`, `stub`),
-selected via `EMAIL_TRANSPORT`. **Twelve** Bulgarian templates are
-rendered server-side:
+interface with four implementations (`ses`, `sqs`, `console`,
+`stub`), selected via `EMAIL_TRANSPORT`. **Twelve** Bulgarian
+templates are rendered server-side:
 
 1.  Registration verification (`verification`)
 2.  Password reset (`password-reset`)
@@ -398,20 +400,43 @@ moment the email send fires; a transport failure logs a structured
 `order_confirmation_email_failed` warn event and lets the request
 return 201.
 
-**Two real reliability gaps under "best-effort":**
+**Durable delivery (shipped 2026-06-12 — roadmap item 21).** In
+production the transport is `sqs`, not `ses`: shop-api enqueues the
+RENDERED email (a versioned envelope, `@shop/email src/queue/`) onto
+an SQS standard queue, and the **email-fn** Lambda — a second, tiny
+deployable bundled from `@shop/email` (`npm run build:lambda` →
+`src/queue/handler.ts`) — consumes it and performs the real SES send.
+Mechanics, per 2026 AWS prescriptive guidance:
 
-1. **Withdrawal receipt** — EU Directive 2023/2673 Art. 11a(2)
-   requires the receipt on a durable medium. The on-screen
-   acknowledgement IS the primary durable medium per recital 37; the
-   email is defence-in-depth.
-2. **Order confirmation** — Art. 8(7) requires the contract
-   confirmation on a durable medium "within a reasonable time". The
-   `/account/orders/{n}` page covers the consumer-side durable-
-   medium read path on the same first-party domain.
+- The event source mapping enables **partial-batch responses**
+  (`ReportBatchItemFailures`): one bad record redelivers alone; its
+  batch-mates are sent exactly once.
+- Failures (transient throttles, permanent rejections, malformed
+  envelopes) all take one path: redelivery with visibility-timeout
+  spacing (180 s = 6 × the 30 s function timeout), then after
+  `maxReceiveCount` (5) the message parks in the **DLQ** — the audit
+  trail of undelivered durable-medium email. Two CloudWatch alarms
+  watch the pair: DLQ depth > 0 and queue age > 15 min.
+- Standard queue, **not FIFO** — ordering between independent emails
+  is meaningless; the cost is at-least-once delivery (a rare duplicate
+  email is harmless, a lost one is a compliance gap). SES itself
+  carries the same duplicate caveat on retried sends.
+- The queue carries personal data (rendered bodies), so it is
+  SSE-KMS-encrypted with the project CMK; messages are deleted on
+  successful send. email-fn holds **no DATABASE_URL and no SSM
+  access** — least privilege per deployable.
 
-The SQS retry queue described in Roadmap item 21 closes both audit
-margins formally — once that lands, an SES outage stops being a
-compliance concern and becomes a backlog-drain concern.
+This closes the two audit margins formally — **withdrawal receipt**
+(EU 2023/2673 Art. 11a(2) durable medium; the on-screen
+acknowledgement remains the primary medium per recital 37) and
+**order confirmation** (Art. 8(7) "within a reasonable time"; the
+`/account/orders/{n}` page remains the first-party read path). An SES
+outage is now a backlog-drain concern, not a compliance concern.
+Enabled + **live-validated on the running test stack 2026-06-12**: a
+real email delivered through queue → email-fn → SES, and the failure
+drill parked a message in the DLQ, fired the alarm, and redrove it
+after the fix (runbook: infra/README.md). The maintained deploy
+(item 17) carries the same flags.
 
 **Production SES prerequisites** (must be completed before flipping
 `EMAIL_TRANSPORT=ses` in production, per the Google/Yahoo/Microsoft
@@ -450,7 +475,7 @@ needs fit comfortably in the limits (10K parameters, 4 KB each).
 **Today:** Pino JSON logs land on `stdout` in dev. No CloudWatch.
 
 **Target:** Each Lambda would write Pino JSON to a dedicated
-CloudWatch Log Group with 14-day retention. Five alarms in the
+CloudWatch Log Group with 14-day retention. Seven alarms in the
 always-free 10-alarm tier:
 
 - 5xx rate > 1% over 5 minutes
@@ -458,6 +483,10 @@ always-free 10-alarm tier:
 - Lambda p99 duration > 5 seconds
 - EventBridge scheduler failure
 - SES bounce rate > 5%
+- Email DLQ depth > 0 — a durable-medium email exhausted its retries
+  (inspect + redrive; ships with `enable_email_queue`, 2026-06-12)
+- Email queue age > 15 min — the email-fn consumer is not draining
+  (ships with `enable_email_queue`, 2026-06-12)
 
 **Gap:** no distributed tracing today *or* in the target. The 2026
 industry standard is OpenTelemetry via ADOT — see §8 and Roadmap
@@ -840,7 +869,7 @@ Brief; full mapping in `COMPLIANCE.md`:
 | Neon auto-suspend (Free) | First query 300–800ms wakeup | Upgrade to Launch in prod |
 | Neon outage (Free/Launch) | DB calls fail; `currentUser` deliberately does NOT clear cookies on DB errors; WAF + alarm + email | Wait or upgrade to Scale |
 | Neon outage (Scale) | Automatic failover, sub-10s impact | Nothing — that's what you pay for |
-| SES outage | Email failures logged; account/order ops still complete | Manually re-trigger; long-term fix is SQS retry (Roadmap 7) |
+| SES outage | Queued emails retry automatically (SQS, item 21 — shipped 2026-06-12); account/order ops still complete; exhausted sends park in the alarmed DLQ | Redrive the DLQ from the SQS console after recovery |
 | CloudFront degradation | Edge misses fall through to multi-AZ origin | Nothing — AWS handles |
 | Amplify build failure | Atomic deploy: old version stays live | Fix and redeploy |
 | Mass session compromise | `UPDATE sessions SET revoked_at=now()` via `db:psql` | Force server-side invalidation, notify customers |
@@ -1364,6 +1393,18 @@ These are baked-in for good reasons; revisiting them costs you weeks.
 - **`accepted_at` is the canonical withdrawal-window start**.
 - **Best-effort email sends** — registration / reset / withdrawal
   never roll back on email failure.
+- **Email durability is a queue behind the transport interface, not
+  retry loops in the app** (2026-06-12) — `EMAIL_TRANSPORT=sqs`
+  enqueues the RENDERED email (versioned envelope, producer and
+  consumer in `@shop/email` so the contract can't drift); the email-fn
+  Lambda owns the SES call. Standard queue (at-least-once; a rare
+  duplicate beats a lost durable-medium email), partial-batch
+  responses (`ReportBatchItemFailures` — a failed record never
+  re-sends its batch-mates), every failure mode → redelivery → DLQ +
+  alarm (no permanent-vs-transient cleverness hiding mail in logs),
+  SSE-KMS on the queue because rendered bodies are personal data.
+  Optimistic SES-then-queue hybrids were rejected: one code path,
+  and SES latency leaves the request path entirely.
 - **Single admin account** — multi-admin is out of scope.
 - **Uniform strict CSP** — defends against the SPA-soft-navigation
   bypass documented in §5.2.
@@ -1378,7 +1419,7 @@ These are baked-in for good reasons; revisiting them costs you weeks.
 |---|---|---|
 | Operational Excellence | B | Production deploy, distributed tracing, formal SLOs + burn-rate alerting, DORA metrics, scheduled DR drills, incident postmortem template, status page |
 | Security | A | Customer MFA option (growth-stage); admin auth ✅ (TOTP MFA shipped end-to-end 2026-06-08 — backend + sign-in UI) |
-| Reliability | B− | Production deploy, SQS retry queue, DR drill cadence, public status page |
+| Reliability | B | Production deploy, DR drill cadence, public status page (SQS email retry queue ✅ 2026-06-12 — live-validated on the test stack incl. the DLQ → alarm → redrive drill) |
 | Performance Efficiency | B+ | Synthetic monitoring, RUM, query-latency SLOs per endpoint |
 | Cost Optimization | B− | Cloudflare swap (the big one), CloudWatch retention to 14d |
 | Sustainability | A | Documented quarterly AWS CFT review |
@@ -1578,11 +1619,32 @@ Ranked by `(impact ÷ effort)` — highest leverage first. Items marked
     delivery-address snapshot on orders stays decoupled (orders snapshot
     into `order_delivery_address`), so removing a book entry never
     rewrites order history. 28 integration tests. Spec §6 "адресна книга".
-21. ❌ **SQS retry queue for SES.** Closes both EU 2023/2673
-    Art. 11a(2) durable-medium audit margin AND Art. 8(7)
-    confirmation-of-contract margin. With the order-confirmation
-    email already wired (item 13), this is the single remaining
-    lift on the email-reliability side. 4 hours.
+21. ✅ **SQS retry queue for SES — shipped AND live-validated
+    2026-06-12** (real SES delivery on the running test stack, plus
+    the DLQ → alarm → redrive drill). Closes both EU 2023/2673 Art. 11a(2)
+    durable-medium audit margin AND Art. 8(7) confirmation-of-contract
+    margin. `@shop/email` gained the `sqs` transport (enqueues the
+    rendered email as a versioned envelope), the queue consumer with
+    partial-batch semantics, and the `email-fn` Lambda entry +
+    esbuild bundle (`npm run build:lambda`, pure JS — builds on any
+    OS). `shop-api` selects it via `EMAIL_TRANSPORT=sqs` +
+    `EMAIL_QUEUE_URL` (boot fails fast if half-configured).
+    Terraform: `sqs.tf` (queue + DLQ, SSE-KMS via the project CMK,
+    redrive as standalone resources to break the reference cycle,
+    visibility 180 s = 6× function timeout, `maxReceiveCount` 5) +
+    `email-fn.tf` (least-privilege role — no DB, no SSM; ESM with
+    `ReportBatchItemFailures` + `maximum_concurrency` 2) + the
+    email-dlq-depth / email-queue-age alarms, all behind
+    `enable_email_queue` (default off). 18 new unit tests in
+    `@shop/email`, 3 in `@shop/api`; full §3.7 narrative + §13
+    decision entry. **Flags for any future stack:**
+    `enable_email_queue = true`, `email_transport = "sqs"`, build the
+    email-fn bundle, apply. email-fn ships with UNRESERVED
+    concurrency — a reservation draws from the account-wide pool and
+    fails the apply on small accounts (hit live 2026-06-12); the
+    ESM `maximum_concurrency` (2) is the binding throttle, and
+    `email_fn_reserved_concurrency` restores a cap after a
+    Service-Quotas raise.
 22. ✅ **First admin CRUD slice (orders) — shipped end-to-end
     2026-06-10**, backend + frontend, behind `requireAdmin` in
     `shop-api` (per the 2026-06-08 plan: build in shop-api now, lift

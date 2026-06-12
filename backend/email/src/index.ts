@@ -24,10 +24,31 @@ export type {
 export { createConsoleTransport } from "./transports/console.js";
 export { createSesTransport } from "./transports/ses.js";
 export type { SesTransportOptions } from "./transports/ses.js";
+export { createSqsTransport } from "./transports/sqs.js";
+export type { SqsTransportOptions } from "./transports/sqs.js";
 export {
   createStubTransport,
 } from "./transports/stub.js";
 export type { StubEmailTransport } from "./transports/stub.js";
+
+// Queue contract + consumer (the email-fn Lambda entry itself is
+// src/queue/handler.ts, bundled by build.mjs — deliberately not exported).
+export {
+  EMAIL_QUEUE_ENVELOPE_VERSION,
+  MAX_ENVELOPE_BYTES,
+  EmailEnvelopeError,
+  encodeEmailQueueEnvelope,
+  decodeEmailQueueEnvelope,
+} from "./queue/envelope.js";
+export type { EmailQueueEnvelope } from "./queue/envelope.js";
+export { createEmailQueueConsumer } from "./queue/consumer.js";
+export type {
+  EmailQueueConsumerOptions,
+  EmailQueueEvent,
+  EmailQueueRecord,
+  EmailQueueBatchResponse,
+  EmailQueueLogger,
+} from "./queue/consumer.js";
 
 export {
   renderVerificationEmail,

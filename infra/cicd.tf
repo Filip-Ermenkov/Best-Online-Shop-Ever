@@ -56,7 +56,7 @@ data "aws_iam_policy_document" "github_deploy" {
   count = var.enable_github_oidc ? 1 : 0
 
   statement {
-    sid    = "UpdateShopApiLambda"
+    sid    = "UpdateAppLambdas"
     effect = "Allow"
     actions = [
       "lambda:UpdateFunctionCode",
@@ -65,7 +65,12 @@ data "aws_iam_policy_document" "github_deploy" {
       "lambda:GetFunctionConfiguration",
       "lambda:PublishVersion",
     ]
-    resources = [aws_lambda_function.shop_api.arn]
+    # shop-api always; email-fn when the email queue is enabled (splat → empty
+    # list when count = 0, so the policy stays valid either way).
+    resources = concat(
+      [aws_lambda_function.shop_api.arn],
+      aws_lambda_function.email_fn[*].arn,
+    )
   }
 }
 

@@ -9,15 +9,18 @@
     ".": "./src/index.ts"
   },
   "scripts": {
+    "build:lambda": "node build.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "lint": "echo 'add eslint when shared config lands'"
   },
   "dependencies": {
-    "@aws-sdk/client-sesv2": "^3.700.0"
+    "@aws-sdk/client-sesv2": "^3.700.0",
+    "@aws-sdk/client-sqs": "^3.700.0"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
+    "esbuild": "^0.25.0",
     "typescript": "^5.7.2",
     "vitest": "^4.1.5"
   }

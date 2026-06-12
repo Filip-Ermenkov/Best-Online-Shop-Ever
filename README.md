@@ -116,8 +116,8 @@ visible at `/account/orders`.
 
 ```powershell
 npm --workspace @shop/auth  run test   # 70 unit tests (Argon2, sessions, HIBP, TOTP, recovery codes, AES-GCM, challenge)
-npm --workspace @shop/email run test   # 51 unit tests (12 templates + 3 transports)
-npm --workspace @shop/api   run test   # full integration suite (358 cases) vs shop_test DB
+npm --workspace @shop/email run test   # 69 unit tests (12 templates + 4 transports + queue envelope/consumer)
+npm --workspace @shop/api   run test   # full integration suite (361 cases) vs shop_test DB
 ```
 
 Accessibility (WCAG 2.2 AA / EAA) has its own layered audit — see
@@ -156,8 +156,10 @@ they aren't. The honest state:
 | Frontend (Next.js 16) | Builds locally; not deployed to Amplify |
 | `shop-api` Lambda (Hono) | Runs locally via `@hono/node-server`; not deployed to Lambda |
 | Database | Local Docker Postgres 17 works; Neon production instance not provisioned |
-| Email | `console` transport works locally; `ses` transport code exists but SES production DNS not configured |
-| WAF / CloudFront / Route 53 | Not provisioned |
+| Email | `console` transport locally; four transports total (`sqs`/`ses`/`console`/`stub`). SES production domain DNS (DKIM + MAIL FROM + DMARC) not configured — live sends so far use a sandbox-verified email identity |
+| Email queue (SQS + `email-fn`) | **Live-validated (2026-06-12)** — enabled on the running test stack; real SES delivery plus the DLQ → alarm → redrive drill |
+| CloudFront + OAC | Provisioned on the live test stack (2026-06-07 apply) |
+| WAF / Route 53 | Opt-in flags, off — Cloudflare is the documented preference (§10 cost model) |
 | Admin authentication (TOTP MFA) | **Shipped end-to-end** — `shop-api` `/admin/auth/*` + the `/admin` frontend `AdminAuthGate` (login → MFA → enrolment) |
 | Admin order management | **Shipped end-to-end (2026-06-10)** — `shop-api` `/admin/orders/*` (list + filters + search, detail + history, state-machine status transitions with optimistic locking + customer emails, CSV export) + the real `/admin/orders` UI |
 | `admin-api` Lambda | Not built (admin auth + the orders slice currently live in `shop-api`; extract when the admin CRUD surface grows) |
@@ -233,14 +235,16 @@ what needs to happen to get from today's repo state to that posture.
   migration; the banner now writes here, not just to `localStorage`.
 - `/health`, `/openapi.json`
 
-Test counts as of 2026-06-10, by `it`/`test` block: addresses 28,
+Test counts as of 2026-06-12, by `it`/`test` block: addresses 28,
 admin-auth 17, **admin-orders 26**, auth 48, cart 30, categories 7,
 consent 10, csp-report 25, data-export 14, email-change 21,
 order-emails 5, orders 25, password-reset 19, products 15,
-verification 11, withdrawal 23, plus a phone-validation lib suite —
-**324 blocks**. The `csp-report` and `phone` suites are table-driven
-(`it.each`), so `vitest run` expands them and reports **358 cases
-total**, all against a real `shop_test` Postgres in CI.
+verification 11, withdrawal 23, plus two lib suites
+(phone-validation; **email-transport-config 3** — the
+`EMAIL_TRANSPORT=sqs` boot contract) — **327 blocks**. The
+`csp-report` and `phone` suites are table-driven (`it.each`), so
+`vitest run` expands them and reports **361 cases total**, all
+against a real `shop_test` Postgres in CI.
 
 ### Backend (`@shop/db` schema)
 
@@ -271,8 +275,16 @@ a future admin-api, and cron lambdas.
 ### Backend (`@shop/email`)
 
 Transactional email behind a common `EmailTransport` interface, with
-three implementations (`ses`, `console`, `stub`). **Twelve** Bulgarian
-templates currently exist:
+four implementations (`ses`, `sqs`, `console`, `stub`). The `sqs`
+transport (2026-06-12, roadmap item 21) is the production target: it
+enqueues the rendered email onto a durable SQS queue and the
+**email-fn** Lambda (`src/queue/handler.ts`, bundled by
+`npm --workspace @shop/email run build:lambda`) performs the real SES
+send with partial-batch retry + an alarmed DLQ — an SES outage delays
+delivery instead of dropping it. The versioned queue envelope and the
+consumer live in this package (`src/queue/`), so the producer/consumer
+contract can never drift. **Twelve** Bulgarian templates currently
+exist:
 
 1.  `verification` — signup email-verification link
 2.  `password-reset` — forgot-password link
@@ -720,6 +732,30 @@ Place an order as a verified customer first (see
 The full behaviour is covered by
 `backend/shop-api/tests/routes/admin-orders.test.ts` (26 cases).
 
+### Durable email delivery (SQS → email-fn → SES)
+
+Local dev keeps the `console` transport, so nothing changes day-to-day.
+To exercise the queue path itself:
+
+- **Unit level:** `npm --workspace @shop/email run test` — the
+  `sqs-transport` suite proves the rendered email round-trips the
+  versioned queue envelope byte-for-byte (Bulgarian copy included), and
+  the `queue-consumer` suite proves partial-batch semantics: one bad
+  record fails alone (its batch-mates are sent exactly once), poison
+  pills are failed toward the DLQ rather than dropped, and failure logs
+  carry template + message ids but never a recipient address.
+- **Boot contract:** `EMAIL_TRANSPORT=sqs` without `EMAIL_QUEUE_URL`
+  refuses to boot (fail-fast at env parse;
+  `tests/lib/email-transport-config.test.ts`).
+- **Live stack:** set `enable_email_queue = true` +
+  `email_transport = "sqs"` in `terraform.tfvars`, build both bundles,
+  apply, then place an order — `POST /orders` returns immediately, the
+  email lands via email-fn, and `email_queue_sent` appears in the
+  email-fn log group. Break `EMAIL_FROM` on email-fn (or sandbox an
+  unverified recipient) to watch retries park the message in the DLQ
+  and the `email-dlq-depth` alarm fire; redrive from the SQS console
+  afterwards. Full runbook in `infra/README.md`.
+
 ### CSP violation reporting
 
 The strict `'nonce-X' 'strict-dynamic'` CSP shipped to the frontend
@@ -831,7 +867,9 @@ soft navigation because the document's CSP is fixed at HTML document
 load and reused across client-side route changes. Reasoning + rejected
 design recorded in `docs/ARCHITECTURE.md` §5.2.
 
-**Email transports:** `ses` (production, `@aws-sdk/client-sesv2`,
+**Email transports:** `sqs` (production target since 2026-06-12 —
+enqueues the rendered email onto the durable SQS queue; requires
+`EMAIL_QUEUE_URL`), `ses` (inline `@aws-sdk/client-sesv2` send,
 region-pinned to `eu-central-1` for GDPR), `console` (dev — prints
 payload + a `VERIFY URL ⇒` line), `stub` (in-memory recorder for
 tests). Selected by `EMAIL_TRANSPORT` env. Constructed lazily on
@@ -839,7 +877,12 @@ first send, then memoised — keeps Lambda cold-start budget tight.
 
 **Email send posture:** best-effort, never blocking. A failed
 verification / reset / withdrawal-acknowledgement email logs the
-error and continues; the user can recover via resend.
+error and continues; the user can recover via resend. Under the `sqs`
+transport "sent" means *durably enqueued*: the email-fn Lambda retries
+the real SES send (partial-batch responses, `maxReceiveCount` 5) and
+parks exhausted messages in a DLQ watched by a CloudWatch alarm, so a
+transport failure can delay but no longer silently drop a
+durable-medium email.
 
 **Token cryptography (verification, reset, email-change):** 32-byte
 CSPRNG → base64url, SHA-256-hashed in `*_tokens.token_hash`,
@@ -904,10 +947,16 @@ reality, as of 2026-06-07:
 - **Distributed tracing** — `docs/ARCHITECTURE.md` §15 item 18
   identifies ADOT as the path. Not added. This is the last concrete
   OWASP A09 gap.
-- **SQS retry queue for SES** — `docs/ARCHITECTURE.md` §15 item 21.
-  Not added. Closes the EU 2023/2673 Art. 11a(2) durable-medium +
-  Art. 8(7) confirmation-of-contract audit margins on email-send
-  failure.
+- ~~**SQS retry queue for SES**~~ ✅ Shipped 2026-06-12 (roadmap item
+  21): `sqs` transport + queue envelope + email-fn consumer in
+  `@shop/email`, `EMAIL_TRANSPORT=sqs` wiring in `shop-api`, and the
+  Terraform (`infra/sqs.tf` + `infra/email-fn.tf`, behind
+  `enable_email_queue`) with DLQ + two alarms. Closes the EU 2023/2673
+  Art. 11a(2) durable-medium + Art. 8(7) confirmation-of-contract
+  audit margins on email-send failure. Enabled + **live-validated on
+  the running test stack the same day**: real delivery through
+  queue → email-fn → SES, plus the failure drill (DLQ park → alarm →
+  redrive). Runbook in `infra/README.md`.
 - **DR drill** — procedure documented, never executed.
 - **Status page, formal SLOs in YAML, burn-rate alarms, DORA
   metrics** — all roadmap items in §15.
@@ -918,8 +967,9 @@ In priority order (also tracked in `docs/ARCHITECTURE.md` §15):
 
 1. **First production deploy.** The `infra/` Terraform that provisions
    it (`shop-api` Lambda, Function URL, CloudFront/OAC, ACM, SSM, KMS,
-   CloudWatch log group, 5 alarms, GitHub OIDC deploy role; opt-in
-   WAF/Route 53/SES/Amplify) has now **run end-to-end**: a live
+   CloudWatch log group, 7 alarms (2 gated on the email queue),
+   GitHub OIDC deploy role; opt-in
+   WAF/Route 53/SES/Amplify/email-queue) has now **run end-to-end**: a live
    `terraform apply` (2026-06-07) returned HTTP 200 through
    CloudFront → OAC → Lambda, so the architecture is no longer
    hypothesis. What remains for a *maintained* production environment:
@@ -935,11 +985,12 @@ In priority order (also tracked in `docs/ARCHITECTURE.md` §15):
    linked from the profile. Activated the previously-dead `addresses`
    table that the GDPR export and account-deletion already referenced.
    28 integration tests.
-5. **SQS retry queue for SES.** 4 hours. Closes the EU 2023/2673
-   durable-medium audit margin before June 19, 2026. With the
-   order-confirmation email now wired into `POST /orders`, this is the
-   single remaining lift to take that compliance row from "wired but
-   best-effort" to "wired with a durable retry queue".
+5. ~~**SQS retry queue for SES.**~~ ✅ Shipped AND live-validated
+   2026-06-12 (see the Known-gaps entry). The compliance row moved
+   from "wired but best-effort" to "wired with a durable retry queue,
+   proven on the running stack" — the maintained deploy (item 1)
+   carries the same flags (`enable_email_queue` + `email_transport =
+   "sqs"`).
 6. ~~**Real storefront browsing.**~~ ✅ Shipped 2026-05-28. Home page,
    `/search`, `/products/[...path]`, and the header autocomplete all
    render from the live `@shop/api` catalog. Banner slides remain on

@@ -7,13 +7,14 @@ statically-validated Terraform.
 
 ## Status — read this first
 
-**This Terraform has been authored, formatted, validated, linted, and
-security-scanned. It has NOT been applied to a live AWS account yet** — no
-deploy has happened. Applying it requires AWS credentials, a Neon project, and
-(optionally) a domain, which only the owner has. Until someone runs
-`terraform apply`, the architecture remains the documented hypothesis it always
-was; this directory is the thing that makes that apply a 30-minute job instead
-of a 2-day one.
+**This Terraform has been authored, formatted, validated, linted,
+security-scanned — and live-apply-validated on 2026-06-07**: a test
+`terraform apply` deployed end-to-end and returned HTTP 200 through
+CloudFront → OAC → Lambda (two apply-time fixes were folded back in; see the
+root README "Known gaps"). What does NOT exist yet is a *maintained*
+production environment: custom domain, schema on Neon, frontend deployed.
+Applying requires AWS credentials, a Neon project, and (optionally) a domain,
+which only the owner has.
 
 What "validated" means concretely (all run in CI via
 [`.github/workflows/infra.yml`](../.github/workflows/infra.yml) and reproducible
@@ -39,12 +40,14 @@ observable API behind CloudFront with no DNS or domain required:
 | CloudWatch Log Group (14d) | `lambda.tf` | Pre-created so retention + CMK encryption are enforced. |
 | Lambda execution role | `iam.tf` | Least privilege: own-log-group writes, one SSM param, scoped SES, CMK decrypt. |
 | CloudFront + OAC (+ ACM) | `cdn.tf` | sigv4-signs origin requests; default `*.cloudfront.net` domain unless `api_domain_name` is set. |
-| SNS topic + 5 CloudWatch alarms | `observability.tf` | 5xx-rate, p99 duration, SES bounce; admin-login + scheduler alarms gated until those Lambdas exist. |
-| GitHub OIDC provider + deploy role | `cicd.tf` | CI assumes it to ship Lambda code — no long-lived AWS keys. |
+| SNS topic + 7 CloudWatch alarms | `observability.tf` | 5xx-rate, p99 duration, SES bounce; admin-login + scheduler alarms gated until those Lambdas exist; email DLQ-depth + queue-age alarms ship with `enable_email_queue`. |
+| GitHub OIDC provider + deploy role | `cicd.tf` | CI assumes it to ship Lambda code — no long-lived AWS keys. Covers `email-fn` too when the queue is enabled. |
 
 Opt-in layers (all `enable_* = false` by default): **WAF** (`waf.tf`), **Route 53**
 (`dns.tf`), **Amplify** frontend hosting (`amplify.tf`), **SES** domain identity
-+ DKIM + MAIL FROM (`ses.tf`). Each is documented at its variable in
++ DKIM + MAIL FROM (`ses.tf`), and the **durable email queue** — SQS + DLQ
+(`sqs.tf`) + the `email-fn` consumer Lambda (`email-fn.tf`), roadmap item 21
+(see below). Each is documented at its variable in
 `variables.tf`. The §10 cost model prefers Cloudflare for DNS+WAF, which is why
 those AWS-native paths ship off.
 
@@ -72,8 +75,10 @@ terraform output backend_hcl          # copy this …
 cd ..
 cp backend.hcl.example backend.hcl    # … into backend.hcl
 
-# 1. Build the Lambda artifact the stack zips (see the native-dep note below).
+# 1. Build the Lambda artifact(s) the stack zips (see the native-dep note below).
 cd ../backend/shop-api && npm run build:lambda && cd ../../infra
+# …and, ONLY if enable_email_queue = true (pure JS, builds on any OS):
+cd ../backend/email && npm run build:lambda && cd ../infra
 
 # 2. Configure and apply the main stack.
 cp terraform.tfvars.example terraform.tfvars   # edit (NO secrets)
@@ -96,12 +101,49 @@ The frontend URL to point the browser/Amplify at is `terraform output api_public
 
 ### The native dependency (argon2)
 
-The bundle has exactly one native module: `argon2`. Its compiled binary must
-match the Lambda's architecture (default **arm64**). Build on a matching Linux
-host — GitHub's `ubuntu-24.04-arm` runner for arm64, or set
+The shop-api bundle has exactly one native module: `argon2`. Its compiled binary
+must match the Lambda's architecture (default **arm64**). Build on a matching
+Linux host — GitHub's `ubuntu-24.04-arm` runner for arm64, or set
 `lambda_architecture = "x86_64"` and build on a normal x64 runner. `build.mjs`
 marks `@aws-sdk/*` external (the Node 22 runtime provides it) and installs argon2
-into `dist/node_modules` for the build platform.
+into `dist/node_modules` for the build platform. The **email-fn bundle has no
+native dependency** — `backend/email/build.mjs` is a plain esbuild pass that
+works from any OS, including the Windows dev box.
+
+## Durable email queue (roadmap item 21)
+
+Closes the EU 2023/2673 durable-medium audit margin (mandatory **2026-06-19**):
+with `EMAIL_TRANSPORT=sqs`, shop-api enqueues every rendered email onto an SQS
+queue and the `email-fn` Lambda performs the SES send with retry. A failed send
+redelivers (visibility 180 s, `maxReceiveCount` 5 — both per AWS prescriptive
+guidance) and then parks in the DLQ, where the `email-dlq-depth` alarm fires.
+
+To enable on a stack:
+
+```hcl
+# terraform.tfvars
+enable_email_queue = true
+email_transport    = "sqs"   # precondition: rejected unless the queue is enabled
+```
+
+```bash
+cd ../backend/email && npm run build:lambda && cd ../infra   # bundle first
+terraform apply
+```
+
+The stack wires `EMAIL_QUEUE_URL` into shop-api automatically (output
+`email_queue_url`). The event source mapping uses partial-batch responses
+(`ReportBatchItemFailures`) so one failed email never blocks or re-sends its
+batch-mates, and caps consumer concurrency at 2 to stay friendly to SES rate
+limits. Both queues are SSE-KMS-encrypted with the project CMK (rendered emails
+are personal data); `email-fn`'s role can consume the queue and call SES —
+no DB, no SSM.
+
+**When the DLQ alarm fires:** inspect the message in the SQS console
+(`email_dlq_url` output), fix the cause (e.g. unverified sender, SES outage
+over), then use the console's **Start DLQ redrive** → messages flow back to the
+source queue and deliver. Messages live 14 days in both queues, so there is a
+two-week window to notice and redrive before anything is truly lost.
 
 ## How secrets are handled
 
@@ -152,6 +194,15 @@ Tracked honestly rather than silently skipped:
   on `enable_waf` for the AWS-native managed rule sets.
 - **Default-cert CloudFront** (no custom domain) can't pin a minimum TLS version
   — inherent to `*.cloudfront.net`. Set `api_domain_name` for TLS 1.2_2021.
+- **email-fn ships with NO reserved concurrency** (CKV_AWS_115, skipped inline in
+  `email-fn.tf`). A reservation draws from the account-wide concurrency pool;
+  with shop-api already reserving 50, small/new AWS accounts hit
+  `InvalidParameterValueException … below its minimum value` at apply time. The
+  binding throttle is the SQS event source mapping's `maximum_concurrency = 2`,
+  which does not consume the pool — and nothing but that mapping can invoke the
+  function. To add the defence-in-depth cap later: raise the account quota
+  (Service Quotas → AWS Lambda → *Concurrent executions* — free, takes a day),
+  then set `email_fn_reserved_concurrency`.
 - **admin-api / scheduler-fn alarms** are gated off because those Lambdas don't
   exist as separate functions yet — the admin surface (auth + the 2026-06-10
   orders slice) currently lives inside `shop-api` (item 22's remaining Lambda

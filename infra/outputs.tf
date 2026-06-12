@@ -48,6 +48,16 @@ output "alarms_topic_arn" {
   value       = aws_sns_topic.alarms.arn
 }
 
+output "email_queue_url" {
+  description = "Durable email queue URL (shop-api's EMAIL_QUEUE_URL — wired automatically), or null when enable_email_queue = false."
+  value       = one(aws_sqs_queue.email[*].url)
+}
+
+output "email_dlq_url" {
+  description = "Email dead-letter queue URL (inspect + redrive here when the email-dlq-depth alarm fires), or null when enable_email_queue = false."
+  value       = one(aws_sqs_queue.email_dlq[*].url)
+}
+
 output "amplify_app_id" {
   description = "Amplify app id (null when Amplify is disabled)."
   value       = one(aws_amplify_app.frontend[*].id)

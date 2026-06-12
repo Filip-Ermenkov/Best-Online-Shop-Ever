@@ -1,7 +1,8 @@
 # Alarms fan out through one SNS topic; alarm_email subscribes if provided.
-# The five alarms below are ARCHITECTURE §3.10's set. Two depend on components
+# The seven alarms below are ARCHITECTURE §3.10's set. Two depend on components
 # that do not exist yet (admin-api, scheduler-fn) and are gated off by default so
-# the stack never references unbuilt resources.
+# the stack never references unbuilt resources; the two email-queue alarms ship
+# with enable_email_queue (item 21).
 resource "aws_sns_topic" "alarms" {
   name              = "${local.name_prefix}-alarms"
   kms_master_key_id = local.sns_kms_key_id
@@ -115,6 +116,48 @@ resource "aws_cloudwatch_metric_alarm" "admin_login_failures" {
   threshold           = 5
   treat_missing_data  = "notBreaching"
   alarm_actions       = [aws_sns_topic.alarms.arn]
+}
+
+# (6) Email DLQ depth > 0 — a durable-medium email exhausted its retries and
+# parked in the DLQ. This is the compliance-critical alarm of the email-queue
+# pair: someone must inspect the message and redrive it (SQS console → DLQ →
+# "Start DLQ redrive") or contact the customer out-of-band.
+resource "aws_cloudwatch_metric_alarm" "email_dlq_depth" {
+  count               = var.enable_email_queue ? 1 : 0
+  alarm_name          = "${local.name_prefix}-email-dlq-depth"
+  alarm_description   = "An email exhausted its delivery retries and is parked in the DLQ — inspect and redrive."
+  namespace           = "AWS/SQS"
+  metric_name         = "ApproximateNumberOfMessagesVisible"
+  dimensions          = { QueueName = aws_sqs_queue.email_dlq[0].name }
+  statistic           = "Maximum"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 1
+  period              = 300
+  threshold           = 0
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = [aws_sns_topic.alarms.arn]
+  ok_actions          = [aws_sns_topic.alarms.arn]
+}
+
+# (7) Email queue age > 15 min — emails are being accepted but not drained:
+# the consumer is broken (bad deploy, misconfigured env) or SES is down and
+# everything is in retry. Catches consumer failure long before anything
+# reaches the DLQ.
+resource "aws_cloudwatch_metric_alarm" "email_queue_age" {
+  count               = var.enable_email_queue ? 1 : 0
+  alarm_name          = "${local.name_prefix}-email-queue-age"
+  alarm_description   = "Oldest email-queue message is over 15 minutes old — the consumer is not draining the queue."
+  namespace           = "AWS/SQS"
+  metric_name         = "ApproximateAgeOfOldestMessage"
+  dimensions          = { QueueName = aws_sqs_queue.email[0].name }
+  statistic           = "Maximum"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 1
+  period              = 300
+  threshold           = 900
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = [aws_sns_topic.alarms.arn]
+  ok_actions          = [aws_sns_topic.alarms.arn]
 }
 
 # (4) EventBridge scheduler failure — needs scheduler-fn (not built).

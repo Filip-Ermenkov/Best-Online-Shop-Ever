@@ -21,7 +21,7 @@ skip-check:
   # ── Lambda ────────────────────────────────────────────────────────────────
   - CKV_AWS_272 # Code signing — supply-chain integrity is covered by SLSA L2 + signed SBOMs; code signing is growth-stage.
   - CKV_AWS_117 # VPC — Neon is reached over HTTPS; a VPC adds NAT cost + cold-start latency for no security gain.
-  - CKV_AWS_116 # DLQ — shop-api is invoked synchronously (request/response); async DLQ does not apply. Email durability is roadmap item 21 (SQS).
+  - CKV_AWS_116 # DLQ — shop-api is invoked synchronously (request/response) and email-fn is SQS-poll-invoked (failure handling = partial-batch responses + the queue's own DLQ in sqs.tf); the function-level *async-invoke* DLQ this check wants does not apply to either.
 
   # ── S3 state bucket ───────────────────────────────────────────────────────
   - CKV_AWS_18  # Access logging — would need a second logging bucket; the bucket is private + versioned + TLS-only + KMS.

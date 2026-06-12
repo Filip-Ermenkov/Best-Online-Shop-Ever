@@ -52,13 +52,26 @@ data "aws_iam_policy_document" "lambda" {
     ]
   }
 
+  # Enqueue rendered emails onto the durable email queue (EMAIL_TRANSPORT=sqs).
+  dynamic "statement" {
+    for_each = var.enable_email_queue ? [1] : []
+    content {
+      sid       = "EnqueueEmail"
+      effect    = "Allow"
+      actions   = ["sqs:SendMessage"]
+      resources = [aws_sqs_queue.email[0].arn]
+    }
+  }
+
   # Decrypt the SecureString + CMK-encrypted log/env data when a CMK is in use.
+  # Publishing to the CMK-encrypted email queue additionally needs
+  # kms:GenerateDataKey (SQS SSE-KMS encrypts with a data key per batch).
   dynamic "statement" {
     for_each = var.enable_kms_cmk ? [1] : []
     content {
       sid       = "DecryptWithCmk"
       effect    = "Allow"
-      actions   = ["kms:Decrypt"]
+      actions   = concat(["kms:Decrypt"], var.enable_email_queue ? ["kms:GenerateDataKey"] : [])
       resources = [aws_kms_key.main[0].arn]
     }
   }

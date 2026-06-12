@@ -59,8 +59,9 @@ export interface SendOrderConfirmationInput {
  * transport accepted the message. Caller does NOT fail the order on a
  * `false` — the order is already committed, the customer can retrieve it
  * from `/account/orders`, and the operations team has the log line to
- * follow up if the SES bounce/complaint queue (future SQS retry queue —
- * roadmap §15 item 7) catches a permanent failure.
+ * follow up. With EMAIL_TRANSPORT=sqs (roadmap item 21, the production
+ * target) "accepted" means durably enqueued: the email-fn Lambda retries
+ * the actual SES send and parks exhausted messages in an alarmed DLQ.
  */
 export async function sendOrderConfirmationEmail(
   input: SendOrderConfirmationInput,

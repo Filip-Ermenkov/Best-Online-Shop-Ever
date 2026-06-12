@@ -59,6 +59,14 @@ resource "aws_lambda_function" "shop_api" {
       EMAIL_FROM              = var.email_from
       EMAIL_AWS_REGION        = var.aws_region
       EMAIL_CONFIGURATION_SET = var.enable_ses ? aws_sesv2_configuration_set.main[0].configuration_set_name : ""
+      EMAIL_QUEUE_URL         = var.enable_email_queue ? aws_sqs_queue.email[0].url : ""
+    }
+  }
+
+  lifecycle {
+    precondition {
+      condition     = var.email_transport != "sqs" || var.enable_email_queue
+      error_message = "email_transport=sqs requires enable_email_queue=true (the queue and email-fn consumer must exist)."
     }
   }
 
