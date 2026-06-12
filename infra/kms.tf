@@ -45,8 +45,12 @@ resource "aws_kms_key" "main" {
         ]
         Resource = "*"
         Condition = {
+          # Wildcard (not a single function name) so every Lambda log group in
+          # this stack — shop-api, email-fn, and future scheduler-fn/admin-api —
+          # can encrypt with the CMK. Still pinned to this account + region +
+          # the project name prefix.
           ArnLike = {
-            "kms:EncryptionContext:aws:logs:arn" = "arn:${data.aws_partition.current.partition}:logs:${var.aws_region}:${data.aws_caller_identity.current.account_id}:log-group:/aws/lambda/${local.name_prefix}-shop-api"
+            "kms:EncryptionContext:aws:logs:arn" = "arn:${data.aws_partition.current.partition}:logs:${var.aws_region}:${data.aws_caller_identity.current.account_id}:log-group:/aws/lambda/${local.name_prefix}-*"
           }
         }
       },

@@ -1,6 +1,7 @@
 import {
   createConsoleTransport,
   createSesTransport,
+  createSqsTransport,
   createStubTransport,
   type EmailTransport,
   type StubEmailTransport,
@@ -38,6 +39,15 @@ export function getEmailTransport(): EmailTransport {
           env.EMAIL_CONFIGURATION_SET.length > 0
             ? env.EMAIL_CONFIGURATION_SET
             : undefined,
+      });
+      return cached;
+    case "sqs":
+      // Durable path: enqueue the rendered email; the email-fn Lambda does
+      // the actual SES send with SQS-driven retry + DLQ (roadmap item 21).
+      // env.ts guarantees EMAIL_QUEUE_URL is non-empty for this transport.
+      cached = createSqsTransport({
+        queueUrl: env.EMAIL_QUEUE_URL,
+        region: env.EMAIL_AWS_REGION,
       });
       return cached;
     case "stub":

@@ -34,12 +34,25 @@ const EnvSchema = z.object({
   /**
    * Which transport to use.
    *   - `console` → log payload to stdout (dev default; zero setup).
-   *   - `ses`     → AWS SESv2; production. Requires verified sender + IAM.
+   *   - `ses`     → AWS SESv2 inline; one un-retried attempt per send.
+   *   - `sqs`     → enqueue onto the durable email queue; the email-fn
+   *                 Lambda performs the SES send with retry + DLQ. The
+   *                 production target since the SQS slice (roadmap item 21)
+   *                 — closes the EU 2023/2673 durable-medium audit margin.
+   *                 Requires EMAIL_QUEUE_URL.
    *   - `stub`    → record-only in-memory. Tests force this via vitest.config.
    *
-   * Defaults to `console`. Production deploys must explicitly set `ses`.
+   * Defaults to `console`. Production deploys must explicitly set `sqs`
+   * (or `ses` to send inline without the queue).
    */
-  EMAIL_TRANSPORT: z.enum(["console", "ses", "stub"]).default("console"),
+  EMAIL_TRANSPORT: z.enum(["console", "ses", "sqs", "stub"]).default("console"),
+  /**
+   * Full URL of the durable email queue (infra/sqs.tf output
+   * `email_queue_url`). Required when EMAIL_TRANSPORT=sqs — enforced by
+   * the superRefine below so a half-configured deploy fails at boot, not
+   * at the first checkout.
+   */
+  EMAIL_QUEUE_URL: z.string().default(""),
   /**
    * RFC 5322 mailbox of the sender. Must be a verified identity in SES when
    * EMAIL_TRANSPORT=ses. In dev/test it can be any string — the console and
@@ -115,6 +128,14 @@ const EnvSchema = z.object({
    * otpauth:// provisioning URI.
    */
   ADMIN_MFA_ISSUER: z.string().default("Best Online Shop (Admin)"),
+}).superRefine((env, ctx) => {
+  if (env.EMAIL_TRANSPORT === "sqs" && env.EMAIL_QUEUE_URL.length === 0) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["EMAIL_QUEUE_URL"],
+      message: "EMAIL_QUEUE_URL is required when EMAIL_TRANSPORT=sqs",
+    });
+  }
 });
 
 export type Env = z.infer<typeof EnvSchema>;

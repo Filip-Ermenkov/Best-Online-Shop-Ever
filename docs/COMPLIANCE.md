@@ -93,7 +93,7 @@ exercised until deployment, the cell is annotated.
 | Atomic blue/green deployments | N/A today | Target: AWS Amplify atomic deploys once deployed |
 | Structured JSON logs | ✅ | Pino + PII redaction. Runs locally; lands in CloudWatch once deployed |
 | Per-request correlation IDs | ✅ | `X-Request-Id` |
-| CloudWatch alarms on key metrics | ✅ | 5 alarms (5xx rate, admin logins, p99 duration, scheduler failure, SES bounces) in `infra/observability.tf`; the 5xx-rate + p99 alarms deploy by default and were live-applied 2026-06-07 (admin/scheduler/SES ones gated until those components exist) |
+| CloudWatch alarms on key metrics | ✅ | 7 alarms (5xx rate, admin logins, p99 duration, scheduler failure, SES bounces, email DLQ depth, email queue age) in `infra/observability.tf`; the 5xx-rate + p99 alarms deploy by default and were live-applied 2026-06-07 (admin/scheduler/SES ones gated until those components exist; the two email-queue ones ship with `enable_email_queue`, 2026-06-12) |
 | Cron via managed service | ❌ Today | Target: EventBridge Scheduler invoking `scheduler-fn`. Scheduler Lambda not built |
 | Runbooks documented | ⚠️ | DR procedure + MFA recovery documented in ARCHITECTURE.md §12. No incident response playbook yet |
 | **Distributed tracing** | ❌ | Not yet added. Roadmap item 18 (ADOT) |
@@ -152,7 +152,7 @@ exercised until deployment, the cell is annotated.
 | Expand-contract migration discipline | ✅ | Documented + practised |
 | Honest SPOF acknowledgement | ✅ | Neon Free/Launch documented as SPOF in ARCHITECTURE.md §6 |
 | **Formal RTO/RPO targets** | ❌ | Targets documented in ARCHITECTURE.md §6.2; not yet operationalised |
-| **SQS retry queue for SES** | ❌ | Withdrawal-receipt + order-confirmation + order-status-update durable-medium audit margin. Roadmap item 21 |
+| **SQS retry queue for SES** | ✅ | Shipped + live-validated 2026-06-12 (roadmap item 21): `sqs` transport → durable queue → `email-fn` consumer with partial-batch retry, DLQ + depth/age alarms. Enabled on the running test stack: real SES delivery verified, and the failure drill parked a message in the DLQ, fired the alarm, and redrove it after the fix |
 | **DR drill cadence** | ❌ | Roadmap item 19 |
 | **Public status page** | ❌ | Roadmap item 30 |
 | **Multi-region failover** | ❌ | Roadmap item 37 (deferred until contractual SLA) |
@@ -500,7 +500,7 @@ ships in compliance ahead of the deadline.
 | Confirmation includes pre-contract information (Art. 6) | ✅ Order snapshot carries main characteristics of the goods + total price (incl. any applied discount) + payment / delivery arrangement; withdrawal-rights are surfaced both in the email and on the per-order page at `/account/orders/{n}` |
 | Confirmation is durable for the consumer (Art. 2(10)) | ✅ Email saved in the customer's mailbox (the canonical durable medium per the directive's recitals); plus a first-party `/account/orders/{n}` read path that does not depend on a third party |
 | Withdrawal-window start is communicated to the consumer | ✅ Since 2026-06-10 the admin `accepted` transition (`POST /admin/orders/:n/status`) stamps `accepted_at` — the canonical 14-day window start — and best-effort sends the `orders.order-status-update` `accepted` email, whose copy points at the withdrawal mechanism (Art. 6(1)(h)). Every other customer-visible transition (shipped / ready-for-pickup / delivered / cancelled) notifies the customer the same way; transitions are state-machine-validated and audit-logged in `order_status_history` |
-| Email send-failure does not break the audit trail | ⚠️ Order-placement does not block on the email (best-effort); a transport failure logs `order_confirmation_email_failed` and the `/account/orders/{n}` page is the independent durable-medium read path. SQS retry queue (Roadmap item 21) closes the formal audit margin |
+| Email send-failure does not break the audit trail | ✅ Order-placement does not block on the email; the `/account/orders/{n}` page is the independent durable-medium read path. Since 2026-06-12 (roadmap item 21) the production transport is a durable SQS queue: a send failure redelivers via the `email-fn` consumer (partial-batch, `maxReceiveCount` 5) and an exhausted message parks in an alarmed DLQ for inspection + redrive — delayable, no longer droppable. Enabled + live-validated 2026-06-12 on the running test stack — real delivery plus the failure drill (DLQ park → alarm → redrive); the maintained deploy carries the same flags |
 | Penalty for missing button | (Window extends to 12 months + 14 days) |
 
 Implemented in the May 2026 withdrawal slice. Three routes:
@@ -513,7 +513,10 @@ The order-confirmation email rows were added 2026-05-27 after the
 `orders.order-confirmation` template + `sendOrderConfirmationEmail`
 helper + `POST /orders` wire-up shipped. Until that revision, order
 placement sent zero emails and the Art. 8(7) row was the directive's
-single biggest gap; it is now closed pending the SQS retry queue.
+single biggest gap. The SQS retry queue (2026-06-12) closed the last
+margin: every directive-relevant email now rides a durable queue with
+retry, DLQ and alarms — enabled and live-validated on the running
+test stack the same day (real delivery + DLQ/alarm/redrive drill).
 
 ---
 

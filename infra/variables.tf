@@ -132,13 +132,13 @@ variable "log_level" {
 }
 
 variable "email_transport" {
-  description = "Email transport: ses (prod), console, or stub."
+  description = "Email transport: sqs (prod target — durable queue + retry, requires enable_email_queue), ses (inline, single attempt), console, or stub."
   type        = string
   default     = "ses"
 
   validation {
-    condition     = contains(["ses", "console", "stub"], var.email_transport)
-    error_message = "email_transport must be ses, console, or stub."
+    condition     = contains(["sqs", "ses", "console", "stub"], var.email_transport)
+    error_message = "email_transport must be sqs, ses, console, or stub."
   }
 }
 
@@ -317,4 +317,42 @@ variable "ses_domain" {
   description = "Domain to verify in SES, e.g. shop.example.com."
   type        = string
   default     = ""
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Email: durable delivery queue + email-fn consumer (roadmap item 21)
+# ─────────────────────────────────────────────────────────────────────────────
+
+variable "enable_email_queue" {
+  description = "Provision the durable email queue (SQS + DLQ), the email-fn consumer Lambda and its alarms. Closes the EU 2023/2673 durable-medium audit margin (mandatory 2026-06-19). Requires the email-fn bundle (npm --workspace @shop/email run build:lambda); flip email_transport to sqs to route mail through it."
+  type        = bool
+  default     = false
+}
+
+variable "email_fn_bundle_dir" {
+  description = "Path (relative to infra/) to the esbuild output dir produced by `npm run build:lambda` in @shop/email. Zipped at plan time when enable_email_queue = true."
+  type        = string
+  default     = "../backend/email/dist"
+}
+
+variable "email_queue_max_receive_count" {
+  description = "Delivery attempts before a message parks in the email DLQ. AWS guidance: ≥5 with a Lambda consumer (transient throttles must not exhaust the budget)."
+  type        = number
+  default     = 5
+
+  validation {
+    condition     = var.email_queue_max_receive_count >= 2 && var.email_queue_max_receive_count <= 1000
+    error_message = "email_queue_max_receive_count must be between 2 and 1000 (1 would DLQ on the first hiccup)."
+  }
+}
+
+variable "email_fn_reserved_concurrency" {
+  description = "Reserved concurrent executions for email-fn. -1 (default) = unreserved: reservations draw from the account-wide pool, and on small accounts (shop-api reserves 50; AWS enforces a minimum unreserved remainder) any reservation here can fail the apply. The SQS event source's maximum_concurrency (2) caps real concurrency without touching the pool. Set a small positive value only after raising the account quota (Service Quotas → Lambda → Concurrent executions); it must be ≥ 2 to stay above the ESM cap."
+  type        = number
+  default     = -1
+
+  validation {
+    condition     = var.email_fn_reserved_concurrency == -1 || var.email_fn_reserved_concurrency >= 2
+    error_message = "email_fn_reserved_concurrency must be -1 (unreserved) or ≥ 2 (the event source mapping's maximum_concurrency)."
+  }
 }
