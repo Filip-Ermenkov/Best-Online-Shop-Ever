@@ -96,7 +96,7 @@ exercised until deployment, the cell is annotated.
 | CloudWatch alarms on key metrics | ✅ | 8 alarms (5xx rate, admin logins, p99 duration, scheduler-fn errors, scheduler delivery failures, SES bounces, email DLQ depth, email queue age) in `infra/observability.tf`; the 5xx-rate + p99 alarms deploy by default and were live-applied 2026-06-07 (admin/SES ones gated until those components exist; the two email-queue ones ship with `enable_email_queue`, 2026-06-12; the two scheduler ones with `enable_scheduler`, 2026-06-12) |
 | Cron via managed service | ✅ | EventBridge Scheduler (Sofia-timezone cron, per-schedule retry policy + delivery DLQ) invoking `scheduler-fn` — three rules: hourly pickup-expiry, daily catalog backup, daily unverified-account cleanup + retention prune (`infra/scheduler.tf`, shipped 2026-06-12, live-validated 2026-06-13 via the manual job drills against Neon, flag `enable_scheduler`) |
 | Runbooks documented | ⚠️ | DR procedure + MFA recovery documented in ARCHITECTURE.md §12. No incident response playbook yet |
-| **Distributed tracing** | ❌ | Not yet added. Roadmap item 18 (ADOT) |
+| **Distributed tracing** | ✅ | OpenTelemetry on shop-api (roadmap item 18, 2026-06-13): `@hono/otel` request spans + undici/fetch downstream spans + log↔trace correlation (Pino `trace_id`/`span_id`), behind `ENABLE_TRACING`. Exports OTLP to X-Ray via the ADOT collector layer (`enable_tracing` + `adot_collector_layer_arn`), or any OTLP backend. App-level instrumentation + correlation unit-tested; live X-Ray export validated on deploy |
 | **Formal SLO definitions** | ❌ | Targets exist informally in ARCHITECTURE.md §7.2. Roadmap item 24 |
 | **DORA metrics tracked** | ❌ | Not yet instrumented |
 | **DR drill cadence** | ❌ | Procedure documented; never tested. Roadmap item 19 |
@@ -238,8 +238,8 @@ gaps.
 
 | Category | Status | Notes |
 |---|---|---|
-| DE.CM — Continuous monitoring | ⚠️ | CSP violation reporting yes; CloudWatch alarms (target) and distributed tracing not yet |
-| DE.AE — Adverse event analysis | ⚠️ | Pino logs yes (incl. `csp_violation` structured event); tracing no |
+| DE.CM — Continuous monitoring | ✅ | CSP violation reporting ✅; 8 CloudWatch alarms in IaC (live on deploy); **distributed tracing ✅** (OpenTelemetry, item 18) |
+| DE.AE — Adverse event analysis | ✅ | Pino logs (incl. `csp_violation` structured event) now correlated to traces via `trace_id`/`span_id` — start from an alert, pivot to the trace, read every log line of that request (item 18) |
 
 ### Respond (RS)
 
@@ -280,7 +280,7 @@ Published 2024–2025 (eighth edition). Notable changes vs 2021:
 | A06 | Insecure Design | ✅ | Idempotency, optimistic locking, line-item snapshots, expand-contract migrations, account-discount server-controlled |
 | A07 | Authentication Failures | ✅ | Customer-side ✅ (Argon2id RFC 9106, constant-time login, per-email lockout, NIST 800-63B-4 + HIBP). **Admin MFA shipped 2026-06-08** — mandatory TOTP at AAL2 (`/admin/auth/*`, Roadmap item 35 backend). Customer MFA remains a growth-stage residual (Roadmap item 34) |
 | A08 | Software and Data Integrity Failures | ✅ | Every SBOM signed via Sigstore Fulcio/Rekor, keyless OIDC, transparency log. Verification in ARCHITECTURE.md §9.5 |
-| A09 | Security Logging and Monitoring Failures | ⚠️ | Pino structured logs ✅; CSP violation reporting ✅ (May 2026); distributed tracing ❌. Roadmap item 18 |
+| A09 | Security Logging and Monitoring Failures | ✅ | Pino structured logs ✅; CSP violation reporting ✅ (May 2026); **distributed tracing ✅** (OpenTelemetry on shop-api, 2026-06-13, Roadmap item 18) — request + downstream-fetch spans, log↔trace correlation, OTLP→X-Ray via the ADOT collector layer. Closes the last A09 gap |
 | A10 | Mishandling of Exceptional Conditions (new) | ✅ | RFC 9457 Problem Details on every error; graceful degradation; best-effort emails never block |
 
 E-commerce-specific OWASP 2025 vulnerabilities flagged in research:
@@ -356,7 +356,7 @@ tenets:
 | All communication is secured regardless of network location | ✅ Code-side | TLS 1.3 in target deployment; locally HTTP loopback |
 | Access to individual enterprise resources is granted on a per-session basis | ✅ | Cookies are short-lived; sessions revocable |
 | Access to resources is determined by dynamic policy | ⚠️ | Static IAM policies in target deployment; no risk-adaptive auth |
-| The enterprise monitors and measures the integrity and security posture of all owned and associated assets | ⚠️ | Dependabot + CodeQL; CloudWatch alarms once deployed; no distributed tracing |
+| The enterprise monitors and measures the integrity and security posture of all owned and associated assets | ⚠️ | Dependabot + CodeQL; distributed tracing ✅ (OpenTelemetry, item 18); CloudWatch alarms live on deploy |
 | All resource authentication and authorization are dynamic and strictly enforced before access is allowed | ✅ | Per-request `currentUser` / `requireAuth` |
 | The enterprise collects information about asset state, network/communications, and uses it to improve security posture | ⚠️ | Pino logs collected; not yet analysed at security-event level |
 

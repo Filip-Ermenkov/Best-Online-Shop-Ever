@@ -169,6 +169,7 @@ they aren't. The honest state:
 | Admin order management | **Shipped end-to-end (2026-06-10)** — `shop-api` `/admin/orders/*` (list + filters + search, detail + history, state-machine status transitions with optimistic locking + customer emails, CSV export) + the real `/admin/orders` UI |
 | `admin-api` Lambda | Not built (admin auth + the orders slice currently live in `shop-api`; extract when the admin CRUD surface grows) |
 | `scheduler-fn` Lambda | **Shipped 2026-06-12, live-validated 2026-06-13** (roadmap item 23) — jobs in `@shop/api` `src/jobs/*` + own pure-JS bundle (`build:scheduler`) + `infra/scheduler.tf` (EventBridge Scheduler, 3 Sofia-time crons, delivery DLQ, backup bucket, 2 alarms) behind `enable_scheduler`. All three `aws lambda invoke` drills passed against the Neon test branch; the catalog-backup drill also caught a prod-only bug (the `neon-http` driver can't run `db.transaction(...)`) now fixed by the Neon serverless WebSocket driver — see [decisions](#architecture-decisions-in-force). Runbook in `infra/README.md` |
+| Distributed tracing (OpenTelemetry) | **Shipped 2026-06-13 (roadmap item 18)** — `shop-api` emits OTel traces behind `ENABLE_TRACING`: `@hono/otel` request spans + undici/fetch downstream spans + Pino `trace_id`/`span_id` log↔trace correlation. Exports OTLP to AWS X-Ray via the ADOT collector layer (`enable_tracing` + `adot_collector_layer_arn`), or any OTLP backend. Closes the last OWASP A09 / NIST CSF Detect gap. App-level instrumentation + correlation unit-tested and harness-verified against the real libraries (incl. a clean esbuild bundle); live X-Ray export validated on deploy. Runbook in `infra/README.md` → "Tracing runbook" |
 | Terraform / IaC | **Live-apply-validated** (`infra/`) — a successful end-to-end `terraform apply` (2026-06-07) returned HTTP 200 through CloudFront→OAC→Lambda; fmt/validate/tflint/checkov green. A maintained prod env (domain + migrated schema + frontend) is the next step |
 
 The architecture documentation (`docs/ARCHITECTURE.md`) describes the
@@ -240,17 +241,19 @@ what needs to happen to get from today's repo state to that posture.
   migration; the banner now writes here, not just to `localStorage`.
 - `/health`, `/openapi.json`
 
-Test counts as of 2026-06-12, by `it`/`test` block: addresses 28,
+Test counts as of 2026-06-13, by `it`/`test` block: addresses 28,
 admin-auth 17, **admin-orders 26**, auth 48, cart 30, categories 7,
 consent 10, csp-report 25, data-export 14, email-change 21,
 order-emails 5, orders 25, password-reset 19, products 15,
 verification 11, withdrawal 23, **jobs 18** (pickup-expiry 4,
 unverified-cleanup 8, catalog-backup + dispatch 6 — the scheduler-fn
-sweeps, 2026-06-12), plus two lib suites (phone-validation;
-**email-transport-config 3** — the `EMAIL_TRANSPORT=sqs` boot
-contract) — **345 blocks**. The `csp-report` and `phone` suites are
-table-driven (`it.each`), so `vitest run` expands them and reports
-**379 cases total**, all against a real `shop_test` Postgres in CI.
+sweeps, 2026-06-12), plus three lib suites (phone-validation;
+**email-transport-config 3** — the `EMAIL_TRANSPORT=sqs` boot contract;
+**tracing 5** — the OpenTelemetry flag toggle, log↔trace correlation,
+and the `@hono/otel` request span, 2026-06-13) — **350 blocks**. The
+`csp-report` and `phone` suites are table-driven (`it.each`), so
+`vitest run` expands them and reports **384 cases total**, all against
+a real `shop_test` Postgres in CI.
 
 ### Backend (`@shop/db` schema)
 
@@ -850,6 +853,46 @@ npm --workspace @shop/api run job -- catalog-backup
   alarms. Full runbook (incl. manual `aws lambda invoke` drills) in
   `infra/README.md`.
 
+### Distributed tracing (OpenTelemetry)
+
+Tracing is **off by default** and adds nothing to the request path until
+you switch it on. To watch it locally (no AWS needed):
+
+```powershell
+# In backend\shop-api\.env (or the shell), then restart npm run api:dev:
+$env:ENABLE_TRACING="true"; $env:OTEL_TRACES_EXPORTER="console"
+npm run api:dev
+# Hit any endpoint:
+curl -s localhost:3001/health | Out-Null
+```
+
+In `api:dev`'s stdout you'll now see, for that one request:
+
+- the structured Pino lines (`request_start` / `request_end`) each
+  carrying a **`trace_id`** and **`span_id`**, and
+- the exported span itself (the `console` exporter prints it) — a
+  `GET /health` span whose `traceId` matches those log lines, with
+  `http.route`, `http.response.status_code`, and an **`app.request_id`**
+  attribute equal to the `X-Request-Id` header on the response.
+
+That three-way match — `X-Request-Id` ↔ trace ↔ logs — is the whole
+point: from any log line you can pivot to the full trace and back.
+
+- **Unit level:** `npm --workspace @shop/api run test` — the
+  `tests/lib/tracing.test.ts` suite (5 blocks) proves the
+  `ENABLE_TRACING` toggle, the no-op path when off, the Pino
+  `trace_id`/`span_id` correlation, and that a `@hono/otel` request span
+  is produced and correlated. Set `OTEL_TRACES_EXPORTER=otlp` to send to
+  a real backend instead of the console.
+- **Live stack:** set `enable_tracing = true` and
+  `adot_collector_layer_arn = "<the ADOT collector layer for your
+  region+arch>"` in `terraform.tfvars`, rebuild + redeploy `shop-api`
+  (`npm --workspace @shop/api run build:lambda`), apply, then make a
+  request through CloudFront — the trace (Lambda root segment + the Hono
+  span + the Neon/HIBP `fetch` spans) appears in the **AWS X-Ray**
+  console, and every CloudWatch log line for that request carries the
+  same `trace_id`. Full runbook in `infra/README.md` → "Tracing runbook".
+
 ### CSP violation reporting
 
 The strict `'nonce-X' 'strict-dynamic'` CSP shipped to the frontend
@@ -1005,6 +1048,18 @@ the responses for unknown vs registered emails on `/auth/login` and
 outcome (happy path / unknown / rate-limited / send failure). The
 only non-resistant 4xx branches are explicit user errors the user
 can already see (wrong current password, new == current).
+
+**Observability / tracing:** structured Pino JSON (PII-redacted,
+per-request child logger on `X-Request-Id`) plus app-level
+OpenTelemetry (roadmap item 18, 2026-06-13) behind `ENABLE_TRACING`
+(default off, zero cost when off). `@hono/otel` request spans + undici/
+`fetch` downstream spans; a Pino `mixin` stamps `trace_id`/`span_id` on
+every line and `X-Request-Id` becomes the `app.request_id` span
+attribute. Vendor-neutral OTLP export — prod routes through the ADOT
+collector layer to X-Ray; the backend is one env var. `pg`/`aws-sdk`
+auto-instrumentation is intentionally omitted (require-patching no-ops
+under the esbuild bundle; `diagnostics_channel`-based undici does not).
+Full rationale in `docs/ARCHITECTURE.md` §8.2 + §13.
 
 ## Known gaps
 

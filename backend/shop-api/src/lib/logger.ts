@@ -1,5 +1,27 @@
+import { trace } from "@opentelemetry/api";
 import pino from "pino";
 import { parseEnv } from "./env.js";
+
+/**
+ * Log↔trace correlation (roadmap item 18). Runs on every log call: if a span is
+ * active on the current context it stamps the W3C ids onto the line, so a log
+ * found in CloudWatch links straight to its trace in X-Ray and vice-versa
+ * (`trace_id` / `span_id` are the field names AWS + the OTel logging spec use).
+ *
+ * Cost when tracing is OFF is ~nil: `@opentelemetry/api` returns `undefined`
+ * from getActiveSpan() until a provider registers, so this returns `{}`. That
+ * is also why importing it here is safe regardless of ENABLE_TRACING.
+ */
+export function traceContextMixin(): Record<string, string> {
+  const span = trace.getActiveSpan();
+  if (!span) return {};
+  const ctx = span.spanContext();
+  return {
+    trace_id: ctx.traceId,
+    span_id: ctx.spanId,
+    trace_flags: ctx.traceFlags.toString(16).padStart(2, "0"),
+  };
+}
 
 /**
  * One pino instance per Lambda warm container (or per local dev process).
@@ -20,6 +42,8 @@ export const logger = pino({
     service: "shop-api",
     env: env.NODE_ENV,
   },
+  // Stamp the active trace/span id onto every line (no-op until tracing is on).
+  mixin: traceContextMixin,
   // Always JSON. CloudWatch ingests JSON natively, and dev logs stay grep-able
   // and structured. Adding pino-pretty as a dev sidecar is left as an opt-in:
   // `npm run dev | pino-pretty` if a developer prefers human-readable output.

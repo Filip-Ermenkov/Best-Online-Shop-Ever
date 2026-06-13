@@ -122,6 +122,36 @@ const EnvSchema = z.object({
     .default("true")
     .transform((s) => s === "true"),
 
+  // ─── Distributed tracing (OpenTelemetry, roadmap item 18) ────────────────
+  /**
+   * Master switch for app-level OpenTelemetry tracing (lib/tracing.ts). Default
+   * OFF — and when off, the whole OTel dependency graph is never imported, so
+   * the cold-start cost is exactly zero. Production sets it true via Terraform
+   * (`enable_tracing`); set it locally to watch traces in the dev log.
+   *
+   * Mirrors the `BREACHED_PASSWORD_CHECK_ENABLED` "true"/"false" string toggle
+   * so it reads identically from a Lambda env var, a `.env`, or vitest.
+   */
+  ENABLE_TRACING: z
+    .enum(["true", "false"])
+    .default("false")
+    .transform((s) => s === "true"),
+  /**
+   * Where spans go when ENABLE_TRACING=true:
+   *   - `none`    → spans are created (so the Pino logs still carry trace ids)
+   *                 but not exported. Safe default; never attempts a network
+   *                 export it isn't configured for.
+   *   - `console` → print spans to stdout. The local "see the trace" demo.
+   *   - `otlp`    → OTLP/HTTP to OTEL_EXPORTER_OTLP_ENDPOINT (a standard OTel
+   *                 env var the exporter reads directly). In production that
+   *                 endpoint is the ADOT collector Lambda layer on
+   *                 http://localhost:4318, which forwards to AWS X-Ray; point
+   *                 it anywhere OTLP for a different backend.
+   */
+  OTEL_TRACES_EXPORTER: z
+    .enum(["none", "console", "otlp"])
+    .default("none"),
+
   // ─── Admin MFA (TOTP) ────────────────────────────────────────────────────
   //
   // These gate ONLY the /admin/* surface. They intentionally default to "" so

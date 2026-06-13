@@ -11,8 +11,12 @@ import { serve } from "@hono/node-server";
 import { buildApp } from "./app.js";
 import { parseEnv } from "./lib/env.js";
 import { logger } from "./lib/logger.js";
+import { flushTracing, initTracing } from "./lib/tracing.js";
 
 const env = parseEnv();
+// Start tracing before the first request so @hono/otel finds a registered
+// provider. No-op (imports nothing heavy) unless ENABLE_TRACING=true.
+await initTracing();
 const app = buildApp();
 
 const server = serve(
@@ -30,8 +34,11 @@ const server = serve(
 function shutdown(signal: NodeJS.Signals) {
   logger.info({ signal }, "shutdown_initiated");
   server.close(() => {
-    logger.info("shutdown_complete");
-    process.exit(0);
+    // Flush any buffered spans before exit (no-op when tracing is off).
+    void flushTracing().finally(() => {
+      logger.info("shutdown_complete");
+      process.exit(0);
+    });
   });
   // Hard exit after 8 seconds if drain hangs.
   setTimeout(() => {

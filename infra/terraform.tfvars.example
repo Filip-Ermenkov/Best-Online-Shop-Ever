@@ -65,3 +65,17 @@ enable_scheduler = false
 # ─── Cost / security knobs ───────────────────────────────────────────────────
 enable_kms_cmk      = true # ~$1/mo; false = AWS-managed keys, €0 tier
 enable_xray_tracing = true
+
+# ─── Distributed tracing (OpenTelemetry / ADOT, roadmap item 18) ─────────────
+# App-level OpenTelemetry spans (request + downstream fetch) + log↔trace
+# correlation. Requires enable_xray_tracing = true. Set adot_collector_layer_arn
+# to the collector-only ADOT layer to export to X-Ray; leave it empty for
+# correlation-only (no export). See infra/README.md → "Tracing runbook".
+#
+# CRITICAL: the layer ARCHITECTURE token must match lambda_architecture above —
+# the collector is a native binary. x86_64 → "...-amd64-...", arm64 →
+# "...-arm64-...". A mismatch crashes the extension at init ("cannot execute
+# binary file") and every request 502s. (A plan-time precondition now enforces
+# this.) The example below is amd64 to match lambda_architecture = "x86_64".
+enable_tracing           = false
+adot_collector_layer_arn = "" # e.g. "arn:aws:lambda:eu-central-1:901920570463:layer:aws-otel-collector-amd64-ver-0-117-0:1"

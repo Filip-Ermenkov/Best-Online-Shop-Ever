@@ -83,8 +83,12 @@ resource "aws_iam_role_policy" "lambda" {
   policy = data.aws_iam_policy_document.lambda.json
 }
 
-# X-Ray write access — only when active tracing is enabled (infra-level
-# down-payment on the ADOT roadmap item). X-Ray actions are not resource-scoped.
+# X-Ray write access — when active tracing is enabled. Covers BOTH the Lambda
+# Active-tracing root segment AND (when enable_tracing=true) the ADOT collector
+# layer's awsxray exporter: AWSXRayDaemonWriteAccess grants xray:PutTraceSegments
+# + the sampling APIs the collector calls. The lambda.tf precondition ties
+# enable_tracing → enable_xray_tracing so this attachment is always present when
+# the app emits spans. X-Ray actions are not resource-scoped.
 resource "aws_iam_role_policy_attachment" "lambda_xray" {
   count      = var.enable_xray_tracing ? 1 : 0
   role       = aws_iam_role.lambda.name

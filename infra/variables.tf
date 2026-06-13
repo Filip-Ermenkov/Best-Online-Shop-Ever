@@ -303,6 +303,38 @@ variable "enable_scheduler_alarms" {
   default     = true
 }
 
+# ─── Distributed tracing (OpenTelemetry / ADOT, roadmap item 18) ─────────────
+
+variable "enable_tracing" {
+  description = "Switch on app-level OpenTelemetry tracing in shop-api (sets ENABLE_TRACING + the OTEL_* env). Distinct from enable_xray_tracing, which is the infra-level Lambda Active-tracing mode (the root segment): this is the app emitting its own request + downstream spans. Requires enable_xray_tracing=true (the X-Ray write IAM the collector needs rides on that attachment). Default off; zero cold-start cost when off (the OTel graph is never imported)."
+  type        = bool
+  default     = false
+}
+
+variable "adot_collector_layer_arn" {
+  description = <<-EOT
+    ARN of the AWS Distro for OpenTelemetry COLLECTOR Lambda layer for this
+    region + architecture (e.g. arm64). When set (and enable_tracing=true) it is
+    attached to shop-api and the app exports OTLP to the collector on
+    localhost:4318, which forwards traces to AWS X-Ray — so OTEL_TRACES_EXPORTER
+    flips to "otlp". When left empty, tracing still runs but exports nothing
+    (OTEL_TRACES_EXPORTER="none"); spans are created so the Pino logs carry
+    trace_id/span_id for CloudWatch Logs Insights correlation. Use the
+    collector-only layer (aws-otel-collector-*), NOT a language auto-instrument
+    layer — shop-api self-instruments in-bundle and must not be double-wrapped
+    (we deliberately do not set AWS_LAMBDA_EXEC_WRAPPER). The layer's
+    ARCHITECTURE must match lambda_architecture (the collector is a native
+    binary): x86_64 → the "...-amd64-..." layer, arm64 → "...-arm64-...". A
+    mismatch crashes the extension at init ("cannot execute binary file") and
+    every request 502s — a plan-time precondition in lambda.tf now blocks the
+    obvious mismatch. Pick the latest ARN from
+    https://github.com/aws-observability/aws-otel-lambda. See
+    infra/README.md → "Tracing runbook".
+  EOT
+  type        = string
+  default     = ""
+}
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Email: SES domain identity (DKIM + custom MAIL FROM + config set)
 # ─────────────────────────────────────────────────────────────────────────────

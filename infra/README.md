@@ -45,7 +45,7 @@ observable API behind CloudFront with no DNS or domain required:
 |---|---|---|
 | KMS CMK (+ alias) | `kms.tf` | Encrypts the log group, Lambda env, and the DB-URL secret. `enable_kms_cmk=false` → AWS-managed keys, €0. |
 | SSM SecureString `DATABASE_URL` | `ssm.tf` | The one runtime secret. Placeholder-seeded; real value set out-of-band. |
-| `shop-api` Lambda (Node 22, arm64) | `lambda.tf` | Handler `handler.handler`; active X-Ray tracing; env from vars + SSM. |
+| `shop-api` Lambda (Node 22, arm64) | `lambda.tf` | Handler `handler.handler`; active X-Ray tracing (+ optional app-level OpenTelemetry via `enable_tracing`); env from vars + SSM. |
 | Lambda Function URL | `lambda.tf` | `AWS_IAM`-only when the CDN is on (reachable only via CloudFront OAC). |
 | CloudWatch Log Group (14d) | `lambda.tf` | Pre-created so retention + CMK encryption are enforced. |
 | Lambda execution role | `iam.tf` | Least privilege: own-log-group writes, one SSM param, scoped SES, CMK decrypt. |
@@ -59,9 +59,11 @@ Opt-in layers (all `enable_* = false` by default): **WAF** (`waf.tf`), **Route 5
 (`sqs.tf`) + the `email-fn` consumer Lambda (`email-fn.tf`), roadmap item 21
 (see below) — and the **scheduled jobs** — `scheduler-fn` + three EventBridge
 Scheduler crons + delivery DLQ + catalog-backup bucket (`scheduler.tf`),
-roadmap item 23 (runbook below). Each is documented at its variable in
-`variables.tf`. The §10 cost model prefers Cloudflare for DNS+WAF, which is why
-those AWS-native paths ship off.
+roadmap item 23 (runbook below) — and **distributed tracing**
+(`enable_tracing` — app-level OpenTelemetry on `shop-api` + the ADOT collector
+layer, wired in `lambda.tf`), roadmap item 18 (runbook below). Each is
+documented at its variable in `variables.tf`. The §10 cost model prefers
+Cloudflare for DNS+WAF, which is why those AWS-native paths ship off.
 
 ## Prerequisites
 
@@ -216,6 +218,81 @@ Note: the runtime uses the Neon serverless **WebSocket** driver for
 transactions, which cannot do pg-level channel binding — `createDb()` strips
 `channel_binding=require` from the URL, so the pooled SSM value works whether
 or not it carries that parameter.
+
+## Tracing runbook (roadmap item 18)
+
+App-level OpenTelemetry on `shop-api`: `@hono/otel` request spans + undici/fetch
+downstream spans + Pino `trace_id`/`span_id` log correlation (see
+ARCHITECTURE.md §8.2 + §13). Off by default; flipping it on is two variables
+plus a redeploy.
+
+**Enable (export to X-Ray):**
+
+1. Pick the **collector-only** ADOT layer ARN for this region + architecture
+   from <https://github.com/aws-observability/aws-otel-lambda> (the
+   `aws-otel-collector-<arch>-ver-x-y-z` layers). **The arch token MUST match
+   `lambda_architecture`** — the collector is a native binary, so an arm64 layer
+   on an x86_64 function (or vice-versa) crashes the extension at init with
+   `/opt/extensions/collector: cannot execute binary file` → `Extension.Crash`
+   → every request 502s. AWS names the x86 build `amd64`:
+   - x86_64 function → `...:layer:aws-otel-collector-amd64-ver-0-117-0:1`
+   - arm64 function → `...:layer:aws-otel-collector-arm64-ver-0-117-0:1`
+
+   Confirm the exact version (`ver-x-y-z`) and layer-version suffix (`:N`, which
+   can differ between the two arches) on the releases page; ARNs go stale. A
+   plan-time precondition in `lambda.tf` blocks an obvious arch mismatch, but
+   double-check against `aws lambda get-function-configuration … --query
+   Architectures` if in doubt.
+2. In `terraform.tfvars`:
+
+   ```hcl
+   enable_xray_tracing      = true   # required — the X-Ray write IAM rides on this
+   enable_tracing           = true
+   # arch MUST match lambda_architecture — amd64 shown for the x86_64 default:
+   adot_collector_layer_arn = "arn:aws:lambda:eu-central-1:901920570463:layer:aws-otel-collector-amd64-ver-0-117-0:1"
+   ```
+
+3. Rebuild + redeploy the `shop-api` bundle (the OTel deps ship inside it):
+   `npm --workspace @shop/api run build:lambda`, then `terraform apply`.
+
+Terraform then sets `ENABLE_TRACING=true`, `OTEL_TRACES_EXPORTER=otlp`,
+`OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318`, and attaches the layer.
+The app exports OTLP to the collector extension on `localhost:4318`; the
+collector forwards to X-Ray with the IAM from the existing
+`AWSXRayDaemonWriteAccess` attachment. We deliberately do **not** set
+`AWS_LAMBDA_EXEC_WRAPPER` — `shop-api` self-instruments in-bundle, so the
+layer's auto-instrumentation must stay off (no double-wrapping). The
+collector-only layer runs the collector as an auto-started extension; no
+custom collector config is needed (its default OTLP-receiver → `awsxray`
+exporter is exactly the path we use).
+
+**Correlation-only (no X-Ray, no layer):** set `enable_tracing = true` and
+leave `adot_collector_layer_arn = ""`. Terraform sets
+`OTEL_TRACES_EXPORTER=none`: spans are created (so CloudWatch Logs carry
+`trace_id`/`span_id` for Logs-Insights correlation) but nothing is exported.
+
+**Validation drill:**
+
+1. After the apply, make a request through CloudFront
+   (`curl -s https://<dist>.cloudfront.net/health`).
+2. **X-Ray console → Traces:** within a minute you should see a trace whose
+   root is the Lambda segment, with the `GET /health` Hono span beneath it
+   (and, on a DB-touching route, the Neon/HIBP `fetch` subsegments). The span
+   carries `app.request_id` = the request's `X-Request-Id`.
+3. **CloudWatch Logs** for `/aws/lambda/<prefix>-shop-api`: the `request_start`
+   / `request_end` lines for that invocation carry the same `trace_id`. That
+   `X-Request-Id` ↔ trace ↔ logs match is the whole point.
+
+**Cost & notes:** X-Ray is priced per trace recorded — negligible at this
+shop's volume; cap with `OTEL_TRACES_SAMPLER` (a standard OTel env var the SDK
+honours) if traffic ever grows. This path uses the collector → classic X-Ray
+segment, so **Transaction Search is not required**. The alternative
+collector-less direct-to-X-Ray-OTLP-endpoint path (which needs SigV4 +
+Transaction Search) is noted in ARCHITECTURE.md §13 as a deferred option.
+
+**Disable:** set `enable_tracing = false` and re-apply (or just drop
+`adot_collector_layer_arn` for correlation-only). With the flag off the OTel
+graph is never evaluated — zero request-path cost.
 
 ## How secrets are handled
 
