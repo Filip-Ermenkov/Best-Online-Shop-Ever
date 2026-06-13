@@ -331,6 +331,8 @@ locals {
 resource "aws_scheduler_schedule" "jobs" {
   for_each = var.enable_scheduler ? local.scheduler_jobs : {}
 
+  #checkov:skip=CKV_AWS_297:The only data a schedule stores is its static, non-sensitive input — `{"job":"<name>"}`, the same job names that live in this file and in git. No PII, secret, or customer data passes through a schedule, so a customer-managed key would only add key-policy surface (granting scheduler.amazonaws.com decrypt) and apply-risk to the already-validated live schedules for zero confidentiality gain — the same value-based reasoning as the CKV_AWS_116 skip below. Revisit if a schedule ever carries sensitive input.
+
   name        = "${local.name_prefix}-${each.key}"
   group_name  = aws_scheduler_schedule_group.jobs[0].name
   description = each.value.description

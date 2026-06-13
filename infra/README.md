@@ -283,6 +283,15 @@ Tracked honestly rather than silently skipped:
   nothing. Failures alarm instead: in-function errors on the Lambda `Errors`
   metric (the Scheduler invokes async, so they can ONLY surface there), and
   delivery failures in the scheduler DLQ via each schedule's retry policy.
+- **EventBridge Scheduler schedules are not CMK-encrypted** (CKV_AWS_297,
+  skipped inline in `scheduler.tf`): the only data a schedule stores is its
+  static, non-sensitive input — `{"job":"<name>"}`, the same job names that are
+  in the Terraform source and git. No PII, secret, or customer data ever passes
+  through a schedule, so a customer-managed key would only add key-policy
+  surface (granting `scheduler.amazonaws.com` decrypt) and apply-risk to the
+  already-validated live schedules for zero confidentiality gain — the same
+  value test as the CKV_AWS_116 skip above. Revisit if a schedule is ever given
+  sensitive input.
 - **The catalog-backup bucket skips access logging / replication / event
   notifications** (CKV_AWS_18 / CKV_AWS_144 / CKV2_AWS_62 — same register
   entries as the state bucket): private + versioned + TLS-only + SSE-KMS,
