@@ -1,8 +1,9 @@
 # Alarms fan out through one SNS topic; alarm_email subscribes if provided.
-# The seven alarms below are ARCHITECTURE §3.10's set. Two depend on components
-# that do not exist yet (admin-api, scheduler-fn) and are gated off by default so
-# the stack never references unbuilt resources; the two email-queue alarms ship
-# with enable_email_queue (item 21).
+# The eight alarms below are ARCHITECTURE §3.10's set. The admin-login one is
+# gated off until admin-api exists; the two email-queue alarms ship with
+# enable_email_queue (item 21); the two scheduler alarms (4a in-function, 4b
+# delivery — disjoint lanes because the Scheduler invokes Lambda async) ship
+# with enable_scheduler (item 23).
 resource "aws_sns_topic" "alarms" {
   name              = "${local.name_prefix}-alarms"
   kms_master_key_id = local.sns_kms_key_id
@@ -160,18 +161,50 @@ resource "aws_cloudwatch_metric_alarm" "email_queue_age" {
   ok_actions          = [aws_sns_topic.alarms.arn]
 }
 
-# (4) EventBridge scheduler failure — needs scheduler-fn (not built).
-resource "aws_cloudwatch_metric_alarm" "scheduler_failures" {
-  count               = var.enable_scheduler_alarms ? 1 : 0
-  alarm_name          = "${local.name_prefix}-scheduler-failures"
-  alarm_description   = "EventBridge scheduler reported a failed invocation."
-  namespace           = "AWS/Scheduler"
-  metric_name         = "InvocationsFailedToBeSentToDeadLetterCount"
+# (4a) scheduler-fn errors — a scheduled JOB failed (threw): DB unreachable,
+# backup bucket misconfigured, a bug. EventBridge Scheduler invokes the
+# function ASYNCHRONOUSLY, so in-function failures never reach the
+# Scheduler's own metrics — they surface here, on the Lambda Errors metric,
+# after Lambda's two built-in async retries. No redrive needed: every job is
+# an idempotent sweep and the next cron tick re-covers the same work; the
+# alarm exists so a PERSISTENTLY failing job gets a human.
+# (Replaces the pre-scheduler placeholder alarm, which watched
+# InvocationsFailedToBeSentToDeadLetterCount — that metric only fires when
+# DLQ parking ITSELF fails, not when a job does.)
+resource "aws_cloudwatch_metric_alarm" "scheduler_fn_errors" {
+  count               = var.enable_scheduler && var.enable_scheduler_alarms ? 1 : 0
+  alarm_name          = "${local.name_prefix}-scheduler-fn-errors"
+  alarm_description   = "A scheduled job (scheduler-fn) failed — check the function's log group for the job_failed event."
+  namespace           = "AWS/Lambda"
+  metric_name         = "Errors"
+  dimensions          = { FunctionName = aws_lambda_function.scheduler_fn[0].function_name }
   statistic           = "Sum"
   comparison_operator = "GreaterThanThreshold"
   evaluation_periods  = 1
-  period              = 3600
+  period              = 300
   threshold           = 0
   treat_missing_data  = "notBreaching"
   alarm_actions       = [aws_sns_topic.alarms.arn]
+  ok_actions          = [aws_sns_topic.alarms.arn]
+}
+
+# (4b) Scheduler DELIVERY failure — EventBridge Scheduler could not hand the
+# event to Lambda at all (throttle, broken invoke role) and, after the
+# schedule's retry_policy, parked it in the scheduler DLQ. Disjoint failure
+# lane from 4a by design (async invoke): together they cover the whole path.
+resource "aws_cloudwatch_metric_alarm" "scheduler_delivery_failures" {
+  count               = var.enable_scheduler && var.enable_scheduler_alarms ? 1 : 0
+  alarm_name          = "${local.name_prefix}-scheduler-delivery-failures"
+  alarm_description   = "EventBridge Scheduler parked an undeliverable invocation in the scheduler DLQ — inspect the message and the invoke role."
+  namespace           = "AWS/Scheduler"
+  metric_name         = "InvocationsSentToDeadLetterCount"
+  dimensions          = { ScheduleGroup = aws_scheduler_schedule_group.jobs[0].name }
+  statistic           = "Sum"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 1
+  period              = 300
+  threshold           = 0
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = [aws_sns_topic.alarms.arn]
+  ok_actions          = [aws_sns_topic.alarms.arn]
 }

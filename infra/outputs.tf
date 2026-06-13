@@ -58,6 +58,16 @@ output "email_dlq_url" {
   value       = one(aws_sqs_queue.email_dlq[*].url)
 }
 
+output "catalog_backup_bucket" {
+  description = "S3 bucket the daily catalog backup writes to (catalog/<YYYY-MM-DD>.json, Sofia dates), or null when enable_scheduler = false."
+  value       = one(aws_s3_bucket.catalog_backup[*].bucket)
+}
+
+output "scheduler_dlq_url" {
+  description = "EventBridge Scheduler delivery DLQ URL (inspect here when the scheduler-delivery-failures alarm fires), or null when enable_scheduler = false."
+  value       = one(aws_sqs_queue.scheduler_dlq[*].url)
+}
+
 output "amplify_app_id" {
   description = "Amplify app id (null when Amplify is disabled)."
   value       = one(aws_amplify_app.frontend[*].id)

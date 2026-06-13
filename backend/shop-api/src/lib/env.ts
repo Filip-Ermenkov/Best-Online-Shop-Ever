@@ -82,6 +82,28 @@ const EnvSchema = z.object({
     .default("http://localhost:3000")
     .transform((s) => s.replace(/\/+$/, "")),
 
+  // ─── Scheduled jobs (scheduler-fn) ───────────────────────────────────────
+  /**
+   * S3 bucket for the daily catalog backup (infra output
+   * `catalog_backup_bucket`). Only the scheduler-fn deployment sets it; the
+   * shop-api Lambda and local dev leave it empty. Deliberately NOT enforced
+   * via superRefine: this env schema is shared with shop-api, which must boot
+   * without backup configuration. The catalog-backup job checks it at run
+   * time and throws — an async-invoke failure that surfaces on the
+   * scheduler-fn Errors alarm instead of taking a half-configured function
+   * through a silent no-op.
+   */
+  CATALOG_BACKUP_BUCKET: z.string().default(""),
+  /**
+   * Key prefix inside the backup bucket. The job writes
+   * `<prefix><YYYY-MM-DD>.json` (Sofia calendar date), so re-runs of the
+   * same day overwrite idempotently instead of accumulating duplicates.
+   */
+  CATALOG_BACKUP_PREFIX: z
+    .string()
+    .default("catalog/")
+    .transform((s) => (s.length === 0 || s.endsWith("/") ? s : `${s}/`)),
+
   // ─── Breached-password screening ─────────────────────────────────────────
   /**
    * Toggle the HIBP k-anonymity check on registration and password-reset.

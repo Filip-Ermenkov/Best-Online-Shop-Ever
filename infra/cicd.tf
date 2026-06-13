@@ -65,11 +65,12 @@ data "aws_iam_policy_document" "github_deploy" {
       "lambda:GetFunctionConfiguration",
       "lambda:PublishVersion",
     ]
-    # shop-api always; email-fn when the email queue is enabled (splat → empty
-    # list when count = 0, so the policy stays valid either way).
+    # shop-api always; email-fn / scheduler-fn when their features are enabled
+    # (splat → empty list when count = 0, so the policy stays valid either way).
     resources = concat(
       [aws_lambda_function.shop_api.arn],
       aws_lambda_function.email_fn[*].arn,
+      aws_lambda_function.scheduler_fn[*].arn,
     )
   }
 }

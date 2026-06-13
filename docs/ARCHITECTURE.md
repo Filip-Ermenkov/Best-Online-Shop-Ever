@@ -129,11 +129,13 @@ maintained yet.
    │  Amazon S3       │  [P] images + backups
    └──────────────────┘
 
-   [P] EventBridge ──► [P] Lambda scheduler-fn (3 cron rules) — not yet written
+   [T] EventBridge Scheduler ──► [T] Lambda scheduler-fn (3 Sofia-time crons + delivery DLQ)
+                           (code + IaC, 2026-06-12; flag enable_scheduler)
+   [T] Lambda scheduler-fn ──► [T] S3 catalog-backup bucket (daily, 90-day lifecycle)
    [T] Lambda shop-api ──► [T] SQS email queue (+DLQ) ──► [T] Lambda email-fn ──► SES
                            (code + IaC, 2026-06-12; flag enable_email_queue)
-   [T] Lambda * ──► [T] Amazon SES (code), 12 transactional templates
-   [P] Lambda * ──► [P] CloudWatch Logs / Metrics / 7 Alarms
+   [T] Lambda * ──► [T] Amazon SES (code), 14 transactional templates
+   [P] Lambda * ──► [P] CloudWatch Logs / Metrics / 8 Alarms
    [P] Lambda * ──► [P] SSM Parameter Store (runtime secrets)
    [P] ACM ──► [P] CloudFront + Amplify (auto-renew TLS)
 ```
@@ -243,8 +245,13 @@ runnable locally via `@hono/node-server`. Routes mounted in
   (`routes/admin/*`) that will move here when the admin CRUD surface
   justifies a separate Lambda + subdomain.
 - **`scheduler-fn`** — three cron rules: daily catalog backup, hourly
-  expired-pickup check, daily unverified-account cleanup. **Not yet
-  written.**
+  expired-pickup check, daily unverified-account cleanup (+ the
+  login_attempts retention prune). **Shipped 2026-06-12** (roadmap
+  item 23): the jobs live in `@shop/api` `src/jobs/*` (they are the
+  stateful halves — DB sweeps + email sends), bundled into their OWN
+  pure-JS Lambda artifact by `build-scheduler.mjs` (no argon2 in the
+  import graph, builds on any OS), driven by EventBridge Scheduler
+  (`infra/scheduler.tf`, flag `enable_scheduler`).
 
 All three would be **Hono** (portable across Lambda, Workers, Bun,
 Deno, Node). **Drizzle** is the ORM. **`@hono/zod-openapi`**
@@ -302,12 +309,19 @@ PII redaction**, structured JSON, per-request child logger keyed on
 `npm run db:up`. The Drizzle schema in `backend/db/src/schema/` is
 applied via `npm run db:migrate` and a deterministic seed at
 `npm run db:seed`. Migrations: `0000_initial.sql`,
-`0001_orders_sequence.sql`, `0002_complaints_withdrawal.sql`.
+`0001_orders_sequence.sql`, `0002_complaints_withdrawal.sql`,
+`0003_admin_mfa_replay_guard.sql`, `0004_scheduler_jobs.sql`. The
+running test stack now also has these five applied to a Neon branch
+(2026-06-13) — the scheduler-fn drills ran against it.
 
-**Schema scope:** 30 tables, 32 FKs, 44 indexes, 10 enums.
+**Schema scope:** 30 tables, 32 FKs, 46 indexes, 10 enums.
 
-**Target:** Neon Postgres. `createDb()` picks the Neon HTTP driver
-in prod and the node-pg driver in dev. **Neon Scale** is the
+**Target:** Neon Postgres. `createDb()` picks the Neon serverless
+driver in prod and the node-pg driver in dev. The serverless driver
+sends ordinary queries over a stateless HTTPS fetch (no held
+connection) and opens a WebSocket only for the duration of an
+interactive `db.transaction(...)` — the HTTP-only driver could not
+run transactions at all. **Neon Scale** is the
 contractually-acceptable production tier; **Neon Launch (~€18/mo)**
 is the practical entry tier; **Neon Free** is an SPOF and acceptable
 only for dev branches (it auto-suspends after ~5 minutes idle).
@@ -325,9 +339,14 @@ Design choices that are load-bearing:
   image, unit price frozen onto each line so future catalog edits
   cannot rewrite history.
 
-Connection pool: each Lambda container holds up to 3 connections,
-initialised outside the handler so warm invocations reuse them. Neon
-PgBouncer handles multiplexing on the database side.
+Connection handling: the Neon serverless driver holds no persistent
+connection for ordinary queries (each is one HTTPS fetch), so the
+classic Lambda-vs-Postgres connection storm does not arise. Only an
+interactive `db.transaction(...)` opens a WebSocket, scoped to that
+transaction and capped at one per warm container. The runtime points
+at Neon's pooled (`-pooler`, PgBouncer transaction-mode) endpoint,
+which is compatible with these short transactions; the node-pg dev
+driver still uses a real 3-connection pool.
 
 ### 3.6 Object storage — Amazon S3 (planned)
 
@@ -358,7 +377,7 @@ eliminate one AWS lock-in point. See §10.
 
 **Today (code):** `@shop/email` exposes an `EmailTransport`
 interface with four implementations (`ses`, `sqs`, `console`,
-`stub`), selected via `EMAIL_TRANSPORT`. **Twelve** Bulgarian
+`stub`), selected via `EMAIL_TRANSPORT`. **Fourteen** Bulgarian
 templates are rendered server-side:
 
 1.  Registration verification (`verification`)
@@ -390,6 +409,16 @@ templates are rendered server-side:
     payload and no link (the data went over the authenticated channel);
     directs a surprised recipient to secure their account, mirroring
     the `password-changed` pattern.
+13. Expired-pickup admin notification (`pickup-expired-admin`) —
+    operations notice to the support inbox, sent once per order by
+    scheduler-fn's hourly sweep when a `ready_for_pickup` deadline
+    passes (2026-06-12). Order number + customer contact + admin deep
+    link; the decision stays manual per spec §7.
+14. Unverified-account deletion warning (`account-deletion-warning`)
+    — the day-6 „ще бъде изтрит утре" notice from scheduler-fn's
+    daily cleanup (2026-06-12), with a FRESH 24h verification link as
+    the primary CTA and an explicit "no action needed if this wasn't
+    you" default.
 
 **Critical: email sending is best-effort, never blocking.** A failed
 verification email at registration creates the account anyway and
@@ -448,40 +477,80 @@ after the fix (runbook: infra/README.md). The maintained deploy
   to `p=quarantine` once clean).
 - Move the SES account out of sandbox via Service Quotas.
 
-### 3.8 Background jobs — Amazon EventBridge Scheduler (planned)
+### 3.8 Background jobs — Amazon EventBridge Scheduler
 
-**Today:** Not built. None of the cron rules run.
+**Today (shipped 2026-06-12, roadmap item 23):** three cron rules in a
+schedule group, all `Europe/Sofia` wall-clock (EventBridge Scheduler
+handles EET↔EEST, so 03:00 stays 03:00 year-round), invoking the
+`scheduler-fn` Lambda with a static `{"job":"…"}` input. Behind
+`enable_scheduler` (default off), `infra/scheduler.tf`:
 
-**Target:** Three cron rules driven by EventBridge Scheduler invoking
-a `scheduler-fn` Lambda —
+- `cron(0 * * * ? *)` — **pickup-expiry**: claims expired
+  `ready_for_pickup` orders (`pickup_expired_notified_at` set in the
+  same UPDATE that selects — exactly-once claim under at-least-once
+  scheduling) and emails the admin per spec §7. The order is NOT
+  transitioned — the admin decides manually. A refused send is
+  compensated (claim surrendered) so the next hour retries.
+- `cron(0 3 * * ? *)` Sofia — **catalog-backup**: full JSON export of
+  the four catalog tables (soft-deleted rows included) to the
+  versioned, SSE-KMS, TLS-only backup bucket at
+  `catalog/<YYYY-MM-DD>.json` (Sofia calendar date → same-day re-runs
+  overwrite idempotently). Deterministic row order keeps unchanged
+  re-runs byte-identical. Zero personal data by design — the GDPR
+  backup-erasure tension cannot apply to it. 90-day lifecycle expiry.
+- `cron(0 4 * * ? *)` Sofia — **unverified-cleanup**: day-6 warning
+  email (claim marker `unverified_deletion_warning_at`, fresh 24h
+  verification token in the CTA), day-7 hard DELETE of unverified
+  customers (no pseudonymised remnant — nothing is legally retained;
+  guarded by `role='customer'`, a `NOT EXISTS(orders)` rail, and a
+  partial index that structurally excludes the bootstrap admin), plus
+  the 180-day `login_attempts` retention prune (Art. 5(1)(e)).
 
-- `0 3 * * *` Sofia — daily catalog backup to S3.
-- `0 * * * *` — hourly expired-pickup-deadline check.
-- `0 4 * * *` Sofia — daily unverified-account cleanup (>7 days old).
+Failure model — two disjoint lanes, two alarms (§3.10): the Scheduler
+invokes Lambda ASYNCHRONOUSLY, so in-function job failures surface on
+the Lambda `Errors` metric (after Lambda's 2 async retries) → the
+scheduler-fn-errors alarm; DELIVERY failures retry per the schedule's
+`retry_policy` (3 attempts / 30 min) then park in the scheduler DLQ →
+the scheduler-delivery-failures alarm. There is deliberately NO
+job-level redrive: every job is an idempotent full-scan sweep, so the
+next cron tick IS the redrive.
 
-Cost: $0 (14M-invocation free tier).
+Ops: same jobs run locally via
+`npm --workspace @shop/api run job -- <name> [--now=<ISO>]`
+(console transport prints the emails). Runbook in `infra/README.md`.
 
-### 3.9 Secrets — AWS Systems Manager Parameter Store (planned)
+Cost: $0 (14M-invocation free tier; three rules ≈ 800 invokes/month).
 
-**Today:** `.env` files for local dev. No production secrets.
+### 3.9 Secrets — AWS Systems Manager Parameter Store
 
-**Target:** Parameter Store holds `NEON_DATABASE_URL`,
-`SES_FROM_ADDRESS`, `ADMIN_MFA_CONFIG`. Read by Lambda at cold-start.
-No hardcoded secrets anywhere. Standard tier is free; the shop's
-needs fit comfortably in the limits (10K parameters, 4 KB each).
+**Today:** `.env` files for local dev. On the deployed stack
+(live-apply-validated 2026-06-07) the one runtime secret —
+`DATABASE_URL` — lives in Parameter Store (SecureString, CMK), seeded
+with a placeholder and set out-of-band so the real value never enters
+Terraform state via that resource; the admin-MFA keys follow the same
+path when set.
 
-### 3.10 Logs and alarms — Amazon CloudWatch (planned)
+**Target:** unchanged — every runtime secret in Parameter Store, read
+into Lambda env at deploy time, no hardcoded secrets anywhere.
+Standard tier is free; the shop's needs fit comfortably in the limits
+(10K parameters, 4 KB each).
 
-**Today:** Pino JSON logs land on `stdout` in dev. No CloudWatch.
+### 3.10 Logs and alarms — Amazon CloudWatch
 
-**Target:** Each Lambda would write Pino JSON to a dedicated
-CloudWatch Log Group with 14-day retention. Seven alarms in the
-always-free 10-alarm tier:
+**Today:** Pino JSON logs land on `stdout` in dev; on the deployed
+stack each Lambda writes to its own pre-created, CMK-encrypted
+CloudWatch Log Group. Eight alarms defined in
+`infra/observability.tf` (the always-free tier holds 10):
 
 - 5xx rate > 1% over 5 minutes
-- Failed admin logins > 5/hour
+- Failed admin logins > 5/hour (gated until admin-api exists)
 - Lambda p99 duration > 5 seconds
-- EventBridge scheduler failure
+- scheduler-fn Errors > 0 — a scheduled JOB threw; the Scheduler
+  invokes Lambda async, so job failures only ever surface on this
+  metric (ships with `enable_scheduler`, 2026-06-12)
+- Scheduler delivery failure — an invocation EventBridge Scheduler
+  could not deliver parked in the scheduler DLQ after its retry
+  policy (ships with `enable_scheduler`, 2026-06-12)
 - SES bounce rate > 5%
 - Email DLQ depth > 0 — a durable-medium email exhausted its retries
   (inspect + redrive; ships with `enable_email_queue`, 2026-06-12)
@@ -891,8 +960,13 @@ Not yet formalised in code or alarms. Targets to adopt:
 
 ### 6.3 Backup discipline
 
-- **Target:** Daily catalog backup at 03:00 Sofia, S3 versioned,
-  90-day retention. **Today:** not running (scheduler-fn not built).
+- **Daily catalog backup at 03:00 Sofia** — shipped 2026-06-12
+  (scheduler-fn, §3.8): versioned + SSE-KMS + TLS-only bucket, 90-day
+  lifecycle expiry, write-only IAM for the function (it cannot read or
+  delete history). Deliberately catalog-only (no PII): customer/order
+  recovery is Neon PITR's job; this artifact covers the one dataset
+  the owner curates by hand, and doubles as the DR-drill seed (item
+  19). Runs wherever `enable_scheduler` is on.
 - **Neon PITR** is continuous on Neon — 7 days on Launch, 30 days on
   Scale.
 - **DR drill cadence:** **never run.** Recommended quarterly once
@@ -1279,9 +1353,13 @@ Drill quarterly. Document each run. **Never been drilled today.**
 4. Watch the audit log entry appear
 ```
 
-**Today:** no admin panel + no S3 backup means this procedure is
-documented intent only. Schema is ready (`catalog_backups` table
-exists); the admin Lambda and scheduler-fn would wire it up.
+**Today:** the BACKUP half is real (2026-06-12, live-validated
+2026-06-13): scheduler-fn writes the daily snapshot and indexes it in
+`catalog_backups`
+(kind='scheduled', one row per key — the table the restore page will
+list from). The RESTORE half (admin Archive page + replay) is still
+the admin-api slice; until it ships, restore = read the S3 object and
+replay it manually (psql / a one-off script).
 
 ### 12.4 Procedure (admin MFA seed lost)
 
@@ -1352,6 +1430,26 @@ These are baked-in for good reasons; revisiting them costs you weeks.
 - **`timestamptz` always** — naïve timestamps are a bug magnet.
 - **Neon, not RDS** — RDS forces a VPC which adds NAT Gateway
   ($32/mo) and slows Lambda cold-starts by 300–500ms.
+- **Neon serverless driver: HTTP for queries, WebSocket for
+  transactions** (2026-06-13) — `createDb()` uses the
+  `@neondatabase/serverless` `Pool` with `poolQueryViaFetch=true`, so
+  ordinary queries cross one stateless HTTPS fetch (the
+  connection-storm-free property the prod target was chosen for) while
+  an interactive `db.transaction(...)` opens a WebSocket for that
+  transaction only. The plain `neon-http` driver was the original
+  choice but THROWS `No transactions support in neon-http driver`, and
+  the app relies on interactive transactions in checkout, registration,
+  password reset, email change/verification, account deletion, admin
+  order transitions and the scheduler jobs — so the runtime driver MUST
+  support them (caught by the live catalog-backup drill, which ran
+  against Neon for the first time). `channel_binding=require` is
+  stripped for the WebSocket transport (the wss tunnel is the TLS layer,
+  so pg-level channel binding has nothing to bind to) and
+  `webSocketConstructor` is the Node 22 global — no `ws` dependency.
+  Rewriting every transaction into single statements was rejected: it
+  sacrifices atomicity the domain needs and touches every write path,
+  where a one-file driver swap fixes it behind the unchanged `DbClient`
+  interface (zero call-site changes).
 - **Hono on Lambda** — same handler runs on Workers/Bun/Node, so
   the deployment target can change without rewriting the API.
 - **Zod 4 + `@hono/zod-openapi`** — the API contract is the code.
@@ -1405,6 +1503,26 @@ These are baked-in for good reasons; revisiting them costs you weeks.
   SSE-KMS on the queue because rendered bodies are personal data.
   Optimistic SES-then-queue hybrids were rejected: one code path,
   and SES latency leaves the request path entirely.
+- **Scheduled jobs are idempotent sweeps with claim markers in the
+  domain tables, not a workflow engine** (2026-06-12) — EventBridge
+  Scheduler (IANA-timezone cron, the purpose-built service) async-
+  invokes scheduler-fn; every job re-derives its work from the
+  database and CLAIMS each side effect in the same UPDATE that
+  selects it (`pickup_expired_notified_at`,
+  `unverified_deletion_warning_at`), so at-least-once delivery,
+  Lambda's async retries and overlapping runs are all harmless. The
+  Postgres marker IS the idempotency store — no DynamoDB/Powertools
+  layer for three tiny crons. No job-level DLQ either: the next cron
+  tick is the redrive; alarms (not redrives) get a human when a job
+  fails persistently. Unverified accounts are HARD-deleted (vs the
+  pseudonymising account-deletion routine): an unverified customer
+  cannot own orders, so nothing is legally retained — guarded by a
+  `NOT EXISTS(orders)` rail. Deletion at day 7 does not wait for the
+  day-6 courtesy warning to have succeeded — storage limitation
+  outranks courtesy, and the alternative (a bouncing address blocks
+  deletion forever) is an unbounded-retention bug. The catalog backup
+  is catalog-ONLY: zero personal data, so erasure requests never
+  collide with backup retention.
 - **Single admin account** — multi-admin is out of scope.
 - **Uniform strict CSP** — defends against the SPA-soft-navigation
   bypass documented in §5.2.
@@ -1419,7 +1537,7 @@ These are baked-in for good reasons; revisiting them costs you weeks.
 |---|---|---|
 | Operational Excellence | B | Production deploy, distributed tracing, formal SLOs + burn-rate alerting, DORA metrics, scheduled DR drills, incident postmortem template, status page |
 | Security | A | Customer MFA option (growth-stage); admin auth ✅ (TOTP MFA shipped end-to-end 2026-06-08 — backend + sign-in UI) |
-| Reliability | B | Production deploy, DR drill cadence, public status page (SQS email retry queue ✅ 2026-06-12 — live-validated on the test stack incl. the DLQ → alarm → redrive drill) |
+| Reliability | B | Production deploy, DR drill cadence, public status page (SQS email retry queue ✅ 2026-06-12 — live-validated incl. the DLQ → alarm → redrive drill; scheduler-fn + daily catalog backup + retention sweeps ✅ 2026-06-12, live-validated 2026-06-13 — the manual drills for all three jobs passed against Neon; the first drill exposed that the prod `neon-http` driver cannot run `db.transaction(...)`, fixed by switching to the Neon serverless WebSocket driver) |
 | Performance Efficiency | B+ | Synthetic monitoring, RUM, query-latency SLOs per endpoint |
 | Cost Optimization | B− | Cloudflare swap (the big one), CloudWatch retention to 14d |
 | Sustainability | A | Documented quarterly AWS CFT review |
@@ -1671,7 +1789,41 @@ Ranked by `(impact ÷ effort)` — highest leverage first. Items marked
     the dedicated `admin-api` Lambda extraction (structural, with
     item 35's module) and the OTHER admin CRUD slices — products,
     categories, customers, banners, settings (each its own slice).
-23. ❌ **Scheduler-fn Lambda** + the three cron rules. ½ day.
+23. ✅ **Scheduler-fn Lambda + the three cron rules — shipped
+    2026-06-12, live-validated 2026-06-13** (code + tests + Terraform;
+    the manual `aws lambda invoke` drills for all three jobs passed on
+    the running stack against Neon — catalog-backup wrote the S3 object
+    + `catalog_backups` row, pickup-expiry delivered the Bulgarian admin
+    email to the verified inbox, unverified-cleanup returned a clean
+    zero-work run. The first drill also surfaced a latent prod bug — the
+    `neon-http` driver cannot run `db.transaction(...)` — fixed by
+    switching the runtime to the Neon serverless WebSocket driver, see
+    §13). The jobs live in `@shop/api`
+    `src/jobs/*` — the stateful package — and bundle into their own
+    pure-JS Lambda artifact (`npm run build:scheduler` →
+    `dist-scheduler/`, builds on any OS like email-fn's). EventBridge
+    Scheduler drives them with Sofia-timezone cron + per-schedule
+    retry policy + a delivery DLQ (`infra/scheduler.tf`, flag
+    `enable_scheduler`, default off):
+    hourly **pickup-expiry** (claims `pickup_expired_notified_at` in
+    the same UPDATE that selects → exactly-once admin email per spec
+    §7; order NOT auto-transitioned), 03:00 **catalog-backup**
+    (date-keyed idempotent JSON snapshot of the 4 catalog tables —
+    zero PII — to a versioned SSE-KMS 90-day-lifecycle bucket,
+    write-only IAM), 04:00 **unverified-cleanup** (day-6 warning with
+    a FRESH 24h token via `unverified_deletion_warning_at` claim,
+    day-7 HARD delete behind `role='customer'` + `NOT EXISTS(orders)`
+    rails, + the 180-day `login_attempts` prune → closes the GDPR
+    Art. 5(1)(e) row). Migration `0004_scheduler_jobs` adds the two
+    claim markers + partial indexes. Two new email templates (12→14).
+    Failure model: async invoke ⇒ job errors alarm on Lambda `Errors`
+    (4a), delivery failures park in the scheduler DLQ + alarm (4b);
+    no job-level redrive — every job is an idempotent sweep, the next
+    tick re-covers it (§13 decision entry). Local ops:
+    `npm --workspace @shop/api run job -- <name> [--now=<ISO>]`.
+    18 new integration tests in `@shop/api`, 5 template tests in
+    `@shop/email`. Replaces the blind placeholder scheduler alarm
+    (wrong metric) with the 4a/4b pair. Runbook in `infra/README.md`.
 24. ❌ **Formalise SLOs in `slos.yaml` (OpenSLO format).** 1 hour.
 25. ❌ **Burn-rate CloudWatch composite alarms.** 1 hour.
 26. ❌ **Cloudflare DNS + R2 swap.** ½ day; saves €0.50/mo and

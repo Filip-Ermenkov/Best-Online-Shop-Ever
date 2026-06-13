@@ -5,12 +5,15 @@ import { parseEnv } from "./env.js";
  * Reuse a single DB client per process / per Lambda warm container.
  *
  * The Drizzle factory in @shop/db automatically picks the right driver:
- *   - hostname matches /\.neon\.(tech|build)/  →  Neon HTTP (production)
+ *   - hostname matches /\.neon\.(tech|build)/  →  Neon serverless driver
  *   - everything else                            →  node-postgres TCP pool
  *
- * For the HTTP driver this just memoises the `neon(url)` callable, which is
- * essentially free. For the TCP driver this is genuinely important — we want
- * the pg.Pool to outlive the request, not be torn down between routes.
+ * The Neon serverless driver sends ordinary queries over a stateless HTTPS
+ * fetch (no held connection) and opens a short-lived WebSocket only for the
+ * duration of a `db.transaction(...)`. Memoising the client just avoids
+ * rebuilding the Pool/config per call. For the node-pg TCP driver memoising
+ * is genuinely important — we want the pg.Pool to outlive the request, not be
+ * torn down between routes.
  *
  * We deliberately do NOT close the pool in the request lifecycle. On Lambda
  * the container freeze handles it. Locally, the dev server runs forever.

@@ -29,6 +29,13 @@
       "when": 1781568000000,
       "tag": "0003_admin_mfa_replay_guard",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1781274468343,
+      "tag": "0004_scheduler_jobs",
+      "breakpoints": true
     }
   ]
 }

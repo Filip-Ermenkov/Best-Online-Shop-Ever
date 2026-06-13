@@ -93,8 +93,8 @@ exercised until deployment, the cell is annotated.
 | Atomic blue/green deployments | N/A today | Target: AWS Amplify atomic deploys once deployed |
 | Structured JSON logs | ✅ | Pino + PII redaction. Runs locally; lands in CloudWatch once deployed |
 | Per-request correlation IDs | ✅ | `X-Request-Id` |
-| CloudWatch alarms on key metrics | ✅ | 7 alarms (5xx rate, admin logins, p99 duration, scheduler failure, SES bounces, email DLQ depth, email queue age) in `infra/observability.tf`; the 5xx-rate + p99 alarms deploy by default and were live-applied 2026-06-07 (admin/scheduler/SES ones gated until those components exist; the two email-queue ones ship with `enable_email_queue`, 2026-06-12) |
-| Cron via managed service | ❌ Today | Target: EventBridge Scheduler invoking `scheduler-fn`. Scheduler Lambda not built |
+| CloudWatch alarms on key metrics | ✅ | 8 alarms (5xx rate, admin logins, p99 duration, scheduler-fn errors, scheduler delivery failures, SES bounces, email DLQ depth, email queue age) in `infra/observability.tf`; the 5xx-rate + p99 alarms deploy by default and were live-applied 2026-06-07 (admin/SES ones gated until those components exist; the two email-queue ones ship with `enable_email_queue`, 2026-06-12; the two scheduler ones with `enable_scheduler`, 2026-06-12) |
+| Cron via managed service | ✅ | EventBridge Scheduler (Sofia-timezone cron, per-schedule retry policy + delivery DLQ) invoking `scheduler-fn` — three rules: hourly pickup-expiry, daily catalog backup, daily unverified-account cleanup + retention prune (`infra/scheduler.tf`, shipped 2026-06-12, live-validated 2026-06-13 via the manual job drills against Neon, flag `enable_scheduler`) |
 | Runbooks documented | ⚠️ | DR procedure + MFA recovery documented in ARCHITECTURE.md §12. No incident response playbook yet |
 | **Distributed tracing** | ❌ | Not yet added. Roadmap item 18 (ADOT) |
 | **Formal SLO definitions** | ❌ | Targets exist informally in ARCHITECTURE.md §7.2. Roadmap item 24 |
@@ -147,7 +147,7 @@ exercised until deployment, the cell is annotated.
 | Idempotent operations | ✅ | `POST /orders` |
 | Optimistic locking | ✅ | `version` column on orders |
 | Graceful degradation | ✅ | RFC 9457 errors; best-effort emails; `currentUser` does not clear cookies on DB outage |
-| Daily catalog backups | ❌ Today | Target: scheduler-fn → S3 daily, 90-day retention + Glacier. Scheduler not built |
+| Daily catalog backups | ✅ | scheduler-fn → S3 daily at 03:00 Sofia (versioned + SSE-KMS + TLS-only bucket, 90-day lifecycle, write-only IAM), indexed in `catalog_backups` (shipped 2026-06-12, live-validated 2026-06-13, flag `enable_scheduler`). Glacier tiering deliberately dropped: 90-day-max snapshots of a small catalog cost cents in S3 Standard — a transition adds complexity for no saving |
 | PITR | N/A today | Target: 7d on Neon Launch, 30d on Scale |
 | Expand-contract migration discipline | ✅ | Documented + practised |
 | Honest SPOF acknowledgement | ✅ | Neon Free/Launch documented as SPOF in ARCHITECTURE.md §6 |
@@ -431,7 +431,7 @@ Bulgarian shop selling to EU residents — full GDPR scope.
 |---|---|---|
 | Art. 5 | Lawfulness, fairness, transparency | ✅ Privacy policy page at `/privacy`; cookie consent recorded server-side in `cookie_consents` (see Art. 7) |
 | Art. 5(1)(c) | Data minimisation | ✅ Only collects required fields per account type |
-| Art. 5(1)(e) | Storage limitation | ⚠️ No retention sweep for old `login_attempts` (scheduler-fn not built — Roadmap item 23) |
+| Art. 5(1)(e) | Storage limitation | ✅ scheduler-fn's daily cleanup (shipped 2026-06-12, item 23): unverified accounts hard-deleted 7 days after registration (day-6 warning email per the spec; nothing legally retained — unverified users cannot order, `NOT EXISTS(orders)` rail enforced), and `login_attempts` rows pruned past the schema's 180-day retention (`LOGIN_ATTEMPTS_RETENTION_DAYS`). Runs wherever `enable_scheduler` is on |
 | Art. 6 | Lawful basis | ✅ Contract + legitimate interest + consent |
 | Art. 7 | Conditions for consent | ✅ Server-side consent receipts (June 3, 2026). `CookieBanner` records each choice via `POST /consent`, which writes an append-only, demonstrable receipt to `cookie_consents` (opaque `visitor_id` cookie, timestamp, accepted categories; policy version on the `cookie_consent_recorded` audit event) — satisfying Art. 7(1) "the controller shall be able to demonstrate that the data subject has consented." `localStorage` now drives only banner visibility. Receipts are disclosed in the GDPR export, browser-scoped. Route + rationale in `backend/shop-api/src/routes/consent.ts` |
 | Art. 12 | Transparent information | ✅ Privacy policy + clear UI copy |

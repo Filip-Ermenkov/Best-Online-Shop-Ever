@@ -59,9 +59,14 @@ future work):
   2026-06-10) — live in `shop-api` as portable `routes/admin/*` modules.
   The REMAINING admin CRUD flows (products, categories, customers,
   banners, settings) are still stubbed on the frontend with mock data.
-- `backend/scheduler-fn/` — scheduled-Lambda for the three cron rules
-  (daily catalog backup, hourly pickup expiry, daily unverified-account
-  cleanup). Not built.
+- `scheduler-fn` — the scheduled-jobs Lambda (three cron rules: daily
+  catalog backup, hourly pickup expiry, daily unverified-account
+  cleanup + retention prune). **Shipped 2026-06-12** — there is no
+  separate directory: the jobs live in `backend/shop-api/src/jobs/*`
+  (they are stateful DB sweeps, so they belong to the stateful
+  package) and build into their own pure-JS Lambda artifact via
+  `npm --workspace @shop/api run build:scheduler` → `dist-scheduler/`.
+  Locally runnable: `npm --workspace @shop/api run job -- <name>`.
 
 This is an **npm workspaces** monorepo. One `npm install` at the
 root provisions every workspace; cross-package imports
@@ -116,8 +121,8 @@ visible at `/account/orders`.
 
 ```powershell
 npm --workspace @shop/auth  run test   # 70 unit tests (Argon2, sessions, HIBP, TOTP, recovery codes, AES-GCM, challenge)
-npm --workspace @shop/email run test   # 69 unit tests (12 templates + 4 transports + queue envelope/consumer)
-npm --workspace @shop/api   run test   # full integration suite (361 cases) vs shop_test DB
+npm --workspace @shop/email run test   # 74 unit tests (14 templates + 4 transports + queue envelope/consumer)
+npm --workspace @shop/api   run test   # full integration suite (379 cases) vs shop_test DB
 ```
 
 Accessibility (WCAG 2.2 AA / EAA) has its own layered audit — see
@@ -155,7 +160,7 @@ they aren't. The honest state:
 |---|---|
 | Frontend (Next.js 16) | Builds locally; not deployed to Amplify |
 | `shop-api` Lambda (Hono) | Runs locally via `@hono/node-server`; not deployed to Lambda |
-| Database | Local Docker Postgres 17 works; Neon production instance not provisioned |
+| Database | Local Docker Postgres 17 for dev/CI; a Neon test branch now exists (all five migrations `0000`–`0004` applied 2026-06-13) and backs the live scheduler drills. Not yet a *maintained* prod DB (no custom domain/frontend in front of it). Runtime uses the Neon serverless WebSocket driver (HTTP for queries, WebSocket for transactions) |
 | Email | `console` transport locally; four transports total (`sqs`/`ses`/`console`/`stub`). SES production domain DNS (DKIM + MAIL FROM + DMARC) not configured — live sends so far use a sandbox-verified email identity |
 | Email queue (SQS + `email-fn`) | **Live-validated (2026-06-12)** — enabled on the running test stack; real SES delivery plus the DLQ → alarm → redrive drill |
 | CloudFront + OAC | Provisioned on the live test stack (2026-06-07 apply) |
@@ -163,7 +168,7 @@ they aren't. The honest state:
 | Admin authentication (TOTP MFA) | **Shipped end-to-end** — `shop-api` `/admin/auth/*` + the `/admin` frontend `AdminAuthGate` (login → MFA → enrolment) |
 | Admin order management | **Shipped end-to-end (2026-06-10)** — `shop-api` `/admin/orders/*` (list + filters + search, detail + history, state-machine status transitions with optimistic locking + customer emails, CSV export) + the real `/admin/orders` UI |
 | `admin-api` Lambda | Not built (admin auth + the orders slice currently live in `shop-api`; extract when the admin CRUD surface grows) |
-| `scheduler-fn` Lambda | Not built |
+| `scheduler-fn` Lambda | **Shipped 2026-06-12, live-validated 2026-06-13** (roadmap item 23) — jobs in `@shop/api` `src/jobs/*` + own pure-JS bundle (`build:scheduler`) + `infra/scheduler.tf` (EventBridge Scheduler, 3 Sofia-time crons, delivery DLQ, backup bucket, 2 alarms) behind `enable_scheduler`. All three `aws lambda invoke` drills passed against the Neon test branch; the catalog-backup drill also caught a prod-only bug (the `neon-http` driver can't run `db.transaction(...)`) now fixed by the Neon serverless WebSocket driver — see [decisions](#architecture-decisions-in-force). Runbook in `infra/README.md` |
 | Terraform / IaC | **Live-apply-validated** (`infra/`) — a successful end-to-end `terraform apply` (2026-06-07) returned HTTP 200 through CloudFront→OAC→Lambda; fmt/validate/tflint/checkov green. A maintained prod env (domain + migrated schema + frontend) is the next step |
 
 The architecture documentation (`docs/ARCHITECTURE.md`) describes the
@@ -239,21 +244,25 @@ Test counts as of 2026-06-12, by `it`/`test` block: addresses 28,
 admin-auth 17, **admin-orders 26**, auth 48, cart 30, categories 7,
 consent 10, csp-report 25, data-export 14, email-change 21,
 order-emails 5, orders 25, password-reset 19, products 15,
-verification 11, withdrawal 23, plus two lib suites
-(phone-validation; **email-transport-config 3** — the
-`EMAIL_TRANSPORT=sqs` boot contract) — **327 blocks**. The
-`csp-report` and `phone` suites are table-driven (`it.each`), so
-`vitest run` expands them and reports **361 cases total**, all
-against a real `shop_test` Postgres in CI.
+verification 11, withdrawal 23, **jobs 18** (pickup-expiry 4,
+unverified-cleanup 8, catalog-backup + dispatch 6 — the scheduler-fn
+sweeps, 2026-06-12), plus two lib suites (phone-validation;
+**email-transport-config 3** — the `EMAIL_TRANSPORT=sqs` boot
+contract) — **345 blocks**. The `csp-report` and `phone` suites are
+table-driven (`it.each`), so `vitest run` expands them and reports
+**379 cases total**, all against a real `shop_test` Postgres in CI.
 
 ### Backend (`@shop/db` schema)
 
-30 tables, 32 FKs, 44 indexes, 10 enums, 4 migrations
+30 tables, 32 FKs, 46 indexes, 10 enums, 5 migrations
 (`0000_initial.sql`, `0001_orders_sequence.sql`,
 `0002_complaints_withdrawal.sql`,
 `0003_admin_mfa_replay_guard.sql` — adds `users.mfa_last_used_step` +
-`mfa_enrolled_at` for the admin TOTP flow). Idempotent seed in
-`backend/db/scripts/seed.ts`.
+`mfa_enrolled_at` for the admin TOTP flow,
+`0004_scheduler_jobs.sql` — adds the two scheduler claim markers
+`orders.pickup_expired_notified_at` +
+`users.unverified_deletion_warning_at` and their partial indexes).
+Idempotent seed in `backend/db/scripts/seed.ts`.
 
 ### Backend (`@shop/auth`)
 
@@ -283,7 +292,7 @@ enqueues the rendered email onto a durable SQS queue and the
 send with partial-batch retry + an alarmed DLQ — an SES outage delays
 delivery instead of dropping it. The versioned queue envelope and the
 consumer live in this package (`src/queue/`), so the producer/consumer
-contract can never drift. **Twelve** Bulgarian templates currently
+contract can never drift. **Fourteen** Bulgarian templates currently
 exist:
 
 1.  `verification` — signup email-verification link
@@ -313,6 +322,51 @@ exist:
     /auth/me/export`). Carries no payload and no link (the data went
     over the authenticated channel); directs a surprised recipient to
     secure their account, mirroring the `password-changed` pattern.
+13. `pickup-expired-admin` — operations notice to the support inbox
+    when a `ready_for_pickup` order's deadline passes (sent once per
+    order by scheduler-fn's hourly job, 2026-06-12). Order number +
+    customer contact + admin deep link; the decision stays manual per
+    spec §7 — the order is never auto-cancelled.
+14. `account-deletion-warning` — the day-6 „ще бъде изтрит утре"
+    notice to an unverified account (scheduler-fn daily cleanup,
+    2026-06-12), carrying a FRESH 24h verification link as the
+    primary CTA and an explicit "no action needed if this wasn't you"
+    default.
+
+### Backend (scheduled jobs — `@shop/api` `src/jobs/*`, 2026-06-12)
+
+Three idempotent sweeps behind one registry (`runner.ts`), invoked by
+EventBridge Scheduler in production (`{"job":"…"}` static input →
+`src/jobs/handler.ts`, own pure-JS bundle via `build:scheduler`) and
+by hand locally (`npm --workspace @shop/api run job -- <name>
+[--now=<ISO>]`):
+
+- **`pickup-expiry`** (hourly) — claims expired `ready_for_pickup`
+  orders via `pickup_expired_notified_at` (set in the same UPDATE that
+  selects → exactly-once under at-least-once scheduling) and sends the
+  admin the spec-§7 notice. The order is NOT transitioned. A refused
+  send surrenders the claim so the next hour retries.
+- **`catalog-backup`** (03:00 Sofia) — date-keyed
+  (`catalog/<YYYY-MM-DD>.json`, Sofia calendar) JSON snapshot of the
+  four catalog tables — soft-deleted rows included, zero personal
+  data — uploaded to the versioned 90-day-lifecycle bucket and indexed
+  in the previously-dormant `catalog_backups` table (one
+  `kind='scheduled'` row per key; the future admin Archive page lists
+  from it). Deterministic ordering keeps unchanged re-runs
+  byte-identical. Fails LOUD (→ Errors alarm) if the bucket env is
+  missing — a backup that silently no-ops is the worst backup.
+- **`unverified-cleanup`** (04:00 Sofia) — spec-§8 GDPR
+  Art. 5(1)(e) sweep: day-6 warning email (claim marker
+  `unverified_deletion_warning_at` + fresh 24h token), day-7 HARD
+  delete of unverified customers (no orders ⇒ nothing legally
+  retained; `role='customer'` + `NOT EXISTS(orders)` rails keep the
+  bootstrap admin and any anomaly out), plus the 180-day
+  `login_attempts` retention prune the schema promised since 0000.
+
+Migration `0004_scheduler_jobs` adds the two claim markers + their
+partial indexes. Job failures propagate (async invoke → Lambda
+retries → `scheduler-fn-errors` alarm); there is no job-level DLQ
+because the next cron tick re-covers the same work by design.
 
 ### Frontend (`frontend/`)
 
@@ -756,6 +810,46 @@ To exercise the queue path itself:
   and the `email-dlq-depth` alarm fire; redrive from the SQS console
   afterwards. Full runbook in `infra/README.md`.
 
+### Scheduled jobs (scheduler-fn)
+
+The three sweeps run identically on a laptop and in production —
+locally they use the `console` transport (rendered emails print to
+stdout) and an injected `--now` lets you time-travel instead of
+waiting six days:
+
+```powershell
+# Hourly expired-pickup check: mark an order ready_for_pickup with a
+# past deadline (admin UI or psql), then:
+npm --workspace @shop/api run job -- pickup-expiry
+# → console prints the admin notice; orders.pickup_expired_notified_at
+#   is set; re-running prints NOTHING (claimed = idempotent).
+
+# Day-6 warning + day-7 deletion: register a fresh account, skip
+# verification, then time-travel:
+npm --workspace @shop/api run job -- unverified-cleanup --now=<registration time + 6.5 days, ISO>
+# → warning email with a fresh verify link; run again with +7.5 days
+#   → the account row is hard-deleted (cascades sessions/profile).
+
+# Catalog backup (locally proves the loud-failure guard):
+npm --workspace @shop/api run job -- catalog-backup
+# → throws "CATALOG_BACKUP_BUCKET is required" by design — a backup
+#   job that silently no-ops is the worst failure mode. The real
+#   upload is exercised in tests (injected recorder) and live.
+```
+
+- **Unit level:** `npm --workspace @shop/api run test` — the
+  `tests/jobs/*` suites (18 blocks) prove claim-then-send idempotency,
+  the compensation path when the transport refuses, every deletion
+  rail (verified / admin / soft-deleted / young / has-orders), the
+  180-day `login_attempts` prune, Sofia-calendar date keys (incl. the
+  UTC≠Sofia midnight edge), byte-identical re-runs, and the
+  `catalog_backups` replace-by-key row.
+- **Live stack:** `enable_scheduler = true`, build the bundle, apply —
+  EventBridge Scheduler fires the three Sofia-time crons; failures
+  surface on the `scheduler-fn-errors` / `scheduler-delivery-failures`
+  alarms. Full runbook (incl. manual `aws lambda invoke` drills) in
+  `infra/README.md`.
+
 ### CSP violation reporting
 
 The strict `'nonce-X' 'strict-dynamic'` CSP shipped to the frontend
@@ -860,6 +954,20 @@ seed, optional delivery-address and corporate-data snapshots, cart
 clearing. `Idempotency-Key` header (Stripe / MDN pattern) UNIQUE on
 the order row; retries return the original order verbatim.
 
+**Database driver:** `createDb()` (`backend/db/src/client.ts`) picks the
+Neon **serverless** driver in prod (any `*.neon.tech` URL) and node-pg
+locally. The Neon driver sends ordinary queries over a stateless HTTPS
+fetch (`poolQueryViaFetch` — no held connection, no Lambda connection
+storm) and opens a WebSocket **only** for an interactive
+`db.transaction(...)`. This replaced the original `neon-http` driver
+(2026-06-13), which throws `No transactions support in neon-http driver`
+— a prod-only failure the live catalog-backup drill exposed, and which
+would equally have broken checkout, registration, password reset, email
+change/verification, account deletion, and admin order transitions (all
+use `db.transaction`). `channel_binding=require` is stripped for the
+WebSocket path and the Node 22 global `WebSocket` is used (no `ws` dep).
+Zero call-site changes. Full rationale in `docs/ARCHITECTURE.md` §13.
+
 **CSP:** Uniform strict `'nonce-X' 'strict-dynamic'` on every HTML
 document via the frontend proxy. The earlier hybrid (permissive on
 catalog, strict on account) was found to be silently bypassed by SPA
@@ -917,10 +1025,20 @@ reality, as of 2026-06-07:
   not created as a separate Lambda. The admin surface that exists
   (auth + the orders slice) lives in `shop-api` under `routes/admin/*`;
   the non-orders `/admin/*` frontend pages render mock data.
-- **`scheduler-fn` Lambda** — referenced in §3.8; not created.
-  Three cron rules (daily catalog backup, hourly pickup expiry,
-  daily unverified-account cleanup) are documented design but do
-  not run.
+- ~~**`scheduler-fn` Lambda**~~ ✅ Shipped 2026-06-12 (roadmap item
+  23): the three cron rules run as idempotent sweeps in `@shop/api`
+  `src/jobs/*` behind EventBridge Scheduler (`infra/scheduler.tf`,
+  flag `enable_scheduler`) — hourly pickup-expiry admin notice
+  (claim-marked, exactly-once), 03:00 Sofia catalog backup to a
+  versioned 90-day S3 bucket (indexed in `catalog_backups`), 04:00
+  Sofia unverified-account cleanup (day-6 warning / day-7 hard
+  delete) + the 180-day `login_attempts` retention prune. Migration
+  `0004_scheduler_jobs`; 18 integration tests; two new templates;
+  runbook in `infra/README.md`. **Live-validated 2026-06-13** — all
+  three job drills passed against a Neon branch; that drill also caught
+  and fixed a prod-only bug (the `neon-http` driver can't run
+  `db.transaction(...)` → switched to the Neon serverless WebSocket
+  driver, see the Database-driver decision above).
 - ~~**Order status update wire-up**~~ ✅ Shipped 2026-06-10 with the
   admin orders slice — `POST /admin/orders/:orderNumber/status` calls
   `sendOrderStatusUpdateEmail` after each customer-visible transition
@@ -967,9 +1085,9 @@ In priority order (also tracked in `docs/ARCHITECTURE.md` §15):
 
 1. **First production deploy.** The `infra/` Terraform that provisions
    it (`shop-api` Lambda, Function URL, CloudFront/OAC, ACM, SSM, KMS,
-   CloudWatch log group, 7 alarms (2 gated on the email queue),
-   GitHub OIDC deploy role; opt-in
-   WAF/Route 53/SES/Amplify/email-queue) has now **run end-to-end**: a live
+   CloudWatch log group, 8 alarms (2 gated on the email queue, 2 on
+   the scheduler), GitHub OIDC deploy role; opt-in
+   WAF/Route 53/SES/Amplify/email-queue/scheduler) has now **run end-to-end**: a live
    `terraform apply` (2026-06-07) returned HTTP 200 through
    CloudFront → OAC → Lambda, so the architecture is no longer
    hypothesis. What remains for a *maintained* production environment:
@@ -1007,10 +1125,11 @@ In priority order (also tracked in `docs/ARCHITECTURE.md` §15):
    banners, settings).
 
 Items currently described in the architecture but not yet real
-(the remaining admin CRUD slices, the `admin-api` Lambda split,
-`scheduler-fn`, a maintained production deploy) should be brought
-into reality before any further "growth-stage" items (customer MFA,
-multi-region, SLSA L3, Cloudflare proxy swap).
+(the remaining admin CRUD slices, the `admin-api` Lambda split, a
+maintained production deploy — `scheduler-fn` came off this list
+2026-06-12) should be brought into reality before any further
+"growth-stage" items (customer MFA, multi-region, SLSA L3,
+Cloudflare proxy swap).
 
 ## Browsing the API
 

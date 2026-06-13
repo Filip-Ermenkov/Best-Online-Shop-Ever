@@ -129,3 +129,15 @@ export {
   DATA_EXPORTED_TEMPLATE_ID,
 } from "./templates/data-exported.js";
 export type { DataExportedTemplateInput } from "./templates/data-exported.js";
+
+export {
+  renderPickupExpiredAdminEmail,
+  PICKUP_EXPIRED_ADMIN_TEMPLATE_ID,
+} from "./templates/pickup-expired-admin.js";
+export type { PickupExpiredAdminTemplateInput } from "./templates/pickup-expired-admin.js";
+
+export {
+  renderAccountDeletionWarningEmail,
+  ACCOUNT_DELETION_WARNING_TEMPLATE_ID,
+} from "./templates/account-deletion-warning.js";
+export type { AccountDeletionWarningTemplateInput } from "./templates/account-deletion-warning.js";
