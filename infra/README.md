@@ -11,8 +11,18 @@ statically-validated Terraform.
 security-scanned — and live-apply-validated on 2026-06-07**: a test
 `terraform apply` deployed end-to-end and returned HTTP 200 through
 CloudFront → OAC → Lambda (two apply-time fixes were folded back in; see the
-root README "Known gaps"). What does NOT exist yet is a *maintained*
-production environment: custom domain, schema on Neon, frontend deployed.
+root README "Known gaps"). The email queue (item 21) was additionally
+**live-validated 2026-06-12** on the running stack (real SES delivery + the
+DLQ → alarm → redrive drill). The scheduler slice (item 23, `scheduler.tf`)
+shipped 2026-06-12 and was **live-validated 2026-06-13** on the running
+stack against a Neon branch: all three job drills passed (catalog-backup
+wrote the S3 object + `catalog_backups` row, pickup-expiry emailed the
+verified inbox, unverified-cleanup ran clean). That drill also caught a
+prod-only bug — the `neon-http` driver throws on `db.transaction(...)` —
+fixed by switching the runtime to the Neon serverless WebSocket driver
+(`backend/db/src/client.ts`); rebuild the bundle + re-apply to ship it.
+What does NOT exist yet is a *maintained* production environment: custom
+domain, frontend deployed (the Neon schema and the test stack now exist).
 Applying requires AWS credentials, a Neon project, and (optionally) a domain,
 which only the owner has.
 
@@ -40,14 +50,16 @@ observable API behind CloudFront with no DNS or domain required:
 | CloudWatch Log Group (14d) | `lambda.tf` | Pre-created so retention + CMK encryption are enforced. |
 | Lambda execution role | `iam.tf` | Least privilege: own-log-group writes, one SSM param, scoped SES, CMK decrypt. |
 | CloudFront + OAC (+ ACM) | `cdn.tf` | sigv4-signs origin requests; default `*.cloudfront.net` domain unless `api_domain_name` is set. |
-| SNS topic + 7 CloudWatch alarms | `observability.tf` | 5xx-rate, p99 duration, SES bounce; admin-login + scheduler alarms gated until those Lambdas exist; email DLQ-depth + queue-age alarms ship with `enable_email_queue`. |
-| GitHub OIDC provider + deploy role | `cicd.tf` | CI assumes it to ship Lambda code — no long-lived AWS keys. Covers `email-fn` too when the queue is enabled. |
+| SNS topic + 8 CloudWatch alarms | `observability.tf` | 5xx-rate, p99 duration, SES bounce; admin-login gated until admin-api exists; email DLQ-depth + queue-age ship with `enable_email_queue`; scheduler-fn-errors + scheduler-delivery-failures ship with `enable_scheduler`. |
+| GitHub OIDC provider + deploy role | `cicd.tf` | CI assumes it to ship Lambda code — no long-lived AWS keys. Covers `email-fn` and `scheduler-fn` too when their flags are enabled. |
 
 Opt-in layers (all `enable_* = false` by default): **WAF** (`waf.tf`), **Route 53**
 (`dns.tf`), **Amplify** frontend hosting (`amplify.tf`), **SES** domain identity
-+ DKIM + MAIL FROM (`ses.tf`), and the **durable email queue** — SQS + DLQ
++ DKIM + MAIL FROM (`ses.tf`), the **durable email queue** — SQS + DLQ
 (`sqs.tf`) + the `email-fn` consumer Lambda (`email-fn.tf`), roadmap item 21
-(see below). Each is documented at its variable in
+(see below) — and the **scheduled jobs** — `scheduler-fn` + three EventBridge
+Scheduler crons + delivery DLQ + catalog-backup bucket (`scheduler.tf`),
+roadmap item 23 (runbook below). Each is documented at its variable in
 `variables.tf`. The §10 cost model prefers Cloudflare for DNS+WAF, which is why
 those AWS-native paths ship off.
 
@@ -145,6 +157,66 @@ over), then use the console's **Start DLQ redrive** → messages flow back to th
 source queue and deliver. Messages live 14 days in both queues, so there is a
 two-week window to notice and redrive before anything is truly lost.
 
+## Scheduled jobs runbook (roadmap item 23)
+
+Three EventBridge Scheduler crons (group `<prefix>-jobs`, all
+**Europe/Sofia** — DST handled by the service) async-invoke the
+`scheduler-fn` Lambda with `{"job":"…"}`:
+
+| Schedule | Cron (Sofia) | Job |
+|---|---|---|
+| `<prefix>-pickup-expiry` | `0 * * * ? *` | Claim expired `ready_for_pickup` orders → ONE admin email each (order not transitioned — spec §7 manual decision) |
+| `<prefix>-catalog-backup` | `0 3 * * ? *` | Catalog JSON → `s3://<catalog_backup_bucket>/catalog/<YYYY-MM-DD>.json` + a `catalog_backups` row |
+| `<prefix>-unverified-cleanup` | `0 4 * * ? *` | Day-6 warning email, day-7 hard delete of unverified customers, 180-day `login_attempts` prune |
+
+To enable on a stack:
+
+```hcl
+# terraform.tfvars
+enable_scheduler = true   # alarms ride along (enable_scheduler_alarms defaults true)
+```
+
+```bash
+cd ../backend/shop-api && npm run build:scheduler && cd ../../infra  # bundle first
+terraform apply
+```
+
+**Manual drill (don't wait for a cron tick):** the schedules invoke the
+function asynchronously, but you can invoke it synchronously and read the
+result right back:
+
+```bash
+aws lambda invoke --function-name <prefix>-scheduler-fn \
+  --cli-binary-format raw-in-base64-out \
+  --payload '{"job":"catalog-backup"}' /dev/stdout
+```
+
+A clean run returns the job's counters (e.g. `{"bucket":…,"key":…}`); a
+failing run returns the error — same thing the alarm pair watches.
+
+**Failure lanes (two alarms, disjoint by design):**
+
+- `scheduler-fn-errors` — a JOB threw (DB unreachable, missing bucket, bug).
+  Async invoke ⇒ Lambda retries twice, then the `Errors` metric trips the
+  alarm. Look for the `job_failed` event in the function's log group. There
+  is NO redrive to run: fix the cause and either wait for the next tick or
+  re-invoke manually (above) — every job is an idempotent sweep.
+- `scheduler-delivery-failures` — EventBridge Scheduler could not hand the
+  event to Lambda at all; after the retry policy (3 attempts / 30 min) the
+  invocation parks in the scheduler DLQ (`scheduler_dlq_url` output).
+  Inspect the message attributes (error code) and the invoke role.
+
+**With no real database attached** (the SSM `DATABASE_URL` still holding the
+placeholder), every job run fails at DB connect — *loudly, by design*: the
+first cron tick after an `enable_scheduler` apply lights the
+`scheduler-fn-errors` alarm, which IS the alarm-path validation. As of
+2026-06-13 the running stack HAS a Neon branch attached and all three drills
+passed, so leaving `enable_scheduler = true` is the correct steady state.
+Note: the runtime uses the Neon serverless **WebSocket** driver for
+transactions, which cannot do pg-level channel binding — `createDb()` strips
+`channel_binding=require` from the URL, so the pooled SSM value works whether
+or not it carries that parameter.
+
 ## How secrets are handled
 
 Only `DATABASE_URL` is a secret. Terraform creates the SSM SecureString with a
@@ -194,19 +266,43 @@ Tracked honestly rather than silently skipped:
   on `enable_waf` for the AWS-native managed rule sets.
 - **Default-cert CloudFront** (no custom domain) can't pin a minimum TLS version
   — inherent to `*.cloudfront.net`. Set `api_domain_name` for TLS 1.2_2021.
-- **email-fn ships with NO reserved concurrency** (CKV_AWS_115, skipped inline in
-  `email-fn.tf`). A reservation draws from the account-wide concurrency pool;
-  with shop-api already reserving 50, small/new AWS accounts hit
+- **email-fn and scheduler-fn ship with NO reserved concurrency** (CKV_AWS_115,
+  skipped inline in `email-fn.tf` / `scheduler.tf`). A reservation draws from
+  the account-wide concurrency pool; with shop-api already reserving 50,
+  small/new AWS accounts hit
   `InvalidParameterValueException … below its minimum value` at apply time. The
-  binding throttle is the SQS event source mapping's `maximum_concurrency = 2`,
-  which does not consume the pool — and nothing but that mapping can invoke the
-  function. To add the defence-in-depth cap later: raise the account quota
-  (Service Quotas → AWS Lambda → *Concurrent executions* — free, takes a day),
-  then set `email_fn_reserved_concurrency`.
-- **admin-api / scheduler-fn alarms** are gated off because those Lambdas don't
-  exist as separate functions yet — the admin surface (auth + the 2026-06-10
-  orders slice) currently lives inside `shop-api` (item 22's remaining Lambda
-  extraction; scheduler-fn is item 23). Flip `enable_admin_alarms` /
-  `enable_scheduler_alarms` when they land as their own Lambdas.
+  binding throttle for email-fn is the SQS event source mapping's
+  `maximum_concurrency = 2` (pool-free), and nothing but that mapping can
+  invoke it; scheduler-fn's concurrency is naturally ≤1 per schedule (three
+  crons, one async invoke each). To add the defence-in-depth cap later: raise
+  the account quota (Service Quotas → AWS Lambda → *Concurrent executions* —
+  free, takes a day), then set `email_fn_reserved_concurrency`.
+- **scheduler-fn has no function-level async DLQ** (CKV_AWS_116, register +
+  inline note in `scheduler.tf`): every job is an idempotent full-scan sweep,
+  so the next cron tick IS the redrive — a parked copy of `{"job":"…"}` adds
+  nothing. Failures alarm instead: in-function errors on the Lambda `Errors`
+  metric (the Scheduler invokes async, so they can ONLY surface there), and
+  delivery failures in the scheduler DLQ via each schedule's retry policy.
+- **EventBridge Scheduler schedules are not CMK-encrypted** (CKV_AWS_297,
+  skipped inline in `scheduler.tf`): the only data a schedule stores is its
+  static, non-sensitive input — `{"job":"<name>"}`, the same job names that are
+  in the Terraform source and git. No PII, secret, or customer data ever passes
+  through a schedule, so a customer-managed key would only add key-policy
+  surface (granting `scheduler.amazonaws.com` decrypt) and apply-risk to the
+  already-validated live schedules for zero confidentiality gain — the same
+  value test as the CKV_AWS_116 skip above. Revisit if a schedule is ever given
+  sensitive input.
+- **The catalog-backup bucket skips access logging / replication / event
+  notifications** (CKV_AWS_18 / CKV_AWS_144 / CKV2_AWS_62 — same register
+  entries as the state bucket): private + versioned + TLS-only + SSE-KMS,
+  written by exactly one role (write-only PutObject — scheduler-fn cannot
+  read or delete history), single-region by GDPR design, and "backup didn't
+  happen" is already covered by the scheduler-fn-errors alarm.
+- **admin-api alarms** stay gated off because that Lambda doesn't exist as a
+  separate function yet — the admin surface (auth + the 2026-06-10 orders
+  slice) currently lives inside `shop-api` (item 22's remaining Lambda
+  extraction). Flip `enable_admin_alarms` when it lands. The scheduler alarms
+  joined the stack with item 23 (2026-06-12): they materialise with
+  `enable_scheduler` (× `enable_scheduler_alarms`, default true).
 
 These are recorded in `.checkov.yaml` where they correspond to a specific check.

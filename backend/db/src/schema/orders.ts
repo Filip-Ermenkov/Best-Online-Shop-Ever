@@ -88,6 +88,15 @@ export const orders = pgTable(
 
     // Pickup — populated by admin when transitioning to "ready_for_pickup"
     pickupDeadline: timestamp("pickup_deadline", { withTimezone: true }),
+    // Expired-pickup admin notification (scheduler-fn, docs/README.md §7
+    // "Изтекъл срок за вземане"): the hourly job CLAIMS an expired order by
+    // setting this timestamp in the same UPDATE that selects it, then sends
+    // the admin email — so at-least-once scheduling can never double-notify.
+    // The spec keeps the ORDER untouched (no automatic transition): the admin
+    // decides whether to cancel or re-arrange. NULL = not yet notified.
+    pickupExpiredNotifiedAt: timestamp("pickup_expired_notified_at", {
+      withTimezone: true,
+    }),
 
     notes: text("notes"),
     cancelledReason: text("cancelled_reason"),
@@ -110,6 +119,14 @@ export const orders = pgTable(
     index("orders_created_at_idx").on(t.createdAt),
     // Composite index for the admin "active orders" dashboard query
     index("orders_status_created_at_idx").on(t.status, t.createdAt),
+    // Partial index for the hourly expired-pickup sweep: only unnotified
+    // ready_for_pickup rows qualify, so the index stays near-empty and the
+    // job's range scan on pickup_deadline is index-only cheap.
+    index("orders_pickup_expiry_idx")
+      .on(t.pickupDeadline)
+      .where(
+        sql`${t.status} = 'ready_for_pickup' AND ${t.pickupExpiredNotifiedAt} IS NULL`,
+      ),
     check("orders_amount_non_negative", sql`${t.totalCents} >= 0`),
     check(
       "orders_discount_percent_range",

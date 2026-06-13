@@ -21,12 +21,12 @@ skip-check:
   # ── Lambda ────────────────────────────────────────────────────────────────
   - CKV_AWS_272 # Code signing — supply-chain integrity is covered by SLSA L2 + signed SBOMs; code signing is growth-stage.
   - CKV_AWS_117 # VPC — Neon is reached over HTTPS; a VPC adds NAT cost + cold-start latency for no security gain.
-  - CKV_AWS_116 # DLQ — shop-api is invoked synchronously (request/response) and email-fn is SQS-poll-invoked (failure handling = partial-batch responses + the queue's own DLQ in sqs.tf); the function-level *async-invoke* DLQ this check wants does not apply to either.
+  - CKV_AWS_116 # DLQ — shop-api is invoked synchronously (request/response), email-fn is SQS-poll-invoked (partial-batch responses + the queue's own DLQ in sqs.tf), and scheduler-fn's jobs are idempotent sweeps where the next cron tick IS the redrive (failures alarm via the Errors metric; delivery failures park in the scheduler DLQ). The function-level *async-invoke* DLQ this check wants applies to none of them.
 
-  # ── S3 state bucket ───────────────────────────────────────────────────────
-  - CKV_AWS_18  # Access logging — would need a second logging bucket; the bucket is private + versioned + TLS-only + KMS.
+  # ── S3 buckets (state + catalog backup) ───────────────────────────────────
+  - CKV_AWS_18  # Access logging — would need a second logging bucket; both buckets are private + versioned + TLS-only + KMS, each written by exactly one principal.
   - CKV_AWS_144 # Cross-region replication — single-region by GDPR (eu-central-1) design.
-  - CKV2_AWS_62 # Event notifications — not applicable to a Terraform state bucket.
+  - CKV2_AWS_62 # Event notifications — no consumer: not applicable to a Terraform state bucket, and the scheduler-fn-errors alarm already covers "the backup did not happen".
 
   # ── Opt-in layers (off by default; enable the control with the feature) ───
   - CKV2_AWS_39 # Route 53 query logging — opt-in DNS path (Cloudflare is the documented preference).

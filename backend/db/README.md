@@ -15,16 +15,20 @@ and faster cold starts (~45 ms vs ~320 ms even with Prisma 7's serverless
 overhaul released late 2025). Drizzle's schema is plain TypeScript files — no
 codegen step, no `.prisma` DSL. Matches our zero-build-step IaC mindset.
 
-### 2. Two transports — Neon HTTP for production, node-postgres for local
+### 2. Two transports — Neon serverless for production, node-postgres for local
 
 `createDb()` picks automatically based on the URL hostname:
 
 | Environment | Driver | Why |
 |---|---|---|
-| AWS Lambda → Neon | `@neondatabase/serverless` HTTP | Each query is one HTTPS round-trip. No persistent TCP. Avoids the Lambda connection-storm problem. |
-| Local dev (Docker) | `pg` connection pool | Real TCP pool, identical SQL semantics, supports interactive transactions and advisory locks (which `drizzle-kit migrate` requires). |
+| AWS Lambda → Neon | `@neondatabase/serverless` (Drizzle `neon-serverless`) | Ordinary queries go over a stateless HTTPS fetch (`poolQueryViaFetch`) — one round-trip, no persistent TCP, no Lambda connection storm. An interactive `db.transaction(...)` opens a WebSocket for that transaction only. |
+| Local dev (Docker) | `pg` connection pool | Real TCP pool, identical SQL semantics, plus advisory locks (which `drizzle-kit migrate` requires). |
 
-Application code is identical across both — Drizzle's API doesn't change.
+Both transports support `db.transaction(...)` and expose the identical
+Drizzle API — application code is the same across both. (Production
+originally used Drizzle's `neon-http` driver, but it throws
+`No transactions support in neon-http driver`; the switch to
+`neon-serverless` on 2026-06-13 is recorded in `docs/ARCHITECTURE.md` §13.)
 
 ### 3. drizzle-kit `generate` + `migrate`, never `push`
 

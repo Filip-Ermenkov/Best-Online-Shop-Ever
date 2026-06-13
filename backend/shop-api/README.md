@@ -6,8 +6,10 @@ Hono on Lambda. Same handler runs locally on Node via `@hono/node-server`.
 > slice and keeps its quick-start + design-rationale role. The API has
 > since grown far beyond it — auth (incl. GDPR self-service), cart,
 > orders + 14-day withdrawal, address book, consent receipts, CSP
-> reporting, **admin auth (TOTP MFA)** and **admin order management**
-> (`/admin/orders/*`, 2026-06-10). The authoritative, up-to-date route
+> reporting, **admin auth (TOTP MFA)**, **admin order management**
+> (`/admin/orders/*`, 2026-06-10), and the **scheduled jobs**
+> (`src/jobs/*` → the `scheduler-fn` Lambda bundle, 2026-06-12). The
+> authoritative, up-to-date route
 > inventory lives in the root `README.md` → "What's wired up"; the
 > machine-readable contract is `GET /openapi.json`.
 

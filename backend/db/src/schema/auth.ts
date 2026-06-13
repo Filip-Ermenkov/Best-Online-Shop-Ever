@@ -112,7 +112,8 @@ export const passwordResetTokens = pgTable(
  *   - Admin security review (suspicious IP patterns)
  *   - GDPR access-log requirement (Art. 30 records)
  *
- * Retention: 180 days (cleaned by a scheduled task — implemented in a later slice).
+ * Retention: 180 days — enforced daily by scheduler-fn's unverified-cleanup
+ * job (@shop/api src/jobs/unverified-cleanup.ts, LOGIN_ATTEMPTS_RETENTION_DAYS).
  */
 export const loginAttempts = pgTable(
   "login_attempts",

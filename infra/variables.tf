@@ -298,9 +298,9 @@ variable "enable_admin_alarms" {
 }
 
 variable "enable_scheduler_alarms" {
-  description = "Create the EventBridge-scheduler-failure alarm. Leave false until scheduler-fn exists (it does not yet)."
+  description = "Create the two scheduler-failure alarms (scheduler-fn Errors + Scheduler delivery DLQ) alongside the scheduler. Default true; they only materialise when enable_scheduler is also true (they reference its resources). Turn off solely to silence a known-noisy period."
   type        = bool
-  default     = false
+  default     = true
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -354,5 +354,32 @@ variable "email_fn_reserved_concurrency" {
   validation {
     condition     = var.email_fn_reserved_concurrency == -1 || var.email_fn_reserved_concurrency >= 2
     error_message = "email_fn_reserved_concurrency must be -1 (unreserved) or ≥ 2 (the event source mapping's maximum_concurrency)."
+  }
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Scheduled jobs: scheduler-fn + EventBridge Scheduler crons (roadmap item 23)
+# ─────────────────────────────────────────────────────────────────────────────
+
+variable "enable_scheduler" {
+  description = "Provision scheduler-fn, the three EventBridge Scheduler crons (hourly pickup-expiry, daily catalog-backup, daily unverified-cleanup — Sofia time), the delivery DLQ, the catalog-backup S3 bucket, and (with enable_scheduler_alarms) the two failure alarms. Requires the scheduler bundle (npm --workspace @shop/api run build:scheduler)."
+  type        = bool
+  default     = false
+}
+
+variable "scheduler_fn_bundle_dir" {
+  description = "Path (relative to infra/) to the esbuild output dir produced by `npm run build:scheduler` in @shop/api. Zipped at plan time when enable_scheduler = true."
+  type        = string
+  default     = "../backend/shop-api/dist-scheduler"
+}
+
+variable "catalog_backup_retention_days" {
+  description = "Days a daily catalog snapshot is kept before the bucket lifecycle expires it. ARCHITECTURE §6.3 sets 90."
+  type        = number
+  default     = 90
+
+  validation {
+    condition     = var.catalog_backup_retention_days >= 7
+    error_message = "catalog_backup_retention_days must be at least 7 (anything lower defeats the point of a daily backup history)."
   }
 }

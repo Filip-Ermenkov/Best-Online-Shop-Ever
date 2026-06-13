@@ -46,6 +46,10 @@ const TABLES_TO_TRUNCATE = [
   // users), so a TRUNCATE … CASCADE on users does NOT clear it. List it
   // explicitly or consent rows leak across tests.
   "cookie_consents",
+  // Ops — written by the scheduled catalog-backup job (jobs tests). Its FK
+  // to users is ON DELETE SET NULL, so be explicit rather than relying on
+  // the users CASCADE to reach it.
+  "catalog_backups",
   // Settings / content
   "settings",
   "tos_versions",

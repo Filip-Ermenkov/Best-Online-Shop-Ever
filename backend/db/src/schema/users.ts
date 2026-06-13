@@ -67,6 +67,17 @@ export const users = pgTable(
     deletedAt: timestamp("deleted_at", { withTimezone: true }),
     anonymizedAt: timestamp("anonymized_at", { withTimezone: true }),
 
+    // Unverified-account cleanup (scheduler-fn, docs/README.md §8 "Автоматично
+    // изтриване на неверифицирани акаунти"): the day-6 warning email is sent
+    // exactly once — the job CLAIMS a user by setting this timestamp in the
+    // same UPDATE that selects them (claim-then-send), so an at-least-once
+    // scheduler redelivery or an overlapping run can never double-warn.
+    // NULL = no warning sent. Reset is never needed: verification makes the
+    // value irrelevant, deletion removes the row.
+    unverifiedDeletionWarningAt: timestamp("unverified_deletion_warning_at", {
+      withTimezone: true,
+    }),
+
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .default(sql`now()`),
@@ -82,6 +93,16 @@ export const users = pgTable(
     uniqueIndex("users_email_unique").on(t.email),
     index("users_role_idx").on(t.role),
     index("users_deleted_at_idx").on(t.deletedAt),
+    // Partial index for the daily unverified-cleanup sweep: the candidate set
+    // (unverified, not soft-deleted customers) is tiny relative to the table,
+    // and the job filters + orders by created_at. Admins are excluded in the
+    // predicate so the bootstrap admin (created unverified by the script) can
+    // never be swept.
+    index("users_unverified_cleanup_idx")
+      .on(t.createdAt)
+      .where(
+        sql`${t.emailVerifiedAt} IS NULL AND ${t.deletedAt} IS NULL AND ${t.role} = 'customer'`,
+      ),
   ],
 );
 
