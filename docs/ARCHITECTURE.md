@@ -14,10 +14,13 @@
 > specification. Read that to learn *what* the shop does; this doc
 > covers *how* it's built.
 >
-> Last updated: 2026-06-08. Reality-aligned: the `infra/` IaC is
-> live-apply-validated (a test deploy returned 200 end-to-end), and the
+> Last updated: 2026-06-13. Reality-aligned: the `infra/` IaC is
+> live-apply-validated (a test deploy returned 200 end-to-end); the
 > **admin authentication backend** (mandatory TOTP MFA, `/admin/auth/*`)
-> shipped 2026-06-08 — see §3.4 and §15 item 35. No maintained
+> shipped 2026-06-08; the **durable email queue** (item 21) and
+> **scheduler-fn** (item 23) shipped + live-validated 2026-06-12/13; and
+> **distributed tracing** (OpenTelemetry, item 18) shipped 2026-06-13 —
+> closing the last OWASP A09 / NIST CSF Detect gap (§8.2). No maintained
 > production environment is kept running yet; the admin frontend UI is
 > pending.
 
@@ -557,9 +560,11 @@ CloudWatch Log Group. Eight alarms defined in
 - Email queue age > 15 min — the email-fn consumer is not draining
   (ships with `enable_email_queue`, 2026-06-12)
 
-**Gap:** no distributed tracing today *or* in the target. The 2026
-industry standard is OpenTelemetry via ADOT — see §8 and Roadmap
-item 6.
+**Distributed tracing — shipped 2026-06-13 (Roadmap item 18).** The 2026
+industry standard, OpenTelemetry, is now wired on shop-api: `@hono/otel`
+request spans + undici/fetch downstream spans + Pino log↔trace correlation,
+behind `ENABLE_TRACING`, exporting OTLP to X-Ray via the ADOT collector layer
+(or any OTLP backend). See §8.2.
 
 ### 3.11 Certificates — AWS Certificate Manager (planned)
 
@@ -845,8 +850,9 @@ invalid JSON are silently dropped with an `info`-level
 (W3C Reporting API spec: any 2xx is success; reporters don't retry
 on errors).
 
-Closes the OWASP A09 visibility gap. The last remaining A09 item is
-distributed tracing (Roadmap item 18).
+Closes the OWASP A09 visibility gap together with distributed tracing
+(Roadmap item 18, shipped 2026-06-13 — §8.2), which was the last remaining
+A09 item. A09 is now fully met.
 
 #### 5.2.4 Verifying the policy is live
 
@@ -896,8 +902,8 @@ Quick summary:
   MFA is documented but the admin Lambda isn't built yet — see §1.
   Customer MFA is a growth-stage roadmap item
 - A08 Software & Data Integrity Failures — ✅ (Sigstore signing)
-- A09 Security Logging Failures — ⚠️ CSP report endpoint ✅;
-  distributed tracing pending
+- A09 Security Logging Failures — ✅ CSP report endpoint ✅ +
+  distributed tracing ✅ (OpenTelemetry, item 18, 2026-06-13)
 - A10 Mishandling Exceptional Conditions (new) — ✅ (RFC 9457 +
   graceful degradation)
 
@@ -1017,27 +1023,56 @@ concurrent invocations without exhausting it.
 
 - **Structured Pino logs** with PII redaction, per-request child
   logger keyed on `X-Request-Id`. Works locally; lands in CloudWatch
-  in target state.
+  in target state. Every line now also carries `trace_id` / `span_id`
+  when tracing is on (log↔trace correlation — §8.2).
 - **(Target) CloudWatch Logs** with 14-day retention. Not deployed.
-- **(Target) 5 CloudWatch alarms** in the always-free tier. Not
-  deployed.
-- **No distributed tracing** in either current or target state today.
+- **8 CloudWatch alarms** defined in `infra/observability.tf` (the 5xx
+  and p99 ones live-applied 2026-06-07; the rest gated behind their
+  feature flags).
+- **Distributed tracing — shipped 2026-06-13** (OpenTelemetry on
+  shop-api, Roadmap item 18). See §8.2.
 
-### 8.2 Target state (2026 industry standard)
+### 8.2 Distributed tracing — OpenTelemetry (shipped 2026-06-13)
 
-The 2026 default for serverless observability is **OpenTelemetry**
-via **AWS Distro for OpenTelemetry (ADOT)**:
+The 2026 default for serverless observability is **OpenTelemetry**.
+shop-api now emits OTel traces, behind the `ENABLE_TRACING` flag
+(`lib/tracing.ts`):
 
-- Distributed tracing across `Amplify → shop-api → Neon → SES` so
-  you can see a single request's whole life as one trace.
-- Standardised semantic conventions (HTTP, database, FaaS, messaging
-  per OpenTelemetry semconv 1.41.0).
-- Backend of choice (CloudWatch X-Ray, Grafana Tempo, Honeycomb,
-  Datadog) — ADOT makes the backend swappable.
+- **Request spans** come from `@hono/otel` (`httpInstrumentationMiddleware`,
+  the outermost middleware in `app.ts`). Instrumenting at the **Hono**
+  layer — not the Node HTTP server — means it fires identically on the
+  local node-server and on Lambda, where Hono runs through the
+  `hono/aws-lambda` adapter rather than an HTTP listener (the stock
+  `instrumentation-http` would never see those invocations).
+- **Downstream spans** come from `undici` (global `fetch`)
+  instrumentation. It hooks Node's `diagnostics_channel`, so — unlike
+  require-patching instrumentations — it survives the esbuild single-file
+  bundle and captures what matters in production: the Neon serverless
+  driver runs ordinary queries over an HTTPS `fetch`, and the HIBP check
+  is a `fetch` too. (`pg`/`aws-sdk` auto-instrumentation is deliberately
+  *not* wired — see §13 — because their require-time patching no-ops once
+  the bundled app has eagerly imported those libraries; richer DB/SES
+  spans are a future add via the ADOT layer's `--import` loader hook.)
+- **Log↔trace correlation**: a Pino `mixin` stamps `trace_id` / `span_id`
+  on every log line, and `X-Request-Id` is set as the `app.request_id`
+  span attribute — so the three correlation handles (request id, trace,
+  logs) are one. Start from a CloudWatch alarm, pivot to the trace, read
+  every log line of that request.
+- **Backend of choice**: spans export as OTLP to
+  `OTEL_EXPORTER_OTLP_ENDPOINT`. In production that is the **ADOT
+  collector Lambda layer** on `localhost:4318`, which forwards to **AWS
+  X-Ray** (X-Ray-compatible trace ids via the AWS id generator +
+  propagator, so our spans stitch onto the Lambda's Active-tracing root
+  segment). Point the endpoint at Grafana Tempo / Honeycomb / Datadog
+  instead and nothing else changes — the backend stays a single env var.
+- **Lambda flush**: the execution environment freezes on return, so the
+  handler force-flushes buffered spans in a `finally` (no-op when off).
 
-**Effort to add:** ~1 day. ADOT ships as a Lambda layer; the
-instrumentation libraries auto-instrument the AWS SDK + HTTP +
-`pg` + Hono with one config change. Roadmap item 18.
+Standardised semantic conventions (HTTP, FaaS, messaging). Infra:
+`enable_tracing` + `adot_collector_layer_arn` (`infra/lambda.tf`); the
+X-Ray write IAM rides on the existing `enable_xray_tracing` attachment.
+Runbook in `infra/README.md`. **Cost when off is near-zero** — the heavy
+OTel graph is dynamic-imported and never evaluated unless the flag is on.
 
 ### 8.3 Metrics that should exist but don't
 
@@ -1523,6 +1558,33 @@ These are baked-in for good reasons; revisiting them costs you weeks.
   deletion forever) is an unbounded-retention bug. The catalog backup
   is catalog-ONLY: zero personal data, so erasure requests never
   collide with backup retention.
+- **Distributed tracing is in-bundle OpenTelemetry behind a flag, not
+  the ADOT auto-instrumentation layer** (2026-06-13) — request spans
+  come from `@hono/otel` at the Hono layer (fires on Lambda, where
+  there is no Node HTTP server for `instrumentation-http` to hook) and
+  downstream spans from `undici`/`diagnostics_channel` (the one
+  instrumentation that survives the esbuild single-file bundle, and the
+  one that matters in prod: the Neon serverless driver and HIBP both go
+  over `fetch`). `pg`/`aws-sdk` auto-instrumentation was deliberately
+  REJECTED: they patch their target at require-time, which silently
+  no-ops once the bundled handler has eagerly imported those modules —
+  shipping dead instrumentation would be worse than omitting it. Export
+  is vendor-neutral OTLP to `OTEL_EXPORTER_OTLP_ENDPOINT`; the prod path
+  is the **ADOT collector layer** (it owns the SigV4 + X-Ray
+  translation, so the app stays a plain OTLP emitter and the backend is
+  swappable per §8.2). The collector-LESS direct-to-X-Ray-OTLP endpoint
+  (Nov-2024 GA) was considered and deferred: it needs SigV4-signed
+  exports + Transaction Search enabled, more moving parts than a tiny
+  shop needs today, and the loader-hook path also unlocks `pg`/`aws-sdk`
+  spans when that day comes. Tracing is feature-flagged
+  (`ENABLE_TRACING`, default off) and the heavy graph is dynamic-imported
+  so the cold-start cost is paid only when it is on — the same
+  ride-behind-a-flag discipline as the email queue and scheduler. X-Ray
+  id generator + propagator keep our trace ids compatible with the
+  Lambda's own Active-tracing segment. The alternative — hand-rolling a
+  SigV4 OTLP exporter, or wiring the heavyweight ADOT SDK auto-instrument
+  layer (cold-start cost + double-wrapping our own spans) — bought
+  nothing the curated in-bundle setup doesn't.
 - **Single admin account** — multi-admin is out of scope.
 - **Uniform strict CSP** — defends against the SPA-soft-navigation
   bypass documented in §5.2.
@@ -1535,7 +1597,7 @@ These are baked-in for good reasons; revisiting them costs you weeks.
 
 | Pillar | Today | What's missing for A+ |
 |---|---|---|
-| Operational Excellence | B | Production deploy, distributed tracing, formal SLOs + burn-rate alerting, DORA metrics, scheduled DR drills, incident postmortem template, status page |
+| Operational Excellence | B | Production deploy, formal SLOs + burn-rate alerting, DORA metrics, scheduled DR drills, incident postmortem template, status page (distributed tracing ✅ shipped 2026-06-13, item 18) |
 | Security | A | Customer MFA option (growth-stage); admin auth ✅ (TOTP MFA shipped end-to-end 2026-06-08 — backend + sign-in UI) |
 | Reliability | B | Production deploy, DR drill cadence, public status page (SQS email retry queue ✅ 2026-06-12 — live-validated incl. the DLQ → alarm → redrive drill; scheduler-fn + daily catalog backup + retention sweeps ✅ 2026-06-12, live-validated 2026-06-13 — the manual drills for all three jobs passed against Neon; the first drill exposed that the prod `neon-http` driver cannot run `db.transaction(...)`, fixed by switching to the Neon serverless WebSocket driver) |
 | Performance Efficiency | B+ | Synthetic monitoring, RUM, query-latency SLOs per endpoint |
@@ -1557,12 +1619,12 @@ a status page still need a maintained deployment.
 | Standard | Status | What's needed |
 |---|---|---|
 | NIST CSF 2.0 (Govern function) | ✅ Met | — |
-| NIST CSF 2.0 (Detect function) | ⚠️ Partial | Distributed tracing |
+| NIST CSF 2.0 (Detect function) | ✅ Met | Distributed tracing shipped (OpenTelemetry, item 18, 2026-06-13) |
 | NIST CSF 2.0 (Respond function) | ⚠️ Partial | Incident playbook |
 | OWASP Top 10 2025 — A03 Supply Chain | ✅ Met | — |
 | OWASP Top 10 2025 — A08 Integrity Failures | ✅ Met | — |
 | OWASP Top 10 2025 — A02 Security Misconfiguration | ✅ Met | — |
-| OWASP Top 10 2025 — A09 Logging Failures | ⚠️ | Distributed tracing |
+| OWASP Top 10 2025 — A09 Logging Failures | ✅ Met | CSP reporting + distributed tracing (item 18, 2026-06-13) |
 | OWASP ASVS 6.0 L1 | ✅ Compliant | — |
 | OWASP ASVS 6.0 V6.2 (password lifecycle) | ✅ Met | — |
 | OWASP ASVS 6.0 V6 (multifactor) — admin | ✅ Met | Mandatory TOTP MFA on `/admin/auth/*` (2026-06-08) |
@@ -1712,8 +1774,29 @@ Ranked by `(impact ÷ effort)` — highest leverage first. Items marked
     What remains for a *maintained* production environment: a custom
     domain, the schema migrated to Neon, and the frontend deployed. See
     `infra/README.md`.
-18. ❌ **ADOT distributed tracing** on `shop-api`. Closes the OWASP
-    A09 + NIST CSF Detect gap. ~1 day.
+18. ✅ **Distributed tracing (OpenTelemetry) on `shop-api` — shipped
+    2026-06-13.** Closes the **last OWASP A09 item** and the **NIST CSF
+    Detect** gap (§5.3, §14). `lib/tracing.ts` starts a `NodeTracerProvider`
+    behind `ENABLE_TRACING` (default off; the heavy OTel graph is
+    dynamic-imported so cost is paid only when on). Request spans from
+    `@hono/otel` (Hono-layer, so it fires on Lambda too — wired outermost
+    in `app.ts`); downstream spans from `undici`/`fetch` (the Neon
+    serverless query path + HIBP), chosen because `diagnostics_channel`
+    instrumentation survives the esbuild bundle where `pg`/`aws-sdk`
+    require-patching would silently no-op (§13). Pino `mixin` adds
+    `trace_id`/`span_id` to every log line and `X-Request-Id` becomes the
+    `app.request_id` span attribute — request id, trace, and logs become
+    one handle. Export is vendor-neutral OTLP to
+    `OTEL_EXPORTER_OTLP_ENDPOINT`; prod points at the **ADOT collector
+    layer** (`enable_tracing` + `adot_collector_layer_arn` in
+    `infra/lambda.tf`) which forwards to X-Ray, with X-Ray-compatible
+    trace ids (AWS id generator + propagator) that stitch onto the
+    Lambda's Active-tracing root segment. The handler force-flushes spans
+    before the container freezes. App-level instrumentation + correlation
+    are unit-tested (`tests/lib/tracing.test.ts`) and were verified
+    against the real libraries (provider, `@hono/otel` span, log
+    correlation, and a clean esbuild bundle); the live X-Ray export is
+    validated on deploy. Runbook in `infra/README.md`.
 19. ❌ **First real DR drill** against a Neon PITR branch. Write
     up the timestamped result. 2 hours.
 

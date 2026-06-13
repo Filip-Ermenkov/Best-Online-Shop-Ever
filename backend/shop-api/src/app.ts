@@ -1,4 +1,6 @@
+import { httpInstrumentationMiddleware } from "@hono/otel";
 import { OpenAPIHono } from "@hono/zod-openapi";
+import { trace } from "@opentelemetry/api";
 import { cors } from "hono/cors";
 import { etag } from "hono/etag";
 import { requestId } from "hono/request-id";
@@ -9,6 +11,7 @@ import { ZodError } from "zod";
 import { parseEnv } from "./lib/env.js";
 import { ApiError, badRequest, internal, type Problem } from "./lib/errors.js";
 import { logger as baseLogger, requestLogger } from "./lib/logger.js";
+import { isTracingEnabled } from "./lib/tracing.js";
 import { validationHook } from "./lib/validation-hook.js";
 import { currentUser, type AuthVariables } from "./middleware/auth.js";
 import { adminAuthRoutes } from "./routes/admin/auth.js";
@@ -41,6 +44,24 @@ export function buildApp() {
   const app = new OpenAPIHono<{ Variables: AppVariables }>({
     defaultHook: validationHook,
   });
+
+  /**
+   * Distributed tracing (roadmap item 18). Outermost middleware so the
+   * per-request span wraps every other middleware and the handler, and so the
+   * span is active on the context when the logging middleware below — and the
+   * Pino mixin — read it. Added ONLY when ENABLE_TRACING=true; the no-op default
+   * keeps the request path untouched. The tracer provider is started in the
+   * Lambda handler / dev server entry (see lib/tracing.ts → initTracing()).
+   */
+  if (isTracingEnabled()) {
+    app.use(
+      "*",
+      httpInstrumentationMiddleware({
+        serviceName: "shop-api",
+        serviceVersion: "0.1.0",
+      }),
+    );
+  }
 
   app.use("*", requestId());
 
@@ -109,6 +130,10 @@ export function buildApp() {
 
   app.use("*", async (c, next) => {
     const id = c.get("requestId");
+    // Stamp the request id onto the active span so X-Request-Id (returned to the
+    // client and present in every log line) is queryable in the trace too — the
+    // three correlation handles become one. No-op when tracing is off.
+    trace.getActiveSpan()?.setAttribute("app.request_id", id);
     const log = requestLogger(id);
     c.set("logger", log);
     const start = Date.now();

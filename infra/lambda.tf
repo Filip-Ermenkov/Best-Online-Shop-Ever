@@ -38,6 +38,14 @@ resource "aws_lambda_function" "shop_api" {
 
   reserved_concurrent_executions = var.lambda_reserved_concurrency
 
+  # ADOT collector layer (roadmap item 18). Attached only when tracing is on AND
+  # a collector layer ARN is supplied; the app exports OTLP to it on
+  # localhost:4318 and it forwards spans to X-Ray. We attach the collector-only
+  # layer and do NOT set AWS_LAMBDA_EXEC_WRAPPER — shop-api self-instruments
+  # in-bundle (see lib/tracing.ts), so the layer's auto-instrumentation must stay
+  # off to avoid double-wrapping.
+  layers = var.enable_tracing && var.adot_collector_layer_arn != "" ? [var.adot_collector_layer_arn] : null
+
   filename         = data.archive_file.lambda.output_path
   source_code_hash = data.archive_file.lambda.output_base64sha256
 
@@ -46,27 +54,61 @@ resource "aws_lambda_function" "shop_api" {
   kms_key_arn = local.kms_key_arn
 
   environment {
-    variables = {
-      NODE_ENV     = "production"
-      DATABASE_URL = data.aws_ssm_parameter.database_url.value
+    variables = merge(
+      {
+        NODE_ENV     = "production"
+        DATABASE_URL = data.aws_ssm_parameter.database_url.value
 
-      CORS_ORIGINS        = var.cors_origins
-      CDN_BASE_URL        = var.cdn_base_url
-      LOG_LEVEL           = var.log_level
-      PUBLIC_APP_BASE_URL = var.public_app_base_url
+        CORS_ORIGINS        = var.cors_origins
+        CDN_BASE_URL        = var.cdn_base_url
+        LOG_LEVEL           = var.log_level
+        PUBLIC_APP_BASE_URL = var.public_app_base_url
 
-      EMAIL_TRANSPORT         = var.email_transport
-      EMAIL_FROM              = var.email_from
-      EMAIL_AWS_REGION        = var.aws_region
-      EMAIL_CONFIGURATION_SET = var.enable_ses ? aws_sesv2_configuration_set.main[0].configuration_set_name : ""
-      EMAIL_QUEUE_URL         = var.enable_email_queue ? aws_sqs_queue.email[0].url : ""
-    }
+        EMAIL_TRANSPORT         = var.email_transport
+        EMAIL_FROM              = var.email_from
+        EMAIL_AWS_REGION        = var.aws_region
+        EMAIL_CONFIGURATION_SET = var.enable_ses ? aws_sesv2_configuration_set.main[0].configuration_set_name : ""
+        EMAIL_QUEUE_URL         = var.enable_email_queue ? aws_sqs_queue.email[0].url : ""
+      },
+      # Distributed tracing (roadmap item 18). Present only when enable_tracing.
+      # OTEL_TRACES_EXPORTER flips to "otlp" (→ the ADOT collector layer on
+      # localhost:4318, which forwards to X-Ray) when a collector layer ARN is
+      # supplied, else "none" (spans created for log correlation, nothing
+      # exported). OTEL_EXPORTER_OTLP_ENDPOINT is the standard env var the
+      # exporter reads; it is harmless when the exporter is "none".
+      var.enable_tracing ? {
+        ENABLE_TRACING              = "true"
+        OTEL_TRACES_EXPORTER        = var.adot_collector_layer_arn != "" ? "otlp" : "none"
+        OTEL_EXPORTER_OTLP_ENDPOINT = "http://localhost:4318"
+      } : {}
+    )
   }
 
   lifecycle {
     precondition {
       condition     = var.email_transport != "sqs" || var.enable_email_queue
       error_message = "email_transport=sqs requires enable_email_queue=true (the queue and email-fn consumer must exist)."
+    }
+    precondition {
+      condition     = !var.enable_tracing || var.enable_xray_tracing
+      error_message = "enable_tracing=true requires enable_xray_tracing=true: the ADOT collector pushes to X-Ray using the AWSXRayDaemonWriteAccess policy that is attached only when enable_xray_tracing is on."
+    }
+    # The ADOT collector is a native binary — its architecture MUST match the
+    # function's, or the extension crashes at init with "cannot execute binary
+    # file" (Extension.Crash) and every invoke 502s. AWS names the x86 build
+    # "amd64". Fail clearly at plan time on an obvious token mismatch rather than
+    # discovering it in CloudWatch. (Only trips on a clear wrong-arch token, so a
+    # custom layer ARN carrying neither token is left alone.)
+    precondition {
+      condition = (
+        !var.enable_tracing ||
+        var.adot_collector_layer_arn == "" ||
+        !(
+          (var.lambda_architecture == "x86_64" && can(regex("arm64", var.adot_collector_layer_arn))) ||
+          (var.lambda_architecture == "arm64" && can(regex("amd64", var.adot_collector_layer_arn)))
+        )
+      )
+      error_message = "adot_collector_layer_arn architecture must match lambda_architecture: x86_64 needs the '...-amd64-...' collector layer, arm64 needs '...-arm64-...'. lambda_architecture is '${var.lambda_architecture}' but the layer ARN looks like the other arch."
     }
   }
 

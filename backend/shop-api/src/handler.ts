@@ -12,6 +12,7 @@
 import { handle, type LambdaEvent, type LambdaContext } from "hono/aws-lambda";
 import { buildApp } from "./app.js";
 import { logger } from "./lib/logger.js";
+import { flushTracing, initTracing } from "./lib/tracing.js";
 
 const app = buildApp();
 const lambdaHandler = handle(app);
@@ -27,6 +28,12 @@ const lambdaHandler = handle(app);
 let isCold = true;
 
 export const handler = async (event: LambdaEvent, context: LambdaContext) => {
+  // Start the tracer provider on the first (cold) invocation. Idempotent and
+  // memoised, so warm invocations just await a resolved promise; a no-op (and
+  // imports nothing) unless ENABLE_TRACING=true. Awaited before the request so
+  // the provider is registered when @hono/otel reaches for it.
+  await initTracing();
+
   const child = logger.child({
     awsRequestId: context.awsRequestId,
     functionName: context.functionName,
@@ -40,5 +47,9 @@ export const handler = async (event: LambdaEvent, context: LambdaContext) => {
   } catch (err) {
     child.error({ err }, "lambda_unhandled");
     throw err;
+  } finally {
+    // Lambda freezes the process the moment we return, so flush buffered spans
+    // now or lose them. No-op when tracing is off; never throws.
+    await flushTracing();
   }
 };
