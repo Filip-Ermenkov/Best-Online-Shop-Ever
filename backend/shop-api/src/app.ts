@@ -145,8 +145,22 @@ export function buildApp() {
       await next();
     } finally {
       const ms = Date.now() - start;
+      // `method` + `path` make request_end a SELF-CONTAINED completion event:
+      // the SLO SLIs (availability, order-placement success, latency) are
+      // CloudWatch Logs metric filters over this one line, so a filter never has
+      // to join request_start↔request_end by requestId. See infra/slos.yaml +
+      // infra/slo.tf (roadmap items 24/25). Mirrors request_start's fields.
+      // `path` is the pathname only (no query string), so reset/verify tokens
+      // never reach the log — same safety the existing request_start line relies
+      // on. NB: request_end is INFO level; the metric filters need the deployed
+      // Lambda at log_level=info (a slo.tf precondition enforces it).
       log.info(
-        { status: c.res.status, durationMs: ms },
+        {
+          method: c.req.method,
+          path: c.req.path,
+          status: c.res.status,
+          durationMs: ms,
+        },
         "request_end",
       );
     }

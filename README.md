@@ -170,6 +170,7 @@ they aren't. The honest state:
 | `admin-api` Lambda | Not built (admin auth + the orders slice currently live in `shop-api`; extract when the admin CRUD surface grows) |
 | `scheduler-fn` Lambda | **Shipped 2026-06-12, live-validated 2026-06-13** (roadmap item 23) — jobs in `@shop/api` `src/jobs/*` + own pure-JS bundle (`build:scheduler`) + `infra/scheduler.tf` (EventBridge Scheduler, 3 Sofia-time crons, delivery DLQ, backup bucket, 2 alarms) behind `enable_scheduler`. All three `aws lambda invoke` drills passed against the Neon test branch; the catalog-backup drill also caught a prod-only bug (the `neon-http` driver can't run `db.transaction(...)`) now fixed by the Neon serverless WebSocket driver — see [decisions](#architecture-decisions-in-force). Runbook in `infra/README.md` |
 | Distributed tracing (OpenTelemetry) | **Shipped 2026-06-13 (roadmap item 18)** — `shop-api` emits OTel traces behind `ENABLE_TRACING`: `@hono/otel` request spans + undici/fetch downstream spans + Pino `trace_id`/`span_id` log↔trace correlation. Exports OTLP to AWS X-Ray via the ADOT collector layer (`enable_tracing` + `adot_collector_layer_arn`), or any OTLP backend. Closes the last OWASP A09 / NIST CSF Detect gap. App-level instrumentation + correlation unit-tested and harness-verified against the real libraries (incl. a clean esbuild bundle); live X-Ray export validated on deploy. Runbook in `infra/README.md` → "Tracing runbook" |
+| SLOs + burn-rate alerting (OpenSLO) | **Shipped 2026-06-14 (roadmap items 24/25)** — `infra/slos.yaml` (OpenSLO v1: availability 99.9%, order-success 99.9%, p95 latency <1000ms) + `infra/slo.tf` multi-window multi-burn-rate composite alarms over CloudWatch Logs metric filters on the `request_end` log line. Behind `enable_slo_alarms` (default off); requires `log_level = "info"` (plan-time precondition). Defined + apply-ready; awaits live traffic to exercise the budgets. Runbook in `infra/README.md` → "SLO + burn-rate runbook" |
 | Terraform / IaC | **Live-apply-validated** (`infra/`) — a successful end-to-end `terraform apply` (2026-06-07) returned HTTP 200 through CloudFront→OAC→Lambda; fmt/validate/tflint/checkov green. A maintained prod env (domain + migrated schema + frontend) is the next step |
 
 The architecture documentation (`docs/ARCHITECTURE.md`) describes the
@@ -893,6 +894,39 @@ point: from any log line you can pivot to the full trace and back.
   console, and every CloudWatch log line for that request carries the
   same `trace_id`. Full runbook in `infra/README.md` → "Tracing runbook".
 
+### SLOs + burn-rate alerting (OpenSLO)
+
+The SLO objectives live in `infra/slos.yaml` (OpenSLO v1); the multi-window
+multi-burn-rate alarms are in `infra/slo.tf`, behind `enable_slo_alarms`. The
+SLIs are read from the structured `request_end` log line the API already
+emits — now carrying `method`, `path`, `status`, `durationMs`. To see that
+source line locally (the same JSON the CloudWatch metric filters parse):
+
+```powershell
+# request_end is INFO-level, so make sure the API logs at info:
+$env:LOG_LEVEL="info"; npm run api:dev
+# In another shell, hit a couple of endpoints:
+curl -s localhost:3001/health | Out-Null
+curl -s localhost:3001/products | Out-Null
+```
+
+In `api:dev`'s stdout each request now ends with a line like
+`{"level":30,...,"method":"GET","path":"/health","status":200,"durationMs":3,"msg":"request_end"}`.
+The five metric filters in `infra/slo.tf` turn that into the availability,
+latency and order-success SLIs:
+
+- **availability** — `{ $.msg = "request_end" && $.status >= 500 }` ÷ all
+  `request_end`;
+- **order success** — `{ … $.method = "POST" && $.path = "/orders" && $.status = 201 }`
+  vs `… $.status >= 500`;
+- **latency** — the `$.durationMs` value, alarmed at p95.
+
+The alarms themselves are AWS-side. To exercise them on a live stack set
+`enable_slo_alarms = true` **and** `log_level = "info"` in `terraform.tfvars`,
+apply, then drive traffic (a load of 5xx responses trips the availability
+fast-burn page within the hour; the short-window arm reacts in ~5 min). Full
+runbook in `infra/README.md` → "SLO + burn-rate runbook".
+
 ### CSP violation reporting
 
 The strict `'nonce-X' 'strict-dynamic'` CSP shipped to the frontend
@@ -1117,9 +1151,12 @@ reality, as of 2026-06-07:
   Econt/Speedy offices from `mock-data/courier-offices.ts`. Real
   ingestion (either a one-off seed from the carrier APIs or a
   cron-refreshed table) is a future slice.
-- **Distributed tracing** — `docs/ARCHITECTURE.md` §15 item 18
-  identifies ADOT as the path. Not added. This is the last concrete
-  OWASP A09 gap.
+- ~~**Distributed tracing**~~ ✅ Shipped 2026-06-13 (roadmap item 18):
+  OpenTelemetry on `shop-api` behind `ENABLE_TRACING` — `@hono/otel`
+  request spans + undici/fetch downstream spans + Pino `trace_id`/`span_id`
+  log↔trace correlation, exporting OTLP to AWS X-Ray via the ADOT collector
+  layer (`enable_tracing` + `adot_collector_layer_arn`). Closed the last
+  concrete OWASP A09 / NIST CSF Detect gap. Runbook in `infra/README.md`.
 - ~~**SQS retry queue for SES**~~ ✅ Shipped 2026-06-12 (roadmap item
   21): `sqs` transport + queue envelope + email-fn consumer in
   `@shop/email`, `EMAIL_TRANSPORT=sqs` wiring in `shop-api`, and the
@@ -1130,9 +1167,14 @@ reality, as of 2026-06-07:
   the running test stack the same day**: real delivery through
   queue → email-fn → SES, plus the failure drill (DLQ park → alarm →
   redrive). Runbook in `infra/README.md`.
-- **DR drill** — procedure documented, never executed.
-- **Status page, formal SLOs in YAML, burn-rate alarms, DORA
-  metrics** — all roadmap items in §15.
+- **DR drill** — procedure documented, never executed (roadmap item 19).
+- ~~**Formal SLOs in YAML + burn-rate alarms**~~ ✅ Shipped 2026-06-14
+  (roadmap items 24/25): `infra/slos.yaml` (OpenSLO v1 — availability,
+  order-success, p95 latency) + `infra/slo.tf` multi-window multi-burn-rate
+  composite alarms over CloudWatch Logs metric filters on the `request_end`
+  line, behind `enable_slo_alarms` (requires `log_level = "info"`). Defined +
+  apply-ready; awaits live traffic to exercise the budgets.
+- **Status page, DORA metrics** — remaining roadmap items in §15.
 
 ## Recommended next steps
 
@@ -1148,9 +1190,10 @@ In priority order (also tracked in `docs/ARCHITECTURE.md` §15):
    hypothesis. What remains for a *maintained* production environment:
    a custom domain, migrating the schema to Neon, and deploying the
    frontend. Follow `infra/README.md`.
-2. **ADOT distributed tracing.** Closes the OWASP A09 + NIST CSF
-   Detect gap. ~1 day. Becomes the foundation for the first real
-   DR drill.
+2. ~~**ADOT distributed tracing.**~~ ✅ Shipped 2026-06-13 (item 18) —
+   closed the OWASP A09 + NIST CSF Detect gap. SLOs-as-code + multi-window
+   burn-rate alarms (items 24/25) followed 2026-06-14. The first real DR
+   drill (item 19) is now the next infra step.
 3. **First real DR drill** against a Neon PITR branch. Write up the
    timestamped result. 2 hours including doc.
 4. ~~**Address book CRUD.**~~ ✅ Shipped 2026-06-01. `/addresses` CRUD

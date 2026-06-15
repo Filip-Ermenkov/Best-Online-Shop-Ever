@@ -93,11 +93,11 @@ exercised until deployment, the cell is annotated.
 | Atomic blue/green deployments | N/A today | Target: AWS Amplify atomic deploys once deployed |
 | Structured JSON logs | ✅ | Pino + PII redaction. Runs locally; lands in CloudWatch once deployed |
 | Per-request correlation IDs | ✅ | `X-Request-Id` |
-| CloudWatch alarms on key metrics | ✅ | 8 alarms (5xx rate, admin logins, p99 duration, scheduler-fn errors, scheduler delivery failures, SES bounces, email DLQ depth, email queue age) in `infra/observability.tf`; the 5xx-rate + p99 alarms deploy by default and were live-applied 2026-06-07 (admin/SES ones gated until those components exist; the two email-queue ones ship with `enable_email_queue`, 2026-06-12; the two scheduler ones with `enable_scheduler`, 2026-06-12) |
+| CloudWatch alarms on key metrics | ✅ | 8 alarms (5xx rate, admin logins, p99 duration, scheduler-fn errors, scheduler delivery failures, SES bounces, email DLQ depth, email queue age) in `infra/observability.tf`; the 5xx-rate + p99 alarms deploy by default and were live-applied 2026-06-07 (admin/SES ones gated until those components exist; the two email-queue ones ship with `enable_email_queue`, 2026-06-12; the two scheduler ones with `enable_scheduler`, 2026-06-12). Plus a flag-gated **SLO burn-rate** set (availability / order-success / latency, multi-window multi-burn-rate) in `infra/slo.tf` behind `enable_slo_alarms`, 2026-06-14 |
 | Cron via managed service | ✅ | EventBridge Scheduler (Sofia-timezone cron, per-schedule retry policy + delivery DLQ) invoking `scheduler-fn` — three rules: hourly pickup-expiry, daily catalog backup, daily unverified-account cleanup + retention prune (`infra/scheduler.tf`, shipped 2026-06-12, live-validated 2026-06-13 via the manual job drills against Neon, flag `enable_scheduler`) |
 | Runbooks documented | ⚠️ | DR procedure + MFA recovery documented in ARCHITECTURE.md §12. No incident response playbook yet |
 | **Distributed tracing** | ✅ | OpenTelemetry on shop-api (roadmap item 18, 2026-06-13): `@hono/otel` request spans + undici/fetch downstream spans + log↔trace correlation (Pino `trace_id`/`span_id`), behind `ENABLE_TRACING`. Exports OTLP to X-Ray via the ADOT collector layer (`enable_tracing` + `adot_collector_layer_arn`), or any OTLP backend. App-level instrumentation + correlation unit-tested; live X-Ray export validated on deploy |
-| **Formal SLO definitions** | ❌ | Targets exist informally in ARCHITECTURE.md §7.2. Roadmap item 24 |
+| **Formal SLO definitions** | ✅ | `infra/slos.yaml` (OpenSLO v1): availability (99.9%), order-placement success (99.9%), p95 latency (<1000ms) — roadmap item 24, 2026-06-14. Multi-window multi-burn-rate alarms in `infra/slo.tf` (item 25, `enable_slo_alarms`). ARCHITECTURE §7.2/§8.5 |
 | **DORA metrics tracked** | ❌ | Not yet instrumented |
 | **DR drill cadence** | ❌ | Procedure documented; never tested. Roadmap item 19 |
 | **Incident postmortem template** | ❌ | Roadmap item 31 |
@@ -172,7 +172,7 @@ exercised until deployment, the cell is annotated.
 | Core Web Vitals targets defined | ✅ | LCP <2.5s, INP <200ms, CLS <0.1. Not measured continuously |
 | **Synthetic monitoring (Lighthouse CI)** | ❌ | Roadmap item 28 |
 | **Real User Monitoring (RUM)** | ❌ | Roadmap item 29 |
-| **Per-endpoint p95 latency budget** | ❌ | Roadmap item 25 (burn-rate alarms) |
+| **Per-endpoint p95 latency budget** | 🟡 | Service-wide p95 latency SLO + burn-rate alarm shipped (`infra/slos.yaml` / `slo.tf`, item 25, 2026-06-14). A *per-endpoint* budget still needs per-route SLIs — the `request_end` line now carries `path`, so it is a metric-filter-per-route away |
 | **Image variants for 800px / 2000px** | N/A today | Optional once image upload exists |
 
 ### Pillar 5 — Cost Optimization
@@ -238,7 +238,7 @@ gaps.
 
 | Category | Status | Notes |
 |---|---|---|
-| DE.CM — Continuous monitoring | ✅ | CSP violation reporting ✅; 8 CloudWatch alarms in IaC (live on deploy); **distributed tracing ✅** (OpenTelemetry, item 18) |
+| DE.CM — Continuous monitoring | ✅ | CSP violation reporting ✅; 8 CloudWatch alarms in IaC (live on deploy); **distributed tracing ✅** (OpenTelemetry, item 18); **SLO burn-rate alarms ✅** (multi-window multi-burn-rate over SLI metric filters, items 24/25, `infra/slo.tf`) |
 | DE.AE — Adverse event analysis | ✅ | Pino logs (incl. `csp_violation` structured event) now correlated to traces via `trace_id`/`span_id` — start from an alert, pivot to the trace, read every log line of that request (item 18) |
 
 ### Respond (RS)

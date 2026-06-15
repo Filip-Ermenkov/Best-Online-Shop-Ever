@@ -1,0 +1,298 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Service Level Objectives — Best Online Shop (shop-api)
+#
+# Format: OpenSLO v1 (https://github.com/OpenSLO/OpenSLO). Vendor-neutral SLOs
+# as code — the SAME reason the project speaks OpenTelemetry rather than a
+# vendor SDK (ARCHITECTURE §8.2): the objective is portable, the backend is an
+# implementation detail. This file is the single source of truth for "what good
+# looks like"; `infra/slo.tf` is ITS CloudWatch implementation (multi-window
+# multi-burn-rate alarms). Roadmap items 24 (SLOs as code) + 25 (burn-rate
+# alerting); ARCHITECTURE §7.2.
+#
+# How the SLIs are measured (no new app dependency, no custom-metric API call):
+# shop-api already emits ONE structured Pino line per request — `request_end` —
+# carrying `method`, `path`, `status`, `durationMs` (app.ts). `infra/slo.tf`
+# turns that line into CloudWatch metrics via Logs metric filters (the same
+# pattern as the existing admin-login-failures filter), then alarms on them.
+# Because `request_end` is logged at INFO, the deployed Lambda must run at
+# `log_level = "info"` for these SLIs to populate — a plan-time precondition in
+# slo.tf enforces it when `enable_slo_alarms = true`.
+#
+# Why not AWS CloudWatch Application Signals SLOs (the AWS-native option, GA
+# Nov 2024 with built-in burn-rate)? Considered and deferred: it wants the ADOT
+# auto-instrumentation layer this project deliberately does NOT run (the §13
+# tracing decision — we self-instrument in-bundle and must not be
+# double-wrapped), it is AWS-proprietary (against the vendor-neutral OTel +
+# OpenSLO posture), and it bills per-SLO + per-monitored-metric. The
+# log-metric-filter + composite-alarm path here reuses the existing,
+# mostly-free CloudWatch observability and keeps the objective vendor-portable.
+# Revisit if Application Signals is adopted for richer auto-instrumented APM.
+#
+# Targets follow ARCHITECTURE §7.2. They are deliberately ACHIEVABLE starting
+# values for a single-region serverless shop pre-traffic; tighten as real
+# traffic and an error-budget history accumulate.
+# ─────────────────────────────────────────────────────────────────────────────
+
+apiVersion: openslo/v1
+kind: Service
+metadata:
+  name: shop-api
+  displayName: Shop API (Hono on Lambda)
+  labels:
+    region:
+      - eu-central-1
+    component:
+      - backend
+spec:
+  description: >-
+    Customer-facing API for the Bulgarian online shop: catalog, auth, cart,
+    orders, the 14-day withdrawal flow, and the admin order-management surface.
+---
+# Where a breaching burn-rate alert is delivered. In CloudWatch this is the
+# alarms SNS topic (infra/observability.tf → aws_sns_topic.alarms), to which
+# `alarm_email` subscribes. Kept vendor-neutral here as "email".
+apiVersion: openslo/v1
+kind: AlertNotificationTarget
+metadata:
+  name: shop-api-alarms-sns
+  displayName: shop-api alarms SNS topic
+spec:
+  description: >-
+    Fan-out SNS topic for all shop-api CloudWatch alarms; subscribe an operator
+    email (Terraform var alarm_email) or a chat webhook.
+  target: email
+---
+# ── Burn-rate alert conditions (Google SRE Workbook, "Alerting on SLOs") ──────
+# Multi-window multi-burn-rate. Each condition's `lookbackWindow` is the LONG
+# window; the CloudWatch implementation (slo.tf) pairs it with a SHORT window
+# (1/12th of the long window) in a composite AND so the alert self-resolves
+# quickly once the burn stops. `threshold` is the burn-rate multiplier: the SLI
+# error rate divided by the error budget. A 14.4x burn over 1h consumes 2% of a
+# 30-day budget in that hour (page); a 6x burn over 6h consumes 5% (page); a 3x
+# burn over 24h consumes 10% (ticket).
+apiVersion: openslo/v1
+kind: AlertCondition
+metadata:
+  name: burn-rate-fast-page
+  displayName: Fast burn (page) — 1h/5m windows, 14.4x
+spec:
+  description: >-
+    Error budget is burning fast enough to be exhausted in ~2 days. Pages.
+    CloudWatch: composite of a 1h-window AND a 5m-window error-rate alarm.
+  severity: page
+  condition:
+    kind: burnrate
+    op: gte
+    threshold: 14.4
+    lookbackWindow: 1h
+    alertAfter: 5m
+---
+apiVersion: openslo/v1
+kind: AlertCondition
+metadata:
+  name: burn-rate-slow-ticket
+  displayName: Slow burn (ticket) — 6h/30m windows, 6x
+spec:
+  description: >-
+    Error budget is burning steadily (exhausted in ~5 days). Opens a ticket
+    rather than paging. CloudWatch: composite of a 6h-window AND a 30m-window
+    error-rate alarm.
+  severity: ticket
+  condition:
+    kind: burnrate
+    op: gte
+    threshold: 6
+    lookbackWindow: 6h
+    alertAfter: 30m
+---
+# Availability gets BOTH tiers; the business + latency SLOs ship the fast-burn
+# page tier (the slow-burn tier is a documented one-line extension in slo.tf).
+apiVersion: openslo/v1
+kind: AlertPolicy
+metadata:
+  name: shop-api-burn-rate-both
+  displayName: Burn-rate alerting (page + ticket)
+spec:
+  description: Multi-window multi-burn-rate alerting, both severities.
+  alertWhenBreaching: true
+  alertWhenResolved: false
+  alertWhenNoData: false
+  conditions:
+    - conditionRef: burn-rate-fast-page
+    - conditionRef: burn-rate-slow-ticket
+  notificationTargets:
+    - targetRef: shop-api-alarms-sns
+---
+apiVersion: openslo/v1
+kind: AlertPolicy
+metadata:
+  name: shop-api-burn-rate-fast
+  displayName: Burn-rate alerting (page only)
+spec:
+  description: Fast-burn page tier only (secondary SLOs).
+  alertWhenBreaching: true
+  alertWhenResolved: false
+  alertWhenNoData: false
+  conditions:
+    - conditionRef: burn-rate-fast-page
+  notificationTargets:
+    - targetRef: shop-api-alarms-sns
+---
+# ── SLO 1: Availability ───────────────────────────────────────────────────────
+# Good = any response that is not a 5xx; the service is "available" whenever it
+# returns a well-formed answer, including 4xx client errors (the caller's
+# fault, not ours — the standard request-based availability definition). This is
+# a STRICTER signal than the legacy api-5xx-rate alarm, which reads AWS/Lambda
+# Errors and therefore misses 5xx that the app returns gracefully via
+# app.onError (the Lambda invocation "succeeded"). The SLI counts the actual
+# HTTP status from the `request_end` log line instead.
+apiVersion: openslo/v1
+kind: SLO
+metadata:
+  name: shop-api-availability
+  displayName: shop-api availability (non-5xx)
+  labels:
+    service:
+      - shop-api
+spec:
+  description: >-
+    Proportion of HTTP responses that are not server errors (status < 500),
+    over a rolling 30 days.
+  service: shop-api
+  budgetingMethod: Occurrences
+  timeWindow:
+    - duration: 30d
+      isRolling: true
+  indicator:
+    metadata:
+      name: shop-api-5xx-ratio
+      displayName: shop-api 5xx ratio
+    spec:
+      ratioMetric:
+        counter: true
+        # bad / total form — see ARCHITECTURE §7.2. CloudWatch metrics are
+        # produced by the Logs metric filters in infra/slo.tf from the
+        # `request_end` structured log line.
+        bad:
+          metricSource:
+            type: CloudWatch
+            spec:
+              namespace: best-online-shop-prod/slo
+              metricName: SLIRequests5xx
+              stat: Sum
+              # Filter: { $.msg = "request_end" && $.status >= 500 }
+        total:
+          metricSource:
+            type: CloudWatch
+            spec:
+              namespace: best-online-shop-prod/slo
+              metricName: SLIRequests
+              stat: Sum
+              # Filter: { $.msg = "request_end" }
+  objectives:
+    - displayName: 99.9% available
+      target: 0.999
+  alertPolicies:
+    - alertPolicyRef: shop-api-burn-rate-both
+---
+# ── SLO 2: Order-placement success (the primary BUSINESS SLO) ─────────────────
+# Good = POST /orders returning 201 (a placed order, including the idempotent
+# replay that returns the original order). Bad = POST /orders returning 5xx.
+# 4xx (cart empty, out of stock, email-not-verified, idempotency conflict) are
+# EXCLUDED from the denominator — they are valid business rejections, not
+# reliability failures. So: bad / (placed + failed).
+apiVersion: openslo/v1
+kind: SLO
+metadata:
+  name: shop-api-order-success
+  displayName: Order-placement success
+  labels:
+    service:
+      - shop-api
+spec:
+  description: >-
+    Proportion of order-placement attempts that are not server errors, over a
+    rolling 30 days. The checkout transaction is the revenue path; a 5xx here is
+    a lost sale.
+  service: shop-api
+  budgetingMethod: Occurrences
+  timeWindow:
+    - duration: 30d
+      isRolling: true
+  indicator:
+    metadata:
+      name: order-placement-failure-ratio
+      displayName: Order-placement failure ratio
+    spec:
+      ratioMetric:
+        counter: true
+        bad:
+          metricSource:
+            type: CloudWatch
+            spec:
+              namespace: best-online-shop-prod/slo
+              metricName: SLIOrdersFailed
+              stat: Sum
+              # Filter: { $.msg = "request_end" && $.method = "POST"
+              #           && $.path = "/orders" && $.status >= 500 }
+        total:
+          metricSource:
+            type: CloudWatch
+            spec:
+              # Implemented in slo.tf as SLIOrdersPlaced + SLIOrdersFailed
+              # (valid attempts only; 4xx excluded).
+              namespace: best-online-shop-prod/slo
+              metricName: SLIOrdersValid
+              stat: Sum
+  objectives:
+    # §7.2 aspires to 99.95%; at low early order volume a single failed checkout
+    # would breach that, so the alarm starts at 99.9% and tightens with volume.
+    - displayName: 99.9% of order attempts succeed
+      target: 0.999
+  alertPolicies:
+    - alertPolicyRef: shop-api-burn-rate-fast
+---
+# ── SLO 3: Latency (p95) ──────────────────────────────────────────────────────
+# Threshold SLI: the p95 of request duration should stay under the threshold.
+# §7.2 aspires to p95 < 200ms on the warm path; the SLO threshold here is 1000ms
+# to leave headroom for occasional Lambda cold starts while still catching real
+# latency regressions. Implemented as a single p95 alarm on the duration value
+# extracted from `request_end` (slo.tf), evaluated over 15 minutes so a lone
+# cold start does not trip it.
+apiVersion: openslo/v1
+kind: SLO
+metadata:
+  name: shop-api-latency-p95
+  displayName: shop-api p95 latency
+  labels:
+    service:
+      - shop-api
+spec:
+  description: >-
+    p95 of request duration (ms) stays under the threshold over a rolling 30
+    days.
+  service: shop-api
+  budgetingMethod: Occurrences
+  timeWindow:
+    - duration: 30d
+      isRolling: true
+  indicator:
+    metadata:
+      name: shop-api-request-duration-p95
+      displayName: shop-api request duration p95 (ms)
+    spec:
+      thresholdMetric:
+        metricSource:
+          type: CloudWatch
+          spec:
+            namespace: best-online-shop-prod/slo
+            metricName: SLIRequestDurationMs
+            stat: p95
+            # Value metric: { $.msg = "request_end" } → value $.durationMs
+  objectives:
+    - displayName: p95 under 1000ms
+      op: lte
+      value: 1000
+      target: 0.99
+  alertPolicies:
+    - alertPolicyRef: shop-api-burn-rate-fast

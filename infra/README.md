@@ -21,6 +21,10 @@ verified inbox, unverified-cleanup ran clean). That drill also caught a
 prod-only bug — the `neon-http` driver throws on `db.transaction(...)` —
 fixed by switching the runtime to the Neon serverless WebSocket driver
 (`backend/db/src/client.ts`); rebuild the bundle + re-apply to ship it.
+Distributed tracing (item 18, `enable_tracing`) shipped + was live-validated
+2026-06-13. **SLOs as code + multi-window burn-rate alarms** (items 24/25,
+`slos.yaml` + `slo.tf`, `enable_slo_alarms`) shipped 2026-06-14 — defined and
+apply-ready; the budgets need live traffic to exercise (runbook below).
 What does NOT exist yet is a *maintained* production environment: custom
 domain, frontend deployed (the Neon schema and the test stack now exist).
 Applying requires AWS credentials, a Neon project, and (optionally) a domain,
@@ -52,6 +56,7 @@ observable API behind CloudFront with no DNS or domain required:
 | CloudFront + OAC (+ ACM) | `cdn.tf` | sigv4-signs origin requests; default `*.cloudfront.net` domain unless `api_domain_name` is set. |
 | SNS topic + 8 CloudWatch alarms | `observability.tf` | 5xx-rate, p99 duration, SES bounce; admin-login gated until admin-api exists; email DLQ-depth + queue-age ship with `enable_email_queue`; scheduler-fn-errors + scheduler-delivery-failures ship with `enable_scheduler`. |
 | GitHub OIDC provider + deploy role | `cicd.tf` | CI assumes it to ship Lambda code — no long-lived AWS keys. Covers `email-fn` and `scheduler-fn` too when their flags are enabled. |
+| SLO SLI filters + burn-rate alarms | `slo.tf` | Logs metric filters over the `request_end` line + multi-window multi-burn-rate composite alarms (availability / order-success / latency). Ships with `enable_slo_alarms`; requires `log_level = "info"`. Contract in `slos.yaml`; roadmap items 24/25 (runbook below). |
 
 Opt-in layers (all `enable_* = false` by default): **WAF** (`waf.tf`), **Route 53**
 (`dns.tf`), **Amplify** frontend hosting (`amplify.tf`), **SES** domain identity
@@ -61,7 +66,9 @@ Opt-in layers (all `enable_* = false` by default): **WAF** (`waf.tf`), **Route 5
 Scheduler crons + delivery DLQ + catalog-backup bucket (`scheduler.tf`),
 roadmap item 23 (runbook below) — and **distributed tracing**
 (`enable_tracing` — app-level OpenTelemetry on `shop-api` + the ADOT collector
-layer, wired in `lambda.tf`), roadmap item 18 (runbook below). Each is
+layer, wired in `lambda.tf`), roadmap item 18 (runbook below) — and the **SLO burn-rate alarms**
+(`enable_slo_alarms` — `slo.tf` + the OpenSLO contract `slos.yaml`), roadmap
+items 24/25 (runbook below). Each is
 documented at its variable in `variables.tf`. The §10 cost model prefers
 Cloudflare for DNS+WAF, which is why those AWS-native paths ship off.
 
@@ -293,6 +300,74 @@ Transaction Search) is noted in ARCHITECTURE.md §13 as a deferred option.
 **Disable:** set `enable_tracing = false` and re-apply (or just drop
 `adot_collector_layer_arn` for correlation-only). With the flag off the OTel
 graph is never evaluated — zero request-path cost.
+
+## SLO + burn-rate runbook (roadmap items 24/25)
+
+The objective contract is `slos.yaml` (OpenSLO v1 — availability,
+order-placement success, p95 latency). `slo.tf` is its CloudWatch
+implementation: five Logs metric filters over the `request_end` log line, then
+multi-window multi-burn-rate alarms. Off by default.
+
+**What it provisions (only when `enable_slo_alarms = true`):**
+
+- **Metric filters** (namespace `<project>-<env>/slo`): `SLIRequests`,
+  `SLIRequests5xx`, `SLIRequestDurationMs`, `SLIOrdersPlaced`,
+  `SLIOrdersFailed` — all read from the one structured `request_end` line the
+  API already emits (`{ method, path, status, durationMs }`).
+- **Availability** — both burn tiers: `…-slo-availability-fast-burn`
+  (composite of the 1h + 5m arms, 14.4× budget → **page**) and
+  `…-slo-availability-slow-burn` (6h + 30m, 6× → **ticket**).
+- **Order-success** — `…-slo-orders-fast-burn` (composite 1h + 5m, page). A 5xx
+  on `POST /orders` is a lost sale.
+- **Latency** — `…-slo-latency-p95` (single alarm, p95 over 15 min > threshold).
+
+All notify the existing alarms SNS topic. The per-window child alarms carry **no
+actions** — only the composites page, so a single flapping arm never reaches you.
+
+**Enable (two settings — both required):**
+
+```hcl
+enable_slo_alarms = true
+log_level         = "info"   # the SLIs read the INFO-level request_end line
+```
+
+`log_level` defaults to `warn`, at which `request_end` is suppressed and the
+filters see nothing. A plan-time **precondition** on the `SLIRequests` filter
+fails the apply with a clear message if you enable the alarms without
+`log_level = "info"`, so you cannot get this wrong silently. Then:
+
+```powershell
+terraform apply
+terraform output slo_alarm_names   # the composite + latency alarm names
+```
+
+**Tune the targets** (optional) via `slo_availability_target` (default 0.999),
+`slo_orders_target` (0.999), `slo_latency_threshold_ms` (1000). The burn-rate
+alarm thresholds are derived from these (e.g. availability fast-burn fires when
+the 5xx rate exceeds `14.4 × (1 − target) = 1.44%` in **both** the 1h and 5m
+windows).
+
+**Validate on a live stack:** drive some 5xx (e.g. hit a route that 500s, or
+temporarily break `DATABASE_URL`). Within ~5 minutes the short-window arm
+(`…-slo-availability-fast-5m`) flips to ALARM; once the 1h arm also crosses,
+the **composite** fires and SNS notifies. Restore service and the short window
+clears the composite quickly. The CloudWatch console → Alarms shows the
+composite's child state. Note: with **no traffic** every alarm sits in
+INSUFFICIENT_DATA / OK (`treat_missing_data = notBreaching`) — quiet is healthy,
+not a false page.
+
+**Cost:** composite alarms bill ~$0.50/mo each (3 composites) and the metric
+alarms count against the 10 always-free CloudWatch alarm allowance; gated off,
+the cost is $0 until enabled. **Caveat (documented trade-off):** the window
+alarms use period = window length / `evaluation_periods = 1` (the same shape as
+the existing `api-5xx-rate` alarm), so the long-window arm evaluates on a
+clock-aligned cadence rather than a Prometheus-style rolling window. The short
+window drives fast detection; a finer rolling burn-rate, or AWS Application
+Signals SLOs, is the documented next step (`slos.yaml` header + ARCHITECTURE
+§8.5 / §13).
+
+**Disable:** set `enable_slo_alarms = false` and re-apply — every filter and
+alarm is removed; the `request_end` log enrichment (harmless, additive) stays.
 
 ## How secrets are handled
 
