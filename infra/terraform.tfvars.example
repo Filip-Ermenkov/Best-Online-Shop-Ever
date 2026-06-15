@@ -54,6 +54,17 @@ alarm_email             = "" # e.g. "ops@shop.example.com" (confirm the SNS subs
 enable_admin_alarms     = false # turn on once admin-api exists
 enable_scheduler_alarms = true  # the two scheduler alarms materialise together with enable_scheduler
 
+# ─── SLOs + burn-rate alerting (roadmap items 24/25) ─────────────────────────
+# Objective contract: infra/slos.yaml (OpenSLO). Provisions SLI metric filters +
+# multi-window multi-burn-rate alarms. REQUIRES log_level = "info" (the SLIs read
+# the INFO-level request_end log line; a precondition enforces it). Composite
+# alarms bill $0.50/mo each. See infra/README.md → "SLO + burn-rate runbook".
+enable_slo_alarms = false
+# log_level     = "info"  # uncomment together with enable_slo_alarms = true
+# slo_availability_target  = 0.999
+# slo_orders_target        = 0.999
+# slo_latency_threshold_ms = 1000
+
 # ─── Scheduled jobs (scheduler-fn + EventBridge Scheduler, roadmap item 23) ──
 # Build the bundle BEFORE applying with this on:
 #   npm --workspace @shop/api run build:scheduler

@@ -48,6 +48,16 @@ output "alarms_topic_arn" {
   value       = aws_sns_topic.alarms.arn
 }
 
+output "slo_alarm_names" {
+  description = "SLO burn-rate alarm names that notify (composites + latency), or [] when enable_slo_alarms = false. Objective contract: infra/slos.yaml."
+  value = var.enable_slo_alarms ? [
+    one(aws_cloudwatch_composite_alarm.slo_availability_fast[*].alarm_name),
+    one(aws_cloudwatch_composite_alarm.slo_availability_slow[*].alarm_name),
+    one(aws_cloudwatch_composite_alarm.slo_orders_fast[*].alarm_name),
+    one(aws_cloudwatch_metric_alarm.slo_latency_p95[*].alarm_name),
+  ] : []
+}
+
 output "email_queue_url" {
   description = "Durable email queue URL (shop-api's EMAIL_QUEUE_URL — wired automatically), or null when enable_email_queue = false."
   value       = one(aws_sqs_queue.email[*].url)

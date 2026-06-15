@@ -14,15 +14,16 @@
 > specification. Read that to learn *what* the shop does; this doc
 > covers *how* it's built.
 >
-> Last updated: 2026-06-13. Reality-aligned: the `infra/` IaC is
+> Last updated: 2026-06-14. Reality-aligned: the `infra/` IaC is
 > live-apply-validated (a test deploy returned 200 end-to-end); the
 > **admin authentication backend** (mandatory TOTP MFA, `/admin/auth/*`)
 > shipped 2026-06-08; the **durable email queue** (item 21) and
-> **scheduler-fn** (item 23) shipped + live-validated 2026-06-12/13; and
+> **scheduler-fn** (item 23) shipped + live-validated 2026-06-12/13;
 > **distributed tracing** (OpenTelemetry, item 18) shipped 2026-06-13 —
-> closing the last OWASP A09 / NIST CSF Detect gap (§8.2). No maintained
-> production environment is kept running yet; the admin frontend UI is
-> pending.
+> closing the last OWASP A09 / NIST CSF Detect gap (§8.2); and **SLOs as
+> code + multi-window burn-rate alerting** (items 24/25) shipped 2026-06-14
+> (`infra/slos.yaml` + `infra/slo.tf`, §7.2/§8.5). No maintained production
+> environment is kept running yet; the admin frontend UI is pending.
 
 ---
 
@@ -560,6 +561,14 @@ CloudWatch Log Group. Eight alarms defined in
 - Email queue age > 15 min — the email-fn consumer is not draining
   (ships with `enable_email_queue`, 2026-06-12)
 
+**SLO burn-rate alarms — shipped 2026-06-14 (Roadmap items 24/25).** A
+*separate* set in `infra/slo.tf`, behind `enable_slo_alarms` (default off),
+on top of the eight above: availability (fast-burn page + slow-burn ticket),
+order-success (fast-burn page) and a p95 latency guard — multi-window
+multi-burn-rate composite alarms over SLI metric filters on the `request_end`
+log line. Objective contract in `infra/slos.yaml`; full detail in §8.5.
+Composite alarms bill $0.50/mo each, so they are gated and cost $0 until on.
+
 **Distributed tracing — shipped 2026-06-13 (Roadmap item 18).** The 2026
 industry standard, OpenTelemetry, is now wired on shop-api: `@hono/otel`
 request spans + undici/fetch downstream spans + Pino log↔trace correlation,
@@ -992,21 +1001,33 @@ Not yet formalised in code or alarms. Targets to adopt:
 
 Gap: no Lighthouse CI / WebPageTest synthetic monitoring.
 
-### 7.2 Service-level targets (proposed)
+### 7.2 Service-level objectives (shipped — `infra/slos.yaml`, item 24)
 
-These do not yet exist as code. Recommended:
+Defined as code in `infra/slos.yaml` (OpenSLO v1) since 2026-06-14, with
+multi-window multi-burn-rate alarms in `infra/slo.tf` (item 25, behind
+`enable_slo_alarms`):
 
-| SLI | SLO | Window | Error budget |
-|---|---|---|---|
-| Availability (shop-api 2xx+3xx of total) | 99.9% | 30 days | 43 min/mo |
-| Availability (admin-api) | 99.5% | 30 days | 3.6 hr/mo |
-| p95 latency (shop-api) | <200ms | 30 days | n/a |
-| p95 latency (search autocomplete) | <100ms | 30 days | n/a |
-| Order placement success rate | 99.95% | 30 days | 15 min/mo |
+| SLI | SLO | Window | Error budget | Alarmed |
+|---|---|---|---|---|
+| Availability (shop-api non-5xx of total) | 99.9% | 30 days | 43 min/mo | ✅ fast (page) + slow (ticket) |
+| Order placement success (POST /orders non-5xx) | 99.9%¹ | 30 days | 43 min/mo | ✅ fast (page) |
+| p95 latency (shop-api) | <1000ms² | 30 days | n/a | ✅ p95 guard |
+| Availability (admin-api) | 99.5% | 30 days | 3.6 hr/mo | ⏸ admin-api not split out yet |
+| p95 latency (search autocomplete) | <100ms | 30 days | n/a | ⏸ no per-route SLI yet |
 
-Google's SRE error-budget policy (green → yellow → orange → red)
-applies. Stored in `OpenSLO` YAML files alongside source code is the
-2026 best practice.
+¹ §15 item 24's original target was 99.95%; at low early order volume a single
+failed checkout would breach that, so the alarm starts at 99.9% and tightens
+with volume. ² The 200ms warm-path aspiration is kept as a goal; the SLO
+threshold is 1000ms to leave headroom for occasional Lambda cold starts.
+
+The SLIs are computed from the structured `request_end` log line (one per
+request: `{ method, path, status, durationMs }`) via CloudWatch Logs metric
+filters — so availability reflects the **actual HTTP status the app returns**,
+a stricter signal than the legacy `api-5xx-rate` alarm (which reads AWS/Lambda
+`Errors` and misses the 5xx that `app.onError` returns gracefully). Google's SRE
+error-budget policy (green → yellow → orange → red) applies; the burn-rate
+alarm tiers are its operational expression. See §8.5 and the "SLO + burn-rate
+runbook" in `infra/README.md`.
 
 ### 7.3 Connection pooling
 
@@ -1029,6 +1050,9 @@ concurrent invocations without exhausting it.
 - **8 CloudWatch alarms** defined in `infra/observability.tf` (the 5xx
   and p99 ones live-applied 2026-06-07; the rest gated behind their
   feature flags).
+- **SLO burn-rate alarms — shipped 2026-06-14** (`infra/slo.tf`, behind
+  `enable_slo_alarms`): an additional multi-window multi-burn-rate set
+  (availability, order-success, latency) on top of the 8 above. See §8.5.
 - **Distributed tracing — shipped 2026-06-13** (OpenTelemetry on
   shop-api, Roadmap item 18). See §8.2.
 
@@ -1079,7 +1103,8 @@ OTel graph is dynamic-imported and never evaluated unless the flag is on.
 - **DORA metrics**: deployment frequency, lead time for changes,
   MTTR, change failure rate.
 - **Custom business metrics**: orders/hour, conversion-rate by
-  funnel stage, withdrawal-rate.
+  funnel stage, withdrawal-rate. (Order-placement *success rate* now
+  exists as an SLI — §8.5 — but the volume/funnel metrics do not.)
 - **RUM (Real User Monitoring)**: actual user Core Web Vitals from
   browsers. Cloudflare Web Analytics (free, no cookie), Vercel
   Analytics, or self-hosted Plausible/Umami are all options.
@@ -1087,6 +1112,41 @@ OTel graph is dynamic-imported and never evaluated unless the flag is on.
 ### 8.4 CSP violation reporting
 
 Shipped May 25, 2026 — see §5.2.3.
+
+### 8.5 SLOs + burn-rate alerting (shipped 2026-06-14, items 24/25)
+
+The objective contract is `infra/slos.yaml` (OpenSLO v1); the implementation is
+`infra/slo.tf`, behind `enable_slo_alarms` (default off). See §7.2 for the SLO
+table.
+
+- **SLI source — the log line, not a metric API.** shop-api emits one
+  structured `request_end` line per request: `{ method, path, status,
+  durationMs }` (the `app.ts` request middleware). Five CloudWatch Logs
+  **metric filters** extract the SLI metrics from it — total responses, 5xx,
+  request duration, orders placed (POST /orders → 201), orders failed (POST
+  /orders → 5xx). This is the same mechanism as the pre-existing
+  admin-login-failures filter; there is **no `PutMetricData` call on the request
+  path** and no new app dependency (the only code change was adding `method` +
+  `path` to a log line that was already emitted). Trade-off: `request_end` is
+  INFO-level, so the deployed Lambda must run at `log_level = "info"` — a
+  plan-time precondition on the metric filter enforces this when the flag is on.
+- **Why this is a stricter availability signal than the legacy 5xx alarm.** The
+  `api-5xx-rate` alarm (§3.10) reads AWS/Lambda `Errors ÷ Invocations`, which
+  only counts invocations that *threw* — it misses every 5xx that `app.onError`
+  returns gracefully (the invocation "succeeded" from Lambda's view). The SLI
+  reads the actual HTTP status from the log, so it sees those.
+- **Multi-window multi-burn-rate (Google SRE Workbook).** Each burn tier fires
+  only when a **long and a short window both breach** (a CloudWatch composite
+  alarm `ALARM(long) AND ALARM(short)`): the long window proves a sustained
+  burn (noise suppression), the short window clears the alert quickly once the
+  burn stops. Burn-rate threshold = multiplier × error-budget as an error-rate
+  percent: fast 14.4× (1h/5m, page), slow 6× (6h/30m, ticket). Availability
+  ships both tiers; order-success ships the fast-burn page tier; latency is a
+  single p95 guard over 15 minutes (a lone cold start does not trip it).
+- **AWS Application Signals SLOs considered + deferred** — see §13 and the
+  header note in `infra/slos.yaml`. A finer rolling burn-rate (sub-window
+  re-evaluation) is the documented next step; the window alarms use period =
+  window length / evaluation_periods = 1, the same shape as the existing alarms.
 
 ---
 
@@ -1585,6 +1645,27 @@ These are baked-in for good reasons; revisiting them costs you weeks.
   SigV4 OTLP exporter, or wiring the heavyweight ADOT SDK auto-instrument
   layer (cold-start cost + double-wrapping our own spans) — bought
   nothing the curated in-bundle setup doesn't.
+- **SLOs are OpenSLO-as-code + log-derived SLIs + multi-window burn-rate
+  composites, not AWS Application Signals** (2026-06-14) — the objective lives
+  in `infra/slos.yaml` (OpenSLO v1, vendor-neutral — the same portability stance
+  as the OTel tracing choice), and the SLIs are CloudWatch Logs **metric
+  filters** over the `request_end` log line the app already emits (one enriched
+  field, no `PutMetricData` on the hot path, no new dependency). Alarms are the
+  Google SRE Workbook multi-window multi-burn-rate pattern as CloudWatch
+  **composite alarms** (long AND short window). AWS Application Signals SLOs
+  (GA Nov 2024, native burn-rate) were REJECTED for now: they require the ADOT
+  auto-instrumentation layer this project deliberately does not run (the tracing
+  decision above — we self-instrument in-bundle and must not be double-wrapped),
+  they are AWS-proprietary (against the OpenSLO/OTel posture), and they bill
+  per-SLO + per-monitored-metric. The log-filter path reuses the existing,
+  mostly-free CloudWatch observability and keeps the objective portable. The
+  cost: availability is reflected from the app's own returned status (a stricter
+  signal than the Lambda-Errors-based `api-5xx-rate` alarm), at the price of
+  requiring `log_level = "info"` on the deployed Lambda (a plan-time precondition
+  enforces it) and the clock-aligned window cadence of CloudWatch metric-math
+  alarms (a finer rolling burn-rate is the documented next step). Behind
+  `enable_slo_alarms`, default off — the same ride-behind-a-flag discipline as
+  the email queue, scheduler, and tracing.
 - **Single admin account** — multi-admin is out of scope.
 - **Uniform strict CSP** — defends against the SPA-soft-navigation
   bypass documented in §5.2.
@@ -1597,7 +1678,7 @@ These are baked-in for good reasons; revisiting them costs you weeks.
 
 | Pillar | Today | What's missing for A+ |
 |---|---|---|
-| Operational Excellence | B | Production deploy, formal SLOs + burn-rate alerting, DORA metrics, scheduled DR drills, incident postmortem template, status page (distributed tracing ✅ shipped 2026-06-13, item 18) |
+| Operational Excellence | B+ | Production deploy, DORA metrics, scheduled DR drills, incident postmortem template, status page (distributed tracing ✅ item 18, 2026-06-13; formal SLOs-as-code + multi-window burn-rate alerting ✅ items 24/25, 2026-06-14 — `infra/slos.yaml` + `infra/slo.tf`, awaiting live traffic to exercise) |
 | Security | A | Customer MFA option (growth-stage); admin auth ✅ (TOTP MFA shipped end-to-end 2026-06-08 — backend + sign-in UI) |
 | Reliability | B | Production deploy, DR drill cadence, public status page (SQS email retry queue ✅ 2026-06-12 — live-validated incl. the DLQ → alarm → redrive drill; scheduler-fn + daily catalog backup + retention sweeps ✅ 2026-06-12, live-validated 2026-06-13 — the manual drills for all three jobs passed against Neon; the first drill exposed that the prod `neon-http` driver cannot run `db.transaction(...)`, fixed by switching to the Neon serverless WebSocket driver) |
 | Performance Efficiency | B+ | Synthetic monitoring, RUM, query-latency SLOs per endpoint |
@@ -1608,11 +1689,12 @@ The Security A grade comes from the code-level posture (Argon2id,
 constant-time login, strict CSP, HIBP, SLSA L2, SBOM signing, RFC
 9116 disclosure, GDPR Art. 16 + 17 self-service, and — since
 2026-06-08 — admin TOTP MFA at AAL2 with replay-guarded codes and a
-secret encrypted at rest). The B grade on
-Reliability and Operational Excellence reflects the absence of a
+secret encrypted at rest). The B / B+ grades on
+Reliability and Operational Excellence reflect the absence of a
 durably-running production environment: the IaC is live-apply-validated
-(item 17), but scheduled DR drills, formal SLOs, burn-rate alerting, and
-a status page still need a maintained deployment.
+(item 17) and SLOs-as-code + burn-rate alerting now ship (items 24/25), but
+scheduled DR drills, a status page, and live traffic to exercise the SLOs
+still need a maintained deployment.
 
 **Cross-checked against 2026 industry standards beyond AWS WA:**
 
@@ -1907,8 +1989,35 @@ Ranked by `(impact ÷ effort)` — highest leverage first. Items marked
     18 new integration tests in `@shop/api`, 5 template tests in
     `@shop/email`. Replaces the blind placeholder scheduler alarm
     (wrong metric) with the 4a/4b pair. Runbook in `infra/README.md`.
-24. ❌ **Formalise SLOs in `slos.yaml` (OpenSLO format).** 1 hour.
-25. ❌ **Burn-rate CloudWatch composite alarms.** 1 hour.
+24. ✅ **SLOs as code in `infra/slos.yaml` (OpenSLO v1) — shipped
+    2026-06-14.** Three SLOs over a rolling 30-day window: **availability**
+    (non-5xx ratio, 99.9%), **order-placement success** (POST /orders non-5xx,
+    99.9% — §7.2 aspires to 99.95%, relaxed for early low order volume) and
+    **p95 latency** (< 1000ms; §7.2's 200ms warm-path aspiration with
+    cold-start headroom). Vendor-neutral OpenSLO — the same portability stance
+    as the OTel tracing choice (§8.2) — with `metricSource: CloudWatch` specs
+    that document the exact metric each SLI maps to. The file is the objective
+    contract; `infra/slo.tf` is its implementation. AWS CloudWatch Application
+    Signals SLOs (the AWS-native option, GA Nov 2024) were considered and
+    deferred: they want the ADOT auto-instrumentation layer this project
+    deliberately does not run (§13 tracing decision), are AWS-proprietary, and
+    bill per-SLO. See §7.2.
+25. ✅ **Multi-window multi-burn-rate burn-rate alarms — shipped 2026-06-14**
+    (`infra/slo.tf`, flag `enable_slo_alarms`, default off). The SLIs are
+    derived with **zero new app dependency**: shop-api already emits one
+    structured `request_end` line per request, now carrying
+    `{ method, path, status, durationMs }` (app.ts), and five CloudWatch Logs
+    **metric filters** turn it into SLI metrics — the same mechanism as the
+    existing admin-login-failures filter, no PutMetricData on the request path.
+    Alarms follow the Google SRE Workbook: each burn tier requires a **long AND
+    a short window** to breach (a CloudWatch **composite alarm**), so a
+    sustained burn pages while a transient blip self-resolves. Availability
+    ships **both** tiers (fast-burn 1h/5m @ 14.4× → page; slow-burn 6h/30m @ 6×
+    → ticket); order-success ships the fast-burn page tier; latency is a single
+    p95 guard. Because `request_end` is INFO-level, the alarms require the
+    deployed Lambda at `log_level = "info"` — a plan-time precondition enforces
+    it. Closes the §14 Operational-Excellence "formal SLOs + burn-rate
+    alerting" gap. Runbook in `infra/README.md` → "SLO + burn-rate runbook".
 26. ❌ **Cloudflare DNS + R2 swap.** ½ day; saves €0.50/mo and
     eliminates two AWS lock-in points.
 27. ❌ **Cut CloudWatch Logs retention to 14 days.** 5 min.
@@ -2194,5 +2303,4 @@ Briefly, every acronym in this document and its siblings:
 *This is the single technical doc. For the auditor-facing
 standards-by-standards matrix, see `COMPLIANCE.md`. For the
 functional / product specification, see `docs/README.md`
-(Bulgarian). For the dated strategic-direction review, see
-`docs/STRATEGIC_REVIEW_2026-05-26.md`.*
+(Bulgarian).*

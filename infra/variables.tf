@@ -335,6 +335,47 @@ variable "adot_collector_layer_arn" {
   default     = ""
 }
 
+# ─── SLOs + multi-window multi-burn-rate alerting (roadmap items 24/25) ──────
+
+variable "enable_slo_alarms" {
+  description = "Provision the SLO SLI metric filters + multi-window multi-burn-rate burn-rate alarms (infra/slo.tf, contract in infra/slos.yaml). Default off. REQUIRES log_level = \"info\" — the SLIs are Logs metric filters over the INFO-level request_end line (a slo.tf precondition enforces it). Adds CloudWatch metric + composite alarms (composite alarms are billed at $0.50/mo each); zero cost when off."
+  type        = bool
+  default     = false
+}
+
+variable "slo_availability_target" {
+  description = "Availability SLO target (non-5xx ratio), rolling 30 days. 0.999 = 99.9% (ARCHITECTURE §7.2). Drives the burn-rate alarm thresholds."
+  type        = number
+  default     = 0.999
+
+  validation {
+    condition     = var.slo_availability_target > 0.9 && var.slo_availability_target < 1
+    error_message = "slo_availability_target must be between 0.9 and 1 (exclusive), e.g. 0.999."
+  }
+}
+
+variable "slo_orders_target" {
+  description = "Order-placement-success SLO target (non-5xx ratio on POST /orders), rolling 30 days. §7.2 aspires to 0.9995; 0.999 is the early-volume starting point."
+  type        = number
+  default     = 0.999
+
+  validation {
+    condition     = var.slo_orders_target > 0.9 && var.slo_orders_target < 1
+    error_message = "slo_orders_target must be between 0.9 and 1 (exclusive), e.g. 0.999."
+  }
+}
+
+variable "slo_latency_threshold_ms" {
+  description = "Latency SLO: p95 request duration must stay under this many milliseconds. §7.2 aspires to 200ms warm; 1000ms leaves headroom for occasional Lambda cold starts."
+  type        = number
+  default     = 1000
+
+  validation {
+    condition     = var.slo_latency_threshold_ms >= 100 && var.slo_latency_threshold_ms <= 30000
+    error_message = "slo_latency_threshold_ms must be between 100 and 30000."
+  }
+}
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Email: SES domain identity (DKIM + custom MAIL FROM + config set)
 # ─────────────────────────────────────────────────────────────────────────────
