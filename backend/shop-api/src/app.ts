@@ -15,6 +15,7 @@ import { isTracingEnabled } from "./lib/tracing.js";
 import { validationHook } from "./lib/validation-hook.js";
 import { currentUser, type AuthVariables } from "./middleware/auth.js";
 import { adminAuthRoutes } from "./routes/admin/auth.js";
+import { adminCategoriesRoutes } from "./routes/admin/categories.js";
 import { adminOrdersRoutes } from "./routes/admin/orders.js";
 import { addressesRoutes } from "./routes/addresses.js";
 import { authRoutes } from "./routes/auth.js";
@@ -211,6 +212,9 @@ export function buildApp() {
   // Admin order management — every route requireAdmin-gated inside the router.
   app.use("/admin/orders/*", currentUser);
   app.use("/admin/orders", currentUser);
+  // Admin category management — every route requireAdmin-gated inside the router.
+  app.use("/admin/categories/*", currentUser);
+  app.use("/admin/categories", currentUser);
 
   app.get("/health", (c) => c.json({ ok: true }));
 
@@ -219,6 +223,7 @@ export function buildApp() {
   app.route("/auth", authRoutes);
   app.route("/admin/auth", adminAuthRoutes);
   app.route("/admin/orders", adminOrdersRoutes);
+  app.route("/admin/categories", adminCategoriesRoutes);
   app.route("/cart", cartRoutes);
   app.route("/orders", ordersRoutes);
   app.route("/addresses", addressesRoutes);

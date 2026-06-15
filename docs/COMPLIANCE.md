@@ -409,7 +409,7 @@ families:
 | CIS 5 Account Management | ✅ |
 | CIS 6 Access Control Management | ✅ |
 | CIS 7 Continuous Vulnerability Management | ✅ Dependabot + CodeQL `security-extended` weekly + on every PR |
-| CIS 8 Audit Log Management | ⚠️ Pino logs yes; SIEM no — acceptable at this scale |
+| CIS 8 Audit Log Management | ⚠️ Pino structured logs ✅; the append-only `admin_audit_log` table is now written for admin state changes (its first writer is the category slice — create / update / reorder / delete, 2026-06-15; order transitions are audited in `order_status_history`). SIEM no — acceptable at this scale |
 | CIS 9 Email and Web Browser Protections | N/A (no email clients in scope) |
 | CIS 10 Malware Defenses | N/A (no end-user devices in scope) |
 | CIS 11 Data Recovery | ⚠️ Procedures yes; drill cadence no |

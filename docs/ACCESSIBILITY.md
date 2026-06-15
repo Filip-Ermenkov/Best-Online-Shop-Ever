@@ -197,15 +197,21 @@ sensibly*. Walk these by hand.
   `<Link>`, so it takes no interactive role of its own).
 - **Admin panel** (`/admin/*`) is operator-only and out of scope for the
   customer statement. The admin **sign-in gate** (`AdminAuthGate`, login →
-  MFA → TOTP enrolment) and the admin **orders** screens
-  (`OrdersExplorer` + `OrderDetailPanel`, 2026-06-10) are real and *are*
-  linted by `jsx-a11y` (they live under `src/components/admin/`, outside
-  the `src/app/admin/**` lint exclusion — labelled filter controls, live-
-  region errors and conflict notices, `aria-hidden` decorative icons, an
-  inline — not focus-trapped — confirmation step, and the expired-deadline
-  state conveyed by icon + text, not colour alone). The remaining CRUD
-  pages are still on mock data; the panel as a whole has not had a full
-  screen-reader audit.
+  MFA → TOTP enrolment), the admin **orders** screens
+  (`OrdersExplorer` + `OrderDetailPanel`, 2026-06-10), and the admin
+  **categories** manager (`CategoriesManager`, 2026-06-15) are real and
+  *are* linted by `jsx-a11y` (they live under `src/components/admin/`,
+  outside the `src/app/admin/**` lint exclusion — labelled filter controls,
+  live-region errors and conflict notices, `aria-hidden` decorative icons,
+  an inline — not focus-trapped — confirmation step, and the
+  expired-deadline state conveyed by icon + text, not colour alone). The
+  categories tree deliberately reorders with **up/down buttons rather than
+  drag-and-drop** — the single-pointer / keyboard-operable alternative WCAG
+  2.2 SC 2.5.7 (Dragging Movements) requires — and its destructive delete is
+  gated behind an explicitly-labelled „Разбирам последствията" checkbox. The
+  remaining CRUD pages (products, customers, banners, settings, archive) are
+  still on mock data; the panel as a whole has not had a full screen-reader
+  audit.
 - **Third-party content** (courier-office maps) will be assessed when ingested.
 
 ---
