@@ -20,7 +20,7 @@
 > explicit; the bare ✅/⚠️/❌ refers to whether the *control* is in
 > place, not whether it is running in production.
 >
-> Last updated: 2026-06-07.
+> Last updated: 2026-06-15.
 
 ---
 
@@ -95,12 +95,12 @@ exercised until deployment, the cell is annotated.
 | Per-request correlation IDs | ✅ | `X-Request-Id` |
 | CloudWatch alarms on key metrics | ✅ | 8 alarms (5xx rate, admin logins, p99 duration, scheduler-fn errors, scheduler delivery failures, SES bounces, email DLQ depth, email queue age) in `infra/observability.tf`; the 5xx-rate + p99 alarms deploy by default and were live-applied 2026-06-07 (admin/SES ones gated until those components exist; the two email-queue ones ship with `enable_email_queue`, 2026-06-12; the two scheduler ones with `enable_scheduler`, 2026-06-12). Plus a flag-gated **SLO burn-rate** set (availability / order-success / latency, multi-window multi-burn-rate) in `infra/slo.tf` behind `enable_slo_alarms`, 2026-06-14 |
 | Cron via managed service | ✅ | EventBridge Scheduler (Sofia-timezone cron, per-schedule retry policy + delivery DLQ) invoking `scheduler-fn` — three rules: hourly pickup-expiry, daily catalog backup, daily unverified-account cleanup + retention prune (`infra/scheduler.tf`, shipped 2026-06-12, live-validated 2026-06-13 via the manual job drills against Neon, flag `enable_scheduler`) |
-| Runbooks documented | ⚠️ | DR procedure + MFA recovery documented in ARCHITECTURE.md §12. No incident response playbook yet |
+| Runbooks documented | ✅ | DR + MFA-recovery procedures in ARCHITECTURE.md §12; per-feature runbooks in infra/README.md; **incident-response playbook shipped 2026-06-15** (`docs/INCIDENT-RESPONSE.md`, roadmap item 31) — severity model, lifecycle, scenario playbooks, GDPR Art. 33/34 breach track, postmortem + breach-register templates |
 | **Distributed tracing** | ✅ | OpenTelemetry on shop-api (roadmap item 18, 2026-06-13): `@hono/otel` request spans + undici/fetch downstream spans + log↔trace correlation (Pino `trace_id`/`span_id`), behind `ENABLE_TRACING`. Exports OTLP to X-Ray via the ADOT collector layer (`enable_tracing` + `adot_collector_layer_arn`), or any OTLP backend. App-level instrumentation + correlation unit-tested; live X-Ray export validated on deploy |
 | **Formal SLO definitions** | ✅ | `infra/slos.yaml` (OpenSLO v1): availability (99.9%), order-placement success (99.9%), p95 latency (<1000ms) — roadmap item 24, 2026-06-14. Multi-window multi-burn-rate alarms in `infra/slo.tf` (item 25, `enable_slo_alarms`). ARCHITECTURE §7.2/§8.5 |
 | **DORA metrics tracked** | ❌ | Not yet instrumented |
 | **DR drill cadence** | ❌ | Procedure documented; never tested. Roadmap item 19 |
-| **Incident postmortem template** | ❌ | Roadmap item 31 |
+| **Incident postmortem template** | ✅ | Blameless postmortem template (+ status-update, breach-register, and CPDP/data-subject notification templates) in `docs/INCIDENT-RESPONSE.md` §8/§12, shipped 2026-06-15 (roadmap item 31) |
 | **Status page** | ❌ | Roadmap item 30 |
 
 ### Pillar 2 — Security
@@ -245,17 +245,17 @@ gaps.
 
 | Category | Status | Notes |
 |---|---|---|
-| RS.MA — Incident management | ❌ | No playbook. Roadmap item 31 |
-| RS.AN — Incident analysis | ❌ | No postmortem template |
-| RS.CO — Incident response reporting and communication | ❌ | No status page; no notification SOP |
+| RS.MA — Incident management | ✅ | Incident-response playbook `docs/INCIDENT-RESPONSE.md` (2026-06-15, item 31): severity model (§3) + detect→triage→contain→eradicate→recover lifecycle (§4, per NIST SP 800-61r3) + scenario playbooks (§5) |
+| RS.AN — Incident analysis | ✅ | Blameless postmortem with 5-Whys + designated evidence/forensics sources (`admin_audit_log`, Pino/X-Ray, Neon PITR snapshot) — INCIDENT-RESPONSE.md §8/§10 |
+| RS.CO — Incident response reporting and communication | ✅ | Notification SOP + ready-to-send templates (CPDP Art. 33, data-subject Art. 34, internal status update) — INCIDENT-RESPONSE.md §7/§12. The public status page is the remaining piece (roadmap item 30) |
 | RS.MI — Incident mitigation | ✅ | Idempotency, graceful degradation, alarm-based detection (once deployed) |
 
 ### Recover (RC)
 
 | Category | Status | Notes |
 |---|---|---|
-| RC.RP — Incident recovery plan execution | ⚠️ | Procedures documented; never drilled. Roadmap item 19 |
-| RC.CO — Incident recovery communication | ❌ | No public status page |
+| RC.RP — Incident recovery plan execution | ⚠️ | Recovery procedures (ARCHITECTURE.md §12) + a drill cadence now defined (INCIDENT-RESPONSE.md §11); the first real DR drill is still pending (roadmap item 19) |
+| RC.CO — Incident recovery communication | ⚠️ | Interim customer-comms channels (site banner / email) + the Art. 34 path documented (INCIDENT-RESPONSE.md §7.2); a public status page is still pending (roadmap item 30) |
 
 ---
 
@@ -418,7 +418,7 @@ families:
 | CIS 14 Security Awareness and Skills Training | N/A (solo project) |
 | CIS 15 Service Provider Management | ✅ AWS shared-responsibility model + Neon contract terms |
 | CIS 16 Application Software Security | ✅ CodeQL SAST + signed SBOM + RFC 9116 VDP |
-| CIS 17 Incident Response Management | ❌ No playbook. Roadmap item 31 |
+| CIS 17 Incident Response Management | ✅ `docs/INCIDENT-RESPONSE.md` (2026-06-15, item 31) — designated process, severity model, scenario playbooks, GDPR breach track, postmortem + breach-register templates, drill cadence |
 | CIS 18 Penetration Testing | N/A at this scale |
 
 ---
@@ -444,8 +444,8 @@ Bulgarian shop selling to EU residents — full GDPR scope.
 | Art. 21 | Right to object | ⚠️ Cookie-level marketing rejection is now wired and recorded server-side (`POST /consent`, June 3, 2026); a broader authenticated object-to-processing flow is not yet built |
 | Art. 25 | Privacy by design | ✅ PII redaction in logs; pseudonymised session tokens |
 | Art. 32 | Security of processing | ⚠️ Code-level controls ✅; encryption at rest depends on deployment |
-| Art. 33 | Breach notification to supervisory authority within 72h | ❌ No playbook documented. Roadmap item 31 |
-| Art. 34 | Communication of breach to data subject | ❌ No playbook documented |
+| Art. 33 | Breach notification to supervisory authority within 72h | ✅ Documented in `docs/INCIDENT-RESPONSE.md` §6 (2026-06-15, item 31): awareness→72h decision tree, Art. 33(3) content, Bulgarian CPDP (КЗЛД) channels (`kzld@cpdp.bg` + Secure Electronic Delivery System), Art. 33(5) breach register, ready-to-fill template. Operational filing depends on a live deployment |
+| Art. 34 | Communication of breach to data subject | ✅ Documented in `docs/INCIDENT-RESPONSE.md` §6.6 (2026-06-15): high-risk trigger, Art. 34(3) exceptions, BG/EN plain-language data-subject notification template |
 | Art. 35 | Data Protection Impact Assessment | N/A (low-risk processing) |
 | Art. 44 | Data residency | ✅ Architectural — all production processing intended for `eu-central-1` |
 
@@ -478,7 +478,7 @@ benefits are real even when the legal mandate doesn't apply.
 | SBOM published | ✅ CycloneDX 1.6 per workspace, signed, attached to releases | NIST CSF, OWASP 2025 |
 | Vulnerability disclosure policy (`security.txt`) | ✅ `frontend/public/.well-known/security.txt` + bilingual `/security` policy page | RFC 9116 |
 | Vulnerability handling process | ✅ Dependabot + CodeQL + 72h-ack / 90d-fix commitment in VDP | OWASP, NIST |
-| Documented 24h breach reporting | ⚠️ Playbook pending (Roadmap item 31) | GDPR Art. 33 |
+| Documented breach reporting | ✅ Incident-response playbook documents the GDPR Art. 33 72h process (`docs/INCIDENT-RESPONSE.md` §6, 2026-06-15) | GDPR Art. 33 |
 | Security updates available for 5+ years | ⚠️ Managed AWS services covered by their respective vendor lifecycles | — |
 
 ---

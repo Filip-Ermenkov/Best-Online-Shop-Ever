@@ -14,7 +14,7 @@ on what is shipped, what deploys, and what is still a roadmap item.
 
 ## Documentation map
 
-Four docs, four roles. Read them in this order if you're new:
+Five docs. Read them in this order if you're new:
 
 | Doc | What's in it | When to read |
 |---|---|---|
@@ -22,6 +22,7 @@ Four docs, four roles. Read them in this order if you're new:
 | [`docs/README.md`](./docs/README.md) | Functional / product spec, **in Bulgarian** — what the shop does | To understand the product |
 | [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) | Single technical reference: layers, request lifecycle, security, reliability, observability, supply chain, cost, operations, roadmap, forward-looking design considerations | To understand how it's built |
 | [`docs/COMPLIANCE.md`](./docs/COMPLIANCE.md) | Standards-by-standards matrix (NIST CSF 2.0, OWASP Top 10 2025, OWASP ASVS 6.0, NIST SP 800-63B-4, SLSA, CIS Controls v8.1, GDPR, EU Directive 2023/2673, WCAG 2.2). Auditor-facing | To answer "are we compliant with X?" |
+| [`docs/INCIDENT-RESPONSE.md`](./docs/INCIDENT-RESPONSE.md) | Incident-response playbook: SEV1–4 severity model, detect→recover lifecycle, scenario playbooks, the GDPR Art. 33/34 breach track (Bulgarian CPDP), postmortem + breach-register templates | When something breaks — or to prove Respond/Recover + breach-notification readiness |
 
 If you only have time for one doc, read this one — it links to the
 others where appropriate.
@@ -43,7 +44,8 @@ others where appropriate.
     ├── README.md         Functional spec (Bulgarian)
     ├── ARCHITECTURE.md   Technical reference + roadmap + forward-looking design
     ├── COMPLIANCE.md     Standards matrix
-    └── ACCESSIBILITY.md  WCAG 2.2 AA / EAA conformance + audit + manual checklist
+    ├── ACCESSIBILITY.md  WCAG 2.2 AA / EAA conformance + audit + manual checklist
+    └── INCIDENT-RESPONSE.md  Incident playbook + GDPR Art. 33/34 breach track + templates
 ```
 
 `infra/` now exists — a complete, statically-validated Terraform stack

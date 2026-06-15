@@ -14,7 +14,7 @@
 > specification. Read that to learn *what* the shop does; this doc
 > covers *how* it's built.
 >
-> Last updated: 2026-06-14. Reality-aligned: the `infra/` IaC is
+> Last updated: 2026-06-15. Reality-aligned: the `infra/` IaC is
 > live-apply-validated (a test deploy returned 200 end-to-end); the
 > **admin authentication backend** (mandatory TOTP MFA, `/admin/auth/*`)
 > shipped 2026-06-08; the **durable email queue** (item 21) and
@@ -22,8 +22,11 @@
 > **distributed tracing** (OpenTelemetry, item 18) shipped 2026-06-13 —
 > closing the last OWASP A09 / NIST CSF Detect gap (§8.2); and **SLOs as
 > code + multi-window burn-rate alerting** (items 24/25) shipped 2026-06-14
-> (`infra/slos.yaml` + `infra/slo.tf`, §7.2/§8.5). No maintained production
-> environment is kept running yet; the admin frontend UI is pending.
+> (`infra/slos.yaml` + `infra/slo.tf`, §7.2/§8.5); and the **incident-response
+> playbook** (item 31) shipped 2026-06-15 (`docs/INCIDENT-RESPONSE.md`),
+> closing the NIST CSF Respond + GDPR Art. 33/34 gaps (§5.4, §11, §14). No
+> maintained production environment is kept running yet; the admin frontend
+> UI is pending.
 
 ---
 
@@ -925,7 +928,10 @@ Brief; full mapping in `COMPLIANCE.md`:
 - **GDPR Art. 17** (right to erasure): ✅ shipped May 24, 2026
 - **GDPR Art. 15 + 20** (access + data portability): ✅ shipped
   May 31, 2026 — `POST /auth/me/export` (structured machine-readable JSON)
-- **GDPR Art. 33–34** (breach notification 72h): ⚠️ no playbook
+- **GDPR Art. 33–34** (breach notification 72h): ✅ shipped 2026-06-15
+  — documented breach-response track in `docs/INCIDENT-RESPONSE.md` §6
+  (Bulgarian CPDP/КЗЛД channels, awareness→72h decision tree, Art. 33(5)
+  breach register, Art. 34 high-risk data-subject path + exceptions)
 - **EU Directive 2023/2673** (14-day withdrawal): ✅ shipped
 - **WCAG 2.2 Level AA / European Accessibility Act**: ✅ shipped
   2026-06-02 — EN 301 549 / WCAG 2.2 AA conformance (contrast-fixed
@@ -1388,7 +1394,10 @@ operational cadence for after the production deployment.
 
 ### Quarterly (~1–2 hours)
 
-- **DR drill** — restore a Neon branch from backup, verify
+- **DR drill** — restore a Neon branch from backup, verify (the
+  recovery half of `docs/INCIDENT-RESPONSE.md`)
+- **Incident tabletop** — walk one `INCIDENT-RESPONSE.md` §5 scenario
+  end to end (which alarm, which runbook, what to file with the CPDP)
 - IAM policy review (AWS Access Analyzer flags unused permissions)
 - AWS announcements review (Lambda runtime EOLs, Neon platform
   changes)
@@ -1411,6 +1420,13 @@ operational cadence for after the production deployment.
 
 Document every incident — even 5-minute ones. The first incident
 with no postmortem is the start of a culture of forgetting.
+
+The full incident-response playbook — the severity model, the
+detect→triage→contain→eradicate→recover lifecycle, the scenario
+playbooks that dispatch to the §12 runbooks, the GDPR Art. 33/34 breach
+track, and the postmortem + breach-register templates — is
+`docs/INCIDENT-RESPONSE.md` (Roadmap item 31). It is the umbrella that
+calls the §12 procedures.
 
 ---
 
@@ -1678,7 +1694,7 @@ These are baked-in for good reasons; revisiting them costs you weeks.
 
 | Pillar | Today | What's missing for A+ |
 |---|---|---|
-| Operational Excellence | B+ | Production deploy, DORA metrics, scheduled DR drills, incident postmortem template, status page (distributed tracing ✅ item 18, 2026-06-13; formal SLOs-as-code + multi-window burn-rate alerting ✅ items 24/25, 2026-06-14 — `infra/slos.yaml` + `infra/slo.tf`, awaiting live traffic to exercise) |
+| Operational Excellence | B+ | Production deploy, DORA metrics, scheduled DR drills, status page (distributed tracing ✅ item 18, 2026-06-13; formal SLOs-as-code + multi-window burn-rate alerting ✅ items 24/25, 2026-06-14 — `infra/slos.yaml` + `infra/slo.tf`, awaiting live traffic to exercise; incident-response playbook + blameless-postmortem template ✅ item 31, 2026-06-15 — `docs/INCIDENT-RESPONSE.md`) |
 | Security | A | Customer MFA option (growth-stage); admin auth ✅ (TOTP MFA shipped end-to-end 2026-06-08 — backend + sign-in UI) |
 | Reliability | B | Production deploy, DR drill cadence, public status page (SQS email retry queue ✅ 2026-06-12 — live-validated incl. the DLQ → alarm → redrive drill; scheduler-fn + daily catalog backup + retention sweeps ✅ 2026-06-12, live-validated 2026-06-13 — the manual drills for all three jobs passed against Neon; the first drill exposed that the prod `neon-http` driver cannot run `db.transaction(...)`, fixed by switching to the Neon serverless WebSocket driver) |
 | Performance Efficiency | B+ | Synthetic monitoring, RUM, query-latency SLOs per endpoint |
@@ -1702,7 +1718,7 @@ still need a maintained deployment.
 |---|---|---|
 | NIST CSF 2.0 (Govern function) | ✅ Met | — |
 | NIST CSF 2.0 (Detect function) | ✅ Met | Distributed tracing shipped (OpenTelemetry, item 18, 2026-06-13) |
-| NIST CSF 2.0 (Respond function) | ⚠️ Partial | Incident playbook |
+| NIST CSF 2.0 (Respond function) | ✅ Met | Incident-response playbook shipped 2026-06-15 (item 31, `docs/INCIDENT-RESPONSE.md`) — RS.MA/AN/CO |
 | OWASP Top 10 2025 — A03 Supply Chain | ✅ Met | — |
 | OWASP Top 10 2025 — A08 Integrity Failures | ✅ Met | — |
 | OWASP Top 10 2025 — A02 Security Misconfiguration | ✅ Met | — |
@@ -1719,7 +1735,7 @@ still need a maintained deployment.
 | GDPR Art. 32 / 16 / 17 | ✅ | — |
 | GDPR Art. 15 (right of access) | ✅ | — (`POST /auth/me/export`, May 31 2026) |
 | GDPR Art. 20 (data portability) | ✅ | — (same endpoint; structured machine-readable JSON) |
-| GDPR Art. 33–34 (72h breach) | ⚠️ | Playbook |
+| GDPR Art. 33–34 (72h breach) | ✅ | Documented breach track (`docs/INCIDENT-RESPONSE.md` §6, item 31, 2026-06-15); operational filing depends on the live deploy |
 | EU Directive 2023/2673 | ✅ Shipped | — |
 | EU CRA (Sep 2026) | N/A | Out of scope (SaaS); CRA-style hygiene voluntarily maintained |
 | WCAG 2.2 AA / EN 301 549 / EAA | ✅ | — (2026-06-02; tokens, keyboard/focus/skip-link, reduced-motion, ARIA combobox; static jsx-a11y in CI + runtime axe + `/accessibility` statement) |
@@ -2027,7 +2043,34 @@ Ranked by `(impact ÷ effort)` — highest leverage first. Items marked
 28. ❌ **Lighthouse CI on every PR.** 4 hours.
 29. ❌ **Real User Monitoring (RUM).** 2 hours.
 30. ❌ **Status page** (statup.fyi or self-hosted). 1 hour.
-31. ❌ **Incident playbook.** 3 hours.
+31. ✅ **Incident-response playbook — shipped 2026-06-15.**
+    `docs/INCIDENT-RESPONSE.md`, right-sized for the single-operator
+    model and anchored to **NIST SP 800-61r3** (the April-2025 revision
+    that re-expresses the IR lifecycle against the six CSF 2.0
+    functions), **NIST CSF 2.0** Respond/Recover, and **GDPR Art. 33/34**.
+    Contents: a SEV1–4 severity model mapped to this shop's CloudWatch +
+    SLO burn-rate alarms; a detect→triage→contain→eradicate→recover
+    lifecycle; eight concrete scenario playbooks (5xx surge, Neon
+    outage, checkout failure, email-DLQ backlog, admin compromise,
+    suspected breach, dependency CVE, catalog corruption) that dispatch
+    to the existing §12 / `infra/README.md` runbooks rather than
+    duplicating them; the GDPR breach track (awareness→72h decision
+    tree, Bulgarian **CPDP / КЗЛД** channels — `kzld@cpdp.bg` + the
+    Secure Electronic Delivery System, Art. 33(3) content, Art. 33(5)
+    breach register, Art. 34 high-risk data-subject path + Art. 34(3)
+    exceptions); an exposure map of what PII exists vs. what is
+    hashed/encrypted (no card data — the worst breach class is out of
+    scope by design); evidence/forensics sources (`admin_audit_log`,
+    Pino/X-Ray, a Neon PITR forensic snapshot); a drill cadence; and
+    copy-paste templates (CPDP notification, BG/EN data-subject notice,
+    status update, blameless postmortem, breach-register row). Closes
+    NIST CSF **Respond** (RS.MA/AN/CO), **CIS Control 17**, and the
+    **GDPR Art. 33–34** compliance gaps (§5.4, §14). Carries a
+    forward-looking note on the EU **Digital Omnibus** proposal (would
+    move to 96h / high-risk-only / a single EU entry point — not yet
+    enacted as of June 2026). A documentation deliverable, authored in
+    full; the automated-detection and the actual regulatory filing
+    activate with the maintained deploy (item 17).
 32. ❌ **Asset inventory document.** 2 hours.
 33. ❌ **STRIDE threat model doc** — formal pass over major data
     flows. 2 hours.
