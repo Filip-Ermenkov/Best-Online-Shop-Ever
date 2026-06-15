@@ -7,7 +7,8 @@ Hono on Lambda. Same handler runs locally on Node via `@hono/node-server`.
 > since grown far beyond it — auth (incl. GDPR self-service), cart,
 > orders + 14-day withdrawal, address book, consent receipts, CSP
 > reporting, **admin auth (TOTP MFA)**, **admin order management**
-> (`/admin/orders/*`, 2026-06-10), and the **scheduled jobs**
+> (`/admin/orders/*`, 2026-06-10), **admin category management**
+> (`/admin/categories/*`, 2026-06-15), and the **scheduled jobs**
 > (`src/jobs/*` → the `scheduler-fn` Lambda bundle, 2026-06-12). The
 > authoritative, up-to-date route
 > inventory lives in the root `README.md` → "What's wired up"; the

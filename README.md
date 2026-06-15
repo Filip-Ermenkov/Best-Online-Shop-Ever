@@ -169,6 +169,7 @@ they aren't. The honest state:
 | WAF / Route 53 | Opt-in flags, off — Cloudflare is the documented preference (§10 cost model) |
 | Admin authentication (TOTP MFA) | **Shipped end-to-end** — `shop-api` `/admin/auth/*` + the `/admin` frontend `AdminAuthGate` (login → MFA → enrolment) |
 | Admin order management | **Shipped end-to-end (2026-06-10)** — `shop-api` `/admin/orders/*` (list + filters + search, detail + history, state-machine status transitions with optimistic locking + customer emails, CSV export) + the real `/admin/orders` UI |
+| Admin category management | **Shipped end-to-end (2026-06-15)** — `shop-api` `/admin/categories/*` (tree with counts, create, rename/move with cycle prevention + optimistic locking, sibling reorder, deletion-impact preview, cascade soft-delete writing 301 `redirects` + `admin_audit_log`) + the real `/admin/categories` UI |
 | `admin-api` Lambda | Not built (admin auth + the orders slice currently live in `shop-api`; extract when the admin CRUD surface grows) |
 | `scheduler-fn` Lambda | **Shipped 2026-06-12, live-validated 2026-06-13** (roadmap item 23) — jobs in `@shop/api` `src/jobs/*` + own pure-JS bundle (`build:scheduler`) + `infra/scheduler.tf` (EventBridge Scheduler, 3 Sofia-time crons, delivery DLQ, backup bucket, 2 alarms) behind `enable_scheduler`. All three `aws lambda invoke` drills passed against the Neon test branch; the catalog-backup drill also caught a prod-only bug (the `neon-http` driver can't run `db.transaction(...)`) now fixed by the Neon serverless WebSocket driver — see [decisions](#architecture-decisions-in-force). Runbook in `infra/README.md` |
 | Distributed tracing (OpenTelemetry) | **Shipped 2026-06-13 (roadmap item 18)** — `shop-api` emits OTel traces behind `ENABLE_TRACING`: `@hono/otel` request spans + undici/fetch downstream spans + Pino `trace_id`/`span_id` log↔trace correlation. Exports OTLP to AWS X-Ray via the ADOT collector layer (`enable_tracing` + `adot_collector_layer_arn`), or any OTLP backend. Closes the last OWASP A09 / NIST CSF Detect gap. App-level instrumentation + correlation unit-tested and harness-verified against the real libraries (incl. a clean esbuild bundle); live X-Ray export validated on deploy. Runbook in `infra/README.md` → "Tracing runbook" |
@@ -233,6 +234,23 @@ what needs to happen to get from today's repo state to that posture.
   `GET /admin/orders/export.csv` (filter-aware CSV: RFC 4180, UTF-8
   BOM for Excel Cyrillic, OWASP formula-injection escaping). Retires
   the manual `UPDATE orders SET status=…` psql.
+- `/admin/categories/*` — **admin category management** (2026-06-15), the
+  second admin CRUD slice, `requireAdmin`-gated (uniform `404`): `GET
+  /admin/categories` (full live tree with per-node product + descendant
+  counts), `POST /admin/categories` (create — slug auto-derived from the
+  Bulgarian name and appended to the end of its layer; slug unique within a
+  parent, with root-slug uniqueness enforced app-side), `PATCH
+  /admin/categories/:id` (rename / re-image / **move** with cycle
+  prevention; optimistic-locked on `updatedAt` via `SELECT … FOR UPDATE`
+  → `409 /problems/category-version-conflict` for a stale tab), `POST
+  /admin/categories/reorder` (rewrite one layer's `display_order`; the
+  supplied id set must equal that layer or `409`), `GET
+  /admin/categories/:id/deletion-impact` (subcategory + product counts plus
+  how many products sit in active orders — powers the confirm dialog), and
+  `DELETE /admin/categories/:id` (cascade soft-delete of the subtree + its
+  products, writes 301 `redirects` rows to the surviving parent / home,
+  requires `confirmConsequences: true`). Writes the first `admin_audit_log`
+  rows (GDPR Art. 30). Un-mocks the `/admin/categories` screen.
 - `/csp-report` — accepts both legacy `application/csp-report` and
   modern `application/reports+json`. Anonymous (intentionally outside
   the auth chain).
@@ -244,8 +262,8 @@ what needs to happen to get from today's repo state to that posture.
   migration; the banner now writes here, not just to `localStorage`.
 - `/health`, `/openapi.json`
 
-Test counts as of 2026-06-13, by `it`/`test` block: addresses 28,
-admin-auth 17, **admin-orders 26**, auth 48, cart 30, categories 7,
+Test counts as of 2026-06-15, by `it`/`test` block: addresses 28,
+admin-auth 17, **admin-orders 26**, **admin-categories 39**, auth 48, cart 30, categories 7,
 consent 10, csp-report 25, data-export 14, email-change 21,
 order-emails 5, orders 25, password-reset 19, products 15,
 verification 11, withdrawal 23, **jobs 18** (pickup-expiry 4,
@@ -253,9 +271,9 @@ unverified-cleanup 8, catalog-backup + dispatch 6 — the scheduler-fn
 sweeps, 2026-06-12), plus three lib suites (phone-validation;
 **email-transport-config 3** — the `EMAIL_TRANSPORT=sqs` boot contract;
 **tracing 5** — the OpenTelemetry flag toggle, log↔trace correlation,
-and the `@hono/otel` request span, 2026-06-13) — **350 blocks**. The
+and the `@hono/otel` request span, 2026-06-13) — **389 blocks**. The
 `csp-report` and `phone` suites are table-driven (`it.each`), so
-`vitest run` expands them and reports **384 cases total**, all against
+`vitest run` expands them and reports **423 cases total**, all against
 a real `shop_test` Postgres in CI.
 
 ### Backend (`@shop/db` schema)
@@ -416,10 +434,12 @@ at runtime locally (`npm run test:a11y`, axe-core). See
   Econt/Speedy office lists are real-world data not yet ingested into
   the DB.
 - **Most admin pages** under `/admin/*` (dashboard tiles, banners,
-  categories, products, customers, archive, settings) render mock
-  data — no admin API behind those screens yet. **Exception:** the
-  admin **orders** screens (`/admin/orders` + `/admin/orders/[orderNumber]`)
-  are real as of 2026-06-10, backed by `/admin/orders/*` on `shop-api`.
+  products, customers, archive, settings) render mock
+  data — no admin API behind those screens yet. **Exceptions:** the
+  admin **orders** screens (`/admin/orders` + `/admin/orders/[orderNumber]`,
+  real since 2026-06-10) and the admin **categories** screen
+  (`/admin/categories`, real since 2026-06-15), backed by `/admin/orders/*`
+  and `/admin/categories/*` on `shop-api`.
 
 Category-tree browsing (`/products/[...path]`) and search (`/search`)
 moved off mock data on 2026-05-28 — see [Storefront browsing](#storefront-browsing)
@@ -792,6 +812,37 @@ Place an order as a verified customer first (see
 The full behaviour is covered by
 `backend/shop-api/tests/routes/admin-orders.test.ts` (26 cases).
 
+### Admin category management
+
+With the admin signed in, open http://localhost:3000/admin/categories.
+The tree renders from `GET /admin/categories` — every live category with its
+direct product count and a subcategory count. **Добави категория** creates a
+root; the **Подкатегория** button on a row creates a child (the slug is
+auto-derived from the Bulgarian name — „Електроника" → `elektronika` — and
+stays editable). New categories append to the end of their layer; the up/down
+arrows reorder siblings (`POST /admin/categories/reorder`).
+
+**Редактирай** renames, re-images, or **moves** a category (the „Бащина
+категория" dropdown lists every category except the one being edited and its
+descendants, so a cycle is impossible — the server also rejects one with
+`422 /problems/category-move-cycle`). Open the same category in two tabs, edit
+in tab A, then save tab B → tab B gets the version-conflict notice and the
+list refreshes (optimistic locking on `updatedAt` via `SELECT … FOR UPDATE`).
+
+**Изтрий** first calls `GET /admin/categories/:id/deletion-impact` and shows
+exactly what will be removed — N subcategories and M products — and, when any
+of those products sit in active orders, the spec's warning („X от продуктите …
+се намират в N активни поръчки. Историята на поръчките няма да бъде засегната
+… snapshot …"). Deletion is gated on the „Разбирам последствията" checkbox.
+Confirming soft-deletes the whole subtree + its products and writes 301
+`redirects` rows (old category / product URLs → the surviving parent, or home
+for a deleted root) — verify with `SELECT source_path, target_kind FROM
+redirects;` and confirm order history is untouched (`order_items` snapshots
+remain). Every action appends an `admin_audit_log` row (GDPR Art. 30).
+
+The full behaviour is covered by
+`backend/shop-api/tests/routes/admin-categories.test.ts` (39 cases).
+
 ### Durable email delivery (SQS → email-fn → SES)
 
 Local dev keeps the `console` transport, so nothing changes day-to-day.
@@ -1114,8 +1165,9 @@ reality, as of 2026-06-07:
   test deploy can be torn down with `terraform destroy`).
 - **`admin-api` Lambda** — referenced in `docs/ARCHITECTURE.md` §3.4;
   not created as a separate Lambda. The admin surface that exists
-  (auth + the orders slice) lives in `shop-api` under `routes/admin/*`;
-  the non-orders `/admin/*` frontend pages render mock data.
+  (auth + the orders and categories slices) lives in `shop-api` under
+  `routes/admin/*`; the remaining `/admin/*` frontend pages (products,
+  customers, banners, settings, archive) render mock data.
 - ~~**`scheduler-fn` Lambda**~~ ✅ Shipped 2026-06-12 (roadmap item
   23): the three cron rules run as idempotent sweeps in `@shop/api`
   `src/jobs/*` behind EventBridge Scheduler (`infra/scheduler.tf`,

@@ -1682,6 +1682,33 @@ These are baked-in for good reasons; revisiting them costs you weeks.
   alarms (a finer rolling burn-rate is the documented next step). Behind
   `enable_slo_alarms`, default off — the same ride-behind-a-flag discipline as
   the email queue, scheduler, and tracing.
+- **Category management uses adjacency-list traversal + `updatedAt`/`FOR
+  UPDATE` optimistic locking + cascade soft-delete with 301 redirects**
+  (2026-06-15) — the `/admin/categories/*` slice. (1) The tree stays the
+  existing `parent_id` **adjacency list**: for a catalog of a few dozen
+  categories with frequent moves that is the right model — closure tables /
+  `ltree` only earn their write-amplification and index cost past hundreds of
+  nodes. Descendant collection and the move cycle-check are in-memory walks
+  over the flat live rows (`lib/category-tree.ts`), the same call the public
+  tree route already makes. (2) Categories carry no integer `version` column
+  (orders do), and adding one is a migration we avoided; instead the mutating
+  endpoints take the `updatedAt` the admin's screen rendered from as
+  `expectedUpdatedAt`, re-read the row `SELECT … FOR UPDATE` inside the
+  transaction, and compare in JS at millisecond precision. The row lock makes
+  read-compare-write atomic (no lost update), and the JS compare sidesteps the
+  Postgres-microsecond vs JS-millisecond equality pitfall a `WHERE updated_at
+  = $1` guard would hit. RFC 7232 `If-Match` was rejected for the same reason
+  as on orders (the CDN plays ETag games on GETs). (3) Delete is a **cascade
+  soft-delete** (the subtree + its products' `deleted_at`), and for every
+  removed URL we write a `redirects` row to the nearest surviving ancestor
+  (the deleted subtree's parent, or home for a deleted root) so old links 301
+  instead of becoming soft-404s — the e-commerce SEO best practice, and the
+  first writer of the long-dormant `redirects` table. Order history is never
+  touched (it snapshots line items; we soft-delete, so the
+  `order_items.product_id` SET-NULL-on-hard-delete never fires). Every
+  mutation appends to `admin_audit_log` (GDPR Art. 30) — also its first
+  writer. Serving the 301 at the edge (proxy-side `redirects` consumption) is
+  the paired follow-up; the rows are written and correct now.
 - **Single admin account** — multi-admin is out of scope.
 - **Uniform strict CSP** — defends against the SPA-soft-navigation
   bypass documented in §5.2.
@@ -1966,10 +1993,22 @@ Ranked by `(impact ÷ effort)` — highest leverage first. Items marked
     lib/admin/orders/), with the spec's confirmation step, required
     companion fields, expired-pickup marking, and the verbatim
     conflict-refresh UX. 26 integration tests
-    (admin-orders.test.ts). **What remains of the original item:**
-    the dedicated `admin-api` Lambda extraction (structural, with
-    item 35's module) and the OTHER admin CRUD slices — products,
-    categories, customers, banners, settings (each its own slice).
+    (admin-orders.test.ts). **Categories slice shipped 2026-06-15** —
+    `/admin/categories/*` (full tree with per-node product + descendant
+    counts; create with auto-slug + end-of-layer append; rename / re-image
+    / move with cycle prevention; sibling reorder; a deletion-impact
+    preview that counts products in active orders; cascade soft-delete of
+    the subtree + its products that writes 301 `redirects` rows to the
+    surviving parent / home) + the real `/admin/categories` UI. Optimistic
+    locking is `updatedAt` + `SELECT … FOR UPDATE` (no `version` column →
+    no migration; see §13). First writer of the `redirects` and
+    `admin_audit_log` (GDPR Art. 30) tables. 39 integration tests
+    (admin-categories.test.ts), pure tree helpers unit-isolated in
+    `lib/category-tree.ts`. **What remains of the original item:** the
+    dedicated `admin-api` Lambda extraction (structural, with item 35's
+    module) and the REMAINING admin CRUD slices — products, customers,
+    banners, settings (each its own slice; the full categories-AND-products
+    interleaved „Наредба" ordering arrives with the products slice).
 23. ✅ **Scheduler-fn Lambda + the three cron rules — shipped
     2026-06-12, live-validated 2026-06-13** (code + tests + Terraform;
     the manual `aws lambda invoke` drills for all three jobs passed on

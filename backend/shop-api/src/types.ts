@@ -80,3 +80,13 @@ export type {
 // arrives on every AdminOrderDetail, so the frontend never re-derives the
 // table — but the types travel with it.
 export type { OrderStatus, TransitionTarget } from "./lib/order-status.js";
+
+// Admin category-management DTOs from routes/admin/categories.ts. The admin
+// frontend (frontend/src/lib/admin/categories/) annotates its typed client
+// with these concrete shapes, independent of how the workspace symlink
+// resolves AppType.
+export type {
+  AdminCategoryNode,
+  AdminCategoryTree,
+  AdminCategoryDeletionImpact,
+} from "./routes/admin/categories.js";
