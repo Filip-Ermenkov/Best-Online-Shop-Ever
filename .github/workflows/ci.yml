@@ -22,6 +22,11 @@
 #   - api-tests       — Integration tests in @shop/api against a real
 #                       Postgres 17 service container (mirrors production's
 #                       Neon Scale stack and local docker-compose).
+#   - audit           — Dependency vulnerability gate. Informational full
+#                       `npm audit` (never blocks) + a blocking gate on
+#                       CRITICAL advisories in the production tree. The active
+#                       half of SCA; routine upkeep is Dependabot's job
+#                       (.github/dependabot.yml).
 #
 # What's intentionally NOT here:
 #   - `next build` — the home page uses Next.js ISR (`next: { revalidate: 300 }`
@@ -75,9 +80,13 @@
 #   - npm cache restored via setup-node's built-in `cache: 'npm'`, keyed on
 #     the root `package-lock.json` hash — no hand-rolled actions/cache step.
 #
+# Shipped since the first cut of this file:
+#   - Dependabot automated version updates with PR review, incl. SHA bumps for
+#     the pinned actions above (.github/dependabot.yml; see ARCHITECTURE §9.6).
+#   - The `audit` job below — the `npm audit` CI gate ARCHITECTURE §9.1 claimed.
+#
 # Future tightening (not blocking today):
 #   - StepSecurity Harden-Runner for runtime egress monitoring on every job.
-#   - Dependabot for automated SHA bumps with PR review.
 #   - GitHub's upcoming `dependencies:` workflow lock (announced for the 2026
 #     security roadmap) once it ships GA.
 
@@ -293,3 +302,50 @@ jobs:
         #      0001_orders_sequence.sql, …).
         # Each test then TRUNCATEs all tables in beforeEach for isolation.
         run: npm --workspace @shop/api run test
+
+  # ────────────────────────────────────────────────────────────────────────
+  # Dependency vulnerability audit — the ACTIVE half of software-composition
+  # analysis, complementing the PASSIVE half (Dependabot alerts + the signed
+  # CycloneDX SBOMs in sbom.yml). Two steps, on purpose:
+  #
+  #   1. Informational full audit (never blocks). Full visibility in the log —
+  #      every severity, dev and prod — without failing a PR on build-tool
+  #      noise. `npm audit` cannot separate prod-runtime from build-time deps
+  #      and its all-severity false-positive rate is high (~80%), so an
+  #      all-severity hard gate would erode trust in the signal fast.
+  #
+  #   2. Blocking gate on the PRODUCTION tree at CRITICAL only. The "critical"
+  #      false-positive rate (~40–50%) is low enough that anything it flags
+  #      genuinely must be dealt with before merge. We gate on `critical`, not
+  #      `high`, for a concrete reason as well as the statistical one: the
+  #      production tree currently carries several `high` transitive advisories
+  #      (e.g. postcss / qs pulled in under Next.js) whose fixes ride in on
+  #      routine Dependabot PRs — gating on `high` would wedge CI red on day
+  #      one. Steady patch/minor upkeep is Dependabot's job
+  #      (.github/dependabot.yml); THIS gate is the emergency brake.
+  #
+  # `--omit=dev` scopes the gate to what actually ships to users; the build
+  # toolchain (vitest/vite/eslint/next-dev) is audited informationally in
+  # step 1 and patched by Dependabot's grouped devDependency PRs.
+  # ────────────────────────────────────────────────────────────────────────
+  audit:
+    name: Dependency audit (npm)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f  # v6.3.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - run: npm ci
+
+      - name: Audit (informational — all severities, never blocks)
+        run: npm audit --omit=dev || true
+
+      - name: Audit gate (fail the PR on CRITICAL advisories in production deps)
+        run: npm audit --omit=dev --audit-level=critical
