@@ -39,8 +39,8 @@
     "@shop/auth": "*",
     "@shop/db": "*",
     "@shop/email": "*",
-    "drizzle-orm": "^0.36.4",
-    "hono": "^4.12.16",
+    "drizzle-orm": "^0.45.2",
+    "hono": "^4.12.25",
     "pino": "^10.3.1",
     "pino-lambda": "^4.4.1",
     "zod": "^4.4.1"
@@ -48,7 +48,7 @@
   "devDependencies": {
     "@types/node": "^22.10.0",
     "dotenv": "^16.4.7",
-    "esbuild": "^0.25.0",
+    "esbuild": "^0.28.1",
     "pg": "^8.13.1",
     "tsx": "^4.21.0",
     "typescript": "^5.7.2",
