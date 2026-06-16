@@ -1161,9 +1161,32 @@ table.
 ### 9.1 What exists today
 
 **Software Composition Analysis (third-party deps):**
-- `package-lock.json` committed, reproducible installs.
-- Dependabot alerts enabled.
-- `npm audit` runs in CI on every PR.
+- `package-lock.json` committed; `npm ci` everywhere for reproducible
+  installs.
+- **Dependabot alerts** enabled — GitHub-side advisory scanning of the
+  dependency graph. The *passive* half: it tells you a CVE exists.
+- **Dependabot version updates** (`.github/dependabot.yml`, 2026-06-16) —
+  the *active* half: grouped, cooldown-gated PRs that keep dependencies
+  current across all five ecosystems in this repo — **npm** (one root
+  lockfile spans the five workspaces), **GitHub Actions** (bumps the SHA
+  pins *and* their `# vX.Y.Z` comments — native since 2022), **Terraform**
+  (root + `bootstrap` stacks), and the **Docker Compose** Postgres image
+  (major pinned to 17, see the config). `cooldown` refuses any release
+  younger than 5–14 days — the 2025/2026 defense against compromised
+  *fresh* releases (the tj-actions- and npm-"Shai-Hulud"-class attacks the
+  CI header references); security updates still fire immediately. See §9.6
+  for why Dependabot and not Renovate.
+- **`npm audit` gate in CI** — the `audit` job in `ci.yml` runs an
+  informational all-severity audit (never blocks) plus a blocking gate on
+  **critical** advisories in the production tree
+  (`npm audit --omit=dev --audit-level=critical`). Critical-only is
+  deliberate: it is the low-false-positive tier (~40–50% vs ~80%
+  all-severity), and the production tree currently carries a few `high`
+  transitive advisories (pulled in under Next.js) that Dependabot patches
+  on its own cadence — a `high` gate would wedge CI red on day one. Routine
+  upkeep is Dependabot's job; this gate is the emergency brake. (This
+  reconciles the earlier doc claim that `npm audit` "runs in CI", which
+  predated the job actually existing.)
 
 **Static Application Security Testing (first-party code):**
 - **GitHub CodeQL** in `.github/workflows/codeql.yml`.
@@ -1243,6 +1266,7 @@ into the repo. Run this once per repository; verify quarterly.
     - `Auth tests`
     - `Email tests`
     - `API tests (Postgres)`
+    - `Dependency audit (npm)`
     - `Analyze (javascript-typescript)`
     - `Analyze (actions)`
     - `SBOM (frontend)`
@@ -1302,6 +1326,58 @@ cosign verify-blob sbom-backend-api.cdx.json \
 Either command succeeds only if the SBOM byte-for-byte matches what
 was signed, the signing identity is a workflow in this repository,
 and the signature appears in the Sigstore Rekor transparency log.
+
+### 9.6 Automated dependency updates — Dependabot, not Renovate
+
+The repo had the *passive* half of SCA (Dependabot alerts + signed SBOMs)
+but, until 2026-06-16, nothing that actually *opened PRs* to keep
+dependencies current — the active control that keeps a codebase out of the
+OWASP 2025 "Vulnerable & Outdated Components" bucket and lets it **age
+well**. `.github/dependabot.yml` ships it. The tool choice was deliberate.
+
+**Why Dependabot.** Renovate is the more powerful engine for large,
+**multi-lockfile** monorepos (workspace-aware coordination, org-wide shared
+presets, aggressive cross-ecosystem auto-merge). None of those edges apply
+here, and its operating model conflicts with this project's posture:
+
+- **Zero new trust surface.** Renovate runs either as the Mend-hosted
+  GitHub App — a third-party app granted write access to this repo's PRs,
+  i.e. a fresh supply-chain trust relationship on a security-first repo — or
+  self-hosted via an Action driven by a long-lived PAT
+  (`contents: write` + `pull-requests: write`). Dependabot is a first-party
+  GitHub feature with a GitHub-managed, per-run identity: no third-party
+  app, no long-lived token, no new infra. This is the *same* reasoning that
+  picked **keyless** Sigstore signing (§9.1) and rejected standing infra
+  like Redis / DynamoDB / a Dependency-Track server (§9.2, §13).
+- **The one Renovate-only capability we'd have needed is now native.**
+  Keeping a **SHA-pinned** GitHub Action readable means bumping the digest
+  *and* the trailing `# vX.Y.Z` comment together. Dependabot has done this
+  since 2022, so the post-tj-actions hardening (§9.1, §12 of `ci.yml`) stays
+  intact under automation.
+- **One root lockfile.** The five npm workspaces resolve through a single
+  `package-lock.json`, so npm updates are already unified — Renovate's
+  headline multi-lockfile advantage buys nothing at this scale. Dependabot's
+  now-GA **grouped** version *and* security updates keep PR volume low.
+
+**Supply-chain hardening in the config.** `cooldown` (5–14 days, longest on
+npm) refuses any release younger than the window — the 2025/2026 mitigation
+for *compromised fresh releases*, where a malicious version is published and
+yanked within days. It applies to version updates only; a security update
+for an already-published CVE still opens immediately. Grouping is declared
+for both version and security PRs so review surface stays small. The
+Postgres image ignores `semver-major` (a 17→18 jump is a coordinated Neon +
+CI + compose migration, never an automated PR).
+
+**Renovate reconsider triggers.** Move to Renovate if the repo grows
+**independent lockfiles per workspace** (true monorepo coordination), wants
+**org-wide shared presets** across many repos, or wants **auto-merge** of
+patch/lockfile-only updates behind required checks — Renovate's policy
+engine is materially better there, and at that point the Mend App's trust
+cost is worth paying.
+
+This pairs with **OpenSSF Scorecard's `Dependency-Update-Tool` check**, which
+a committed `dependabot.yml` satisfies — a public, machine-readable signal of
+the posture alongside the SLSA provenance.
 
 ---
 
@@ -1712,6 +1788,16 @@ These are baked-in for good reasons; revisiting them costs you weeks.
 - **Single admin account** — multi-admin is out of scope.
 - **Uniform strict CSP** — defends against the SPA-soft-navigation
   bypass documented in §5.2.
+- **Dependabot, not Renovate, for automated dependency updates**
+  (2026-06-16) — the first-party feature adds the capability with zero new
+  third-party trust surface, zero infra, and no long-lived tokens (Renovate
+  needs the Mend GitHub App or a self-hosted PAT), matching the
+  keyless-Sigstore / no-standing-infra posture. Native SHA-pin +
+  version-comment bumping covers the one thing Renovate would have been
+  needed for, and the five npm workspaces share one root lockfile so
+  Renovate's multi-lockfile edge doesn't apply. Cooldown-gated + grouped
+  PRs across npm / Actions / Terraform / Docker-Compose; a critical-only
+  `npm audit` gate is the emergency brake. Full rationale in §9.6.
 
 ---
 

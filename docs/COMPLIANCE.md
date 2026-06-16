@@ -126,7 +126,7 @@ exercised until deployment, the cell is annotated.
 | Email-verified gate on order placement | ✅ | `/problems/email-not-verified` 403 |
 | **Content Security Policy — uniform strict** | ✅ | `'nonce-X' 'strict-dynamic'` on every HTML document via `frontend/src/proxy.ts`. JSON API gets `default-src 'none'` via `hono/secure-headers`. Earlier hybrid attempt and bypass documented in ARCHITECTURE.md §5.2 |
 | **Baseline security headers** | ✅ | `X-Content-Type-Options`, `Referrer-Policy`, `Permissions-Policy`, `X-Frame-Options`, COOP, CORP, HSTS |
-| Dependabot + `npm audit` (SCA) | ✅ | |
+| Dependabot + `npm audit` (SCA) | ✅ | Alerts (passive) + **version updates** (`.github/dependabot.yml` — grouped + cooldown-gated, npm/Actions/Terraform/Docker-Compose) + a **critical-only `npm audit` gate** in `ci.yml`'s `audit` job. Tool choice (vs Renovate) in ARCHITECTURE.md §9.6 |
 | **SAST in CI** (CodeQL `security-extended` + `actions` queries) | ✅ | `.github/workflows/codeql.yml`; weekly cron catches drift |
 | **SBOM generation** (CycloneDX 1.6 per workspace) | ✅ | `.github/workflows/sbom.yml`; attached to releases |
 | **SLSA L2 signed provenance** | ✅ | Sigstore keyless via `actions/attest-build-provenance@v4.1.0` |
@@ -274,7 +274,7 @@ Published 2024–2025 (eighth edition). Notable changes vs 2021:
 |---|---|---|---|
 | A01 | Broken Access Control (incl. SSRF) | ✅ | Two-tier middleware (`currentUser` + `requireAuth`); same-origin API; explicit auth gate on order placement; per-customer scoping returns generic 404 for someone else's order (no enumeration) |
 | A02 | Security Misconfiguration | ✅ | No hardcoded secrets; `__Host-` cookies; HSTS; uniform strict CSP (`'nonce-X' 'strict-dynamic'` on every HTML document, `default-src 'none'` on the Hono API — see ARCHITECTURE.md §5.2) |
-| A03 | Software Supply Chain Failures | ✅ | SCA via Dependabot + `npm audit`; CodeQL SAST `security-extended` weekly + on PR; CycloneDX SBOM per workspace; SLSA L2 signed provenance |
+| A03 | Software Supply Chain Failures | ✅ | SCA via Dependabot alerts **+ automated, cooldown-gated version updates** (`dependabot.yml`: npm/Actions/Terraform/Docker-Compose) **+ a critical-only `npm audit` CI gate**; CodeQL SAST `security-extended` weekly + on PR; CycloneDX SBOM per workspace; SLSA L2 signed provenance. `cooldown` blocks compromised *fresh* releases (ARCHITECTURE.md §9.6) |
 | A04 | Cryptographic Failures | ⚠️ | TLS 1.3 + HSTS code-ready; AES at rest depends on deployed Neon/S3. Argon2id (RFC 9106), 32-byte CSPRNG tokens, SHA-256-at-rest all in code |
 | A05 | Injection | ✅ | Zod validation + Drizzle parametrized queries everywhere; WAF SQLi managed rules planned |
 | A06 | Insecure Design | ✅ | Idempotency, optimistic locking, line-item snapshots, expand-contract migrations, account-discount server-controlled |

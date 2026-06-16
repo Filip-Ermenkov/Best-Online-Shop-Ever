@@ -39,7 +39,8 @@ others where appropriate.
 │   ├── email/            Transactional email — SES + console + stub (@shop/email)
 │   └── shop-api/         Hono API: catalog read + auth + cart + orders + CSP reporting (@shop/api)
 ├── infra/                Terraform IaC for the first AWS deploy — live-apply-validated 2026-06-07 (deploy returned 200 end-to-end); see infra/README.md
-├── .github/workflows/    CI: typecheck, lint, tests (5 jobs in ci.yml) + CodeQL SAST + SBOM/Sigstore + infra (fmt/validate/tflint/checkov)
+├── .github/workflows/    CI: typecheck, lint, tests, npm-audit (6 jobs in ci.yml) + CodeQL SAST + SBOM/Sigstore + infra (fmt/validate/tflint/checkov)
+├── .github/dependabot.yml  Automated dependency updates — npm + Actions + Terraform + Docker-Compose, grouped + cooldown-gated
 └── docs/
     ├── README.md         Functional spec (Bulgarian)
     ├── ARCHITECTURE.md   Technical reference + roadmap + forward-looking design
@@ -503,7 +504,7 @@ below.
 
 ### Continuous integration
 
-`.github/workflows/ci.yml` runs five parallel jobs on every pull
+`.github/workflows/ci.yml` runs six parallel jobs on every pull
 request and every push to `main`:
 
 | Job | What it runs | Service |
@@ -513,6 +514,13 @@ request and every push to `main`:
 | `auth-tests` | Unit tests in `@shop/auth` | — |
 | `email-tests` | Unit tests in `@shop/email` (templates + transports, SES mocked) | — |
 | `api-tests` | Integration tests in `@shop/api` | Postgres 17 |
+| `audit` | `npm audit` — informational all-severity (non-blocking) + a blocking gate on **critical** advisories in the production tree (`--omit=dev --audit-level=critical`) | — |
+
+Dependency *upkeep* is automated separately by **Dependabot**
+(`.github/dependabot.yml`): grouped, cooldown-gated version-update PRs
+across npm, GitHub Actions (incl. the SHA pins), Terraform, and the
+Docker-Compose Postgres image. See `docs/ARCHITECTURE.md` §9.6 for why
+Dependabot rather than Renovate.
 
 `.github/workflows/codeql.yml` runs CodeQL SAST on every PR, every
 push to `main`, and a Sunday 03:00 UTC weekly cron. `security-extended`

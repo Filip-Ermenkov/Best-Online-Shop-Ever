@@ -1,0 +1,216 @@
+# =============================================================================
+# Dependabot — automated dependency *version* updates for the @shop monorepo.
+#
+# WHY THIS FILE EXISTS (the gap it closes)
+#   The repo already had the PASSIVE half of software-composition analysis:
+#   Dependabot *alerts* (GitHub-side vulnerability scanning) and the signed
+#   CycloneDX SBOMs in .github/workflows/sbom.yml (SLSA L2 provenance). What it
+#   lacked was the ACTIVE half — a tool that opens PRs to keep dependencies
+#   current *before* they rot into the OWASP Top-10 2025 "Vulnerable & Outdated
+#   Components" bucket (now folded into A03 Software Supply Chain Failures). The
+#   CI workflow header even listed "Dependabot for automated SHA bumps" under
+#   *future tightening*. This file ships it, and ci.yml's new `audit` job adds
+#   the matching `npm audit` gate that docs/ARCHITECTURE.md §9.1 had claimed.
+#
+# WHY DEPENDABOT, NOT RENOVATE (full rationale: docs/ARCHITECTURE.md §9.6)
+#   Renovate is more powerful for large, MULTI-lockfile monorepos. But it needs
+#   either the Mend-hosted GitHub App (a new third-party app with write access
+#   to this repo's PRs — a fresh supply-chain trust relationship) or a
+#   self-hosted action driven by a long-lived PAT. This project's posture is the
+#   opposite: Sigstore *keyless* signing (no long-lived keys), no extra infra
+#   (no Redis / DynamoDB / Dependency-Track server), GitHub-native where it can
+#   be. Dependabot is a first-party GitHub feature with a GitHub-managed,
+#   per-run identity — zero new trust surface, zero infra, zero long-lived
+#   credentials. The one Renovate-only capability this repo would have needed —
+#   bumping a SHA-pinned GitHub Action while keeping its readable `# vX.Y.Z`
+#   comment accurate — has been native to Dependabot since 2022. And the five
+#   npm workspaces share ONE root package-lock.json, so Renovate's marquee
+#   multi-lockfile-coordination edge simply does not apply at this scale.
+#
+# SUPPLY-CHAIN HARDENING BAKED IN
+#   - `cooldown`: never bump to a release younger than N days. This is the
+#     2025/2026 defense against *compromised fresh releases* (the npm
+#     "Shai-Hulud"-class and tj-actions-class attacks the ci.yml header already
+#     references): a malicious version yanked within days never reaches a PR.
+#     Cooldown applies to VERSION updates only — a *security* update for an
+#     already-published CVE still fires immediately, by design.
+#   - Grouped PRs keep the review surface small (one PR per ecosystem area), so
+#     updates actually get reviewed instead of piling up and being rubber-stamped
+#     or ignored. Groups are declared for BOTH version and security updates.
+#   - Europe/Sofia schedule (the project's canonical timezone everywhere) so PRs
+#     arrive predictably rather than all at once.
+#
+# WHAT IS CONFIGURED ELSEWHERE
+#   Dependabot *alerts*, *security updates*, and the dependency graph are toggled
+#   in repo Settings → Code security — not here. This file is the *version*
+#   update schedule + the grouping that also shapes the security-update PRs.
+# =============================================================================
+version: 2
+
+updates:
+  # ---------------------------------------------------------------------------
+  # 1) GitHub Actions — the highest-value entry for THIS repo. Every workflow
+  #    pins third-party actions to a 40-char commit SHA with a trailing
+  #    `# vX.Y.Z` comment (hardened after the tj-actions/changed-files and
+  #    trivy-action supply-chain attacks). SHA pins are immutable — which also
+  #    means they never move unless something deliberately bumps them. Left
+  #    alone they silently rot. Dependabot updates the SHA *and* rewrites the
+  #    version comment, so the pins stay both secure and human-readable.
+  #    `directory: "/"` scans every file under .github/workflows/.
+  # ---------------------------------------------------------------------------
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "Europe/Sofia"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "github-actions"
+    commit-message:
+      prefix: "ci(actions)"
+    cooldown:
+      default-days: 5
+    groups:
+      github-actions:
+        applies-to: version-updates
+        patterns:
+          - "*"
+      github-actions-security:
+        applies-to: security-updates
+        patterns:
+          - "*"
+
+  # ---------------------------------------------------------------------------
+  # 2) npm — ONE entry at the root covers all five workspaces (frontend,
+  #    backend/db, backend/auth, backend/email, backend/shop-api) because they
+  #    share a single root package-lock.json. Production and development
+  #    dependencies are split into two groups so a routine devDependency bump
+  #    never rides in the same PR as a runtime one (different blast radius,
+  #    different review depth). Production MAJORS are deliberately left OUT of
+  #    the group so each lands as its own reviewable PR. cooldown is longest
+  #    here: npm is the largest and most-attacked ecosystem.
+  # ---------------------------------------------------------------------------
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "Europe/Sofia"
+    open-pull-requests-limit: 10
+    labels:
+      - "dependencies"
+      - "npm"
+    versioning-strategy: increase
+    commit-message:
+      prefix: "chore(deps)"
+      prefix-development: "chore(deps-dev)"
+      include: "scope"
+    cooldown:
+      default-days: 7
+      semver-major-days: 14
+    groups:
+      npm-production:
+        applies-to: version-updates
+        dependency-type: production
+        update-types:
+          - "minor"
+          - "patch"
+      npm-development:
+        applies-to: version-updates
+        dependency-type: development
+      npm-security:
+        applies-to: security-updates
+        patterns:
+          - "*"
+
+  # ---------------------------------------------------------------------------
+  # 3) Terraform (root stack) — provider version constraints + module sources +
+  #    the .terraform.lock.hcl in infra/. Monthly: infra dependencies move
+  #    slowly and a provider bump is a deliberate, reviewed change. The CI gate
+  #    in .github/workflows/infra.yml (fmt/validate/tflint/checkov) runs on
+  #    every one of these PRs.
+  # ---------------------------------------------------------------------------
+  - package-ecosystem: "terraform"
+    directory: "/infra"
+    schedule:
+      interval: "monthly"
+      time: "06:00"
+      timezone: "Europe/Sofia"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "terraform"
+    commit-message:
+      prefix: "infra(deps)"
+    cooldown:
+      default-days: 7
+    groups:
+      terraform:
+        applies-to: version-updates
+        patterns:
+          - "*"
+      terraform-security:
+        applies-to: security-updates
+        patterns:
+          - "*"
+
+  # ---------------------------------------------------------------------------
+  # 4) Terraform (bootstrap sub-stack) — the remote-state backend bootstrap in
+  #    infra/bootstrap/ has its own provider set + lock file, so it needs its
+  #    own entry (Dependabot does not recurse into sub-directories).
+  # ---------------------------------------------------------------------------
+  - package-ecosystem: "terraform"
+    directory: "/infra/bootstrap"
+    schedule:
+      interval: "monthly"
+      time: "06:00"
+      timezone: "Europe/Sofia"
+    open-pull-requests-limit: 3
+    labels:
+      - "dependencies"
+      - "terraform"
+    commit-message:
+      prefix: "infra(deps)"
+    cooldown:
+      default-days: 7
+    groups:
+      terraform-bootstrap:
+        applies-to: version-updates
+        patterns:
+          - "*"
+      terraform-bootstrap-security:
+        applies-to: security-updates
+        patterns:
+          - "*"
+
+  # ---------------------------------------------------------------------------
+  # 5) Docker Compose — the postgres:17-alpine image in backend/db, which CI's
+  #    service container mirrors. (Docker Compose is a first-class Dependabot
+  #    ecosystem, GA Feb 2025.) Postgres MAJOR is pinned to 17 on purpose, to
+  #    match Neon's GA major: jumping to 18/19 is a coordinated migration (bump
+  #    Neon + ci.yml's service image + this compose file together), never an
+  #    automated PR. So allow 17.x patch/minor (alpine base CVEs) and IGNORE the
+  #    major bump.
+  # ---------------------------------------------------------------------------
+  - package-ecosystem: "docker-compose"
+    directory: "/backend/db"
+    schedule:
+      interval: "monthly"
+      time: "06:00"
+      timezone: "Europe/Sofia"
+    open-pull-requests-limit: 3
+    labels:
+      - "dependencies"
+      - "docker"
+    commit-message:
+      prefix: "chore(docker)"
+    cooldown:
+      default-days: 7
+    ignore:
+      - dependency-name: "postgres"
+        update-types:
+          - "version-update:semver-major"
