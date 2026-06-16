@@ -1715,6 +1715,44 @@ These are baked-in for good reasons; revisiting them costs you weeks.
 
 ---
 
+### 13.x Guest order-tracking token — durable plaintext capability URL
+
+The spec (§7) gives guests a tracking link with "криптографски случаен токен …
+валиден безсрочно". Three design choices, all deliberate:
+
+- **Capability URL, not a magic link.** The token grants read access to ONE
+  order plus two status-gated actions (cancel while `processing`; withdraw while
+  `accepted` and < 14 days). It never escalates privilege or touches another
+  order. So the magic-link rulebook (10–15 min expiry, single-use) does NOT
+  apply; the W3C TAG "Good Practices for Capability URLs" model does. It is
+  **durable** because the product contract requires last-week's email to still
+  open the order.
+- **256-bit, CSPRNG, base64url.** `crypto.randomBytes(32)` →
+  `lib/guest-track.ts`. The previous `crypto.randomUUID()` carried 122 random
+  bits — just under OWASP's ≥128-bit floor for unguessable tokens. 256 bits
+  clears it and matches the verification/reset token convention.
+- **Stored plaintext at rest — on purpose.** Session/reset tokens are
+  SHA-256-hashed at rest because a DB leak of those = account takeover at scale.
+  This token is different: the data it protects (customer email/name/phone,
+  delivery address) lives in plaintext in the *same* `orders` row. An attacker
+  who can read `guest_track_token` can already read the PII directly, so hashing
+  the token defends against nothing — while costing the ability to re-embed the
+  durable link in later status-update emails (we'd have no way to recover the
+  raw value). The token's sole job is to be unguessable from *outside* the
+  database, which 256 CSPRNG bits achieve. Leak mitigations that *do* matter for
+  capability URLs are applied instead: the API never logs the token (it logs the
+  order id/number); the `/track` page is served `robots: noindex` +
+  `Referrer-Policy: no-referrer`; find-my-order is rate-limited (3/h/IP) and
+  enumeration-resistant; unknown/malformed tokens return a uniform 404. No
+  migration was needed — the `orders.guest_track_token` column + its UNIQUE
+  index already existed (it was populated-but-unused before this slice).
+
+The paired customer/guest **cancellation** rule (`processing` only, stricter
+than the admin FSM which can also cancel `ready_for_pickup`) lives in
+`lib/order-cancellation.ts` and is shared by `POST /orders/:n/cancel` (account)
+and `POST /track/:token/cancel` (guest); both re-read the row `FOR UPDATE` so a
+racing admin transition wins and the stale cancel returns 422.
+
 ## 14. Honest assessment vs A+ target
 
 **Current state, scored against AWS Well-Architected:**
@@ -2212,6 +2250,28 @@ Ranked by `(impact ÷ effort)` — highest leverage first. Items marked
     only banner visibility. Fully sandbox/Windows-testable (no AWS): 10
     new `consent` integration cases + a consent assertion in the export
     suite.
+
+42. ✅ **Guest checkout + order tracking — shipped 2026-06-16.** Closes the
+    biggest *functional* spec gap: the "Гост" role (`docs/README.md` §"Роли",
+    §7, §8 "Регистрацията е по желание"). Until now `POST /orders` was
+    `requireAuth`-only, so the storefront forced registration — contradicting
+    the spec. New anonymous surface in `shop-api`: `POST /guest/orders` (cart in
+    the body, contact + delivery snapshotted, no account discount, per-IP
+    anti-abuse limit, `Idempotency-Key` replay) and `routes/guest.ts`'s
+    `/track/:token` capability surface — `GET` (status + timeline + shop contact
+    at shipped/ready), `POST /:token/cancel` (the spec's customer/guest
+    cancel-while-`processing` rule, shared with the new authenticated
+    `POST /orders/:n/cancel` via `lib/order-cancellation.ts`), the 14-day
+    withdrawal via token (reusing `lib/withdrawal.ts`, refactored to an
+    order-resolved core), and `POST /track/find` (lost-link resend, 3/hour/IP,
+    enumeration-resistant). Frontend: `/checkout/review` branches on auth →
+    guests place via `/guest/orders` and land on the public `/track/[token]`
+    page; `/track/find` in the footer. **No migration** — activates the dormant
+    `orders.guest_track_token` column. Token design is a durable, plaintext
+    256-bit capability URL (see §13). Tests: `tests/routes/guest.test.ts` +
+    `tests/lib/guest-track.test.ts`. The remaining guest niceties (corporate
+    guest checkout with EIK at checkout; serving the `redirects` 301s a category
+    delete writes) stay as scoped follow-ups.
 
 **Doing items 15–27 closes every meaningful 2026 gap in ~4–6
 working days. Items 28–33 raise the quality bar further at ~3 more

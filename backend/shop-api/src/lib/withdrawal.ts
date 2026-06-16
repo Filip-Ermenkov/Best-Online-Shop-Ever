@@ -91,8 +91,6 @@ export async function evaluateWithdrawalEligibility(
   db: DbClient,
   input: EvaluateWithdrawalEligibilityInput,
 ): Promise<WithdrawalEligibility> {
-  const now = input.now ?? new Date();
-
   const [order] = await db
     .select({
       id: schema.orders.id,
@@ -110,6 +108,31 @@ export async function evaluateWithdrawalEligibility(
     .limit(1);
 
   if (!order) return { eligible: false, reason: "order_not_found" };
+  return evaluateWithdrawalEligibilityForOrder(db, order, input.now);
+}
+
+/**
+ * Order-resolved core of the eligibility check. Identical 14-day-window logic,
+ * but keyed on an already-resolved order row rather than (orderNumber, userId).
+ *
+ * Both the authenticated path (`evaluateWithdrawalEligibility`, which scopes the
+ * lookup to the owning user) and the guest path (which resolves the order by its
+ * tracking token in `routes/guest.ts`) funnel through here, so the window maths,
+ * the `missing_accepted_at` invariant guard, and the already-submitted
+ * short-circuit can never drift between the two surfaces.
+ */
+export async function evaluateWithdrawalEligibilityForOrder(
+  db: DbClient,
+  order: {
+    id: string;
+    orderNumber: string;
+    status: string;
+    acceptedAt: Date | null;
+  },
+  nowInput?: Date,
+): Promise<WithdrawalEligibility> {
+  const now = nowInput ?? new Date();
+
   if (order.status !== "accepted")
     return { eligible: false, reason: "not_accepted" };
   if (!order.acceptedAt)

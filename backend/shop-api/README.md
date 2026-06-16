@@ -12,7 +12,9 @@ Hono on Lambda. Same handler runs locally on Node via `@hono/node-server`.
 > (`src/jobs/*` → the `scheduler-fn` Lambda bundle, 2026-06-12). The
 > authoritative, up-to-date route
 > inventory lives in the root `README.md` → "What's wired up"; the
-> machine-readable contract is `GET /openapi.json`.
+> machine-readable contract is `GET /openapi.json`. The newest slice is
+> **guest checkout + order tracking** — the anonymous `/guest/orders` +
+> `/track/*` capability surface (2026-06-16).
 
 ## Quick start
 

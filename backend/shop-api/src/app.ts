@@ -23,6 +23,7 @@ import { cartRoutes } from "./routes/cart.js";
 import { categoriesRoutes } from "./routes/categories.js";
 import { consentRoutes } from "./routes/consent.js";
 import { cspRoutes } from "./routes/csp.js";
+import { guestRoutes, trackRoutes } from "./routes/guest.js";
 import { ordersRoutes } from "./routes/orders.js";
 import { productsRoutes } from "./routes/products.js";
 
@@ -227,6 +228,11 @@ export function buildApp() {
   app.route("/cart", cartRoutes);
   app.route("/orders", ordersRoutes);
   app.route("/addresses", addressesRoutes);
+  // Guest checkout + order tracking — anonymous by design (the spec's "Гост"
+  // role). No currentUser middleware: the only credential these routes accept
+  // is the order's capability token. See routes/guest.ts.
+  app.route("/guest", guestRoutes);
+  app.route("/track", trackRoutes);
   // Cookie-consent receipts — anonymous, no currentUser middleware
   // (intentional): consent is collected from guests too and is independent of
   // any login. Keyed on an opaque visitor cookie; see routes/consent.ts.

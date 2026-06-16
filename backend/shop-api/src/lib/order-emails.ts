@@ -51,6 +51,12 @@ export interface SendOrderConfirmationInput {
   totalCents: number;
   currency?: string;
   deliveryAddress?: OrderConfirmationDeliveryAddress | null;
+  /**
+   * Override the "view your order" link. Defaults to the account order page
+   * (`/account/orders/:n`). Guest orders pass the durable capability URL
+   * (`/track/:token`) instead, since a guest has no account page to land on.
+   */
+  orderUrl?: string;
   logger?: Logger;
 }
 
@@ -69,7 +75,9 @@ export async function sendOrderConfirmationEmail(
   try {
     const env = parseEnv();
     const transport = getEmailTransport();
-    const orderUrl = `${env.PUBLIC_APP_BASE_URL}/account/orders/${encodeURIComponent(input.orderNumber)}`;
+    const orderUrl =
+      input.orderUrl ??
+      `${env.PUBLIC_APP_BASE_URL}/account/orders/${encodeURIComponent(input.orderNumber)}`;
     const email = renderOrderConfirmationEmail({
       to: input.to,
       fullName: input.customerName,
@@ -107,6 +115,12 @@ export interface SendOrderStatusUpdateInput {
   trackingNumber?: string | null;
   pickupDeadline?: Date | null;
   cancelledReason?: string | null;
+  /**
+   * Override the "view your order" link (see SendOrderConfirmationInput). Guest
+   * orders pass the `/track/:token` capability URL so the status email reaches
+   * the right place. Defaults to the account order page.
+   */
+  orderUrl?: string;
   logger?: Logger;
 }
 
@@ -130,7 +144,9 @@ export async function sendOrderStatusUpdateEmail(
   try {
     const env = parseEnv();
     const transport = getEmailTransport();
-    const orderUrl = `${env.PUBLIC_APP_BASE_URL}/account/orders/${encodeURIComponent(input.orderNumber)}`;
+    const orderUrl =
+      input.orderUrl ??
+      `${env.PUBLIC_APP_BASE_URL}/account/orders/${encodeURIComponent(input.orderNumber)}`;
     const email = renderOrderStatusUpdateEmail({
       to: input.to,
       fullName: input.customerName,
