@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { notFound, permanentRedirect } from "next/navigation";
+import { notFound, permanentRedirect, redirect } from "next/navigation";
 import { ArrowRight, SlidersHorizontal } from "lucide-react";
 import type { Metadata } from "next";
 import {
@@ -13,6 +13,7 @@ import {
   productHref,
 } from "@/lib/catalog";
 import type { Product, CategoryNode } from "@/lib/types";
+import { resolveRedirect } from "@/lib/seo/client";
 import ProductCard from "@/components/shop/ProductCard";
 import ProductFilters from "@/components/shop/ProductFilters";
 import MobileFiltersDrawer from "@/components/shop/MobileFiltersDrawer";
@@ -315,6 +316,27 @@ export default async function CatchAllProductsPage({ params, searchParams }: Pro
       // No category breadcrumb → render in place at /products/{slug}
       return <ProductDetailServerView product={product} />;
     }
+  }
+
+  // (5) Nothing live matched. Before serving a 404, check whether this URL was
+  // 301'd by an admin category/product delete — the redirects table is written
+  // by the cascade-delete (routes/admin/categories.ts) and served here, on the
+  // would-be-404 path only, so the happy path pays nothing. Closes the loop that
+  // previously left deleted URLs returning 404 instead of 301 (lost link equity).
+  const resolved = await resolveRedirect(`/products/${path.join("/")}`);
+  if (resolved) {
+    // Append the `#moved` fragment so the destination shows the spec's
+    // „вече не е наличен" toast (components/layout/MovedNotice). A fragment —
+    // not a query param — keeps the 301 target canonically clean for crawlers
+    // (fragments are never sent to the server / indexed). See MovedNotice.
+    const target = `${resolved.target}#moved`;
+    // 302/307 are reserved for short-term moves; the delete writer only emits
+    // 301. permanentRedirect() issues 308, which Google treats identically to
+    // 301 for indexing/PageRank.
+    if (resolved.statusCode === 302 || resolved.statusCode === 307) {
+      redirect(target);
+    }
+    permanentRedirect(target);
   }
 
   notFound();

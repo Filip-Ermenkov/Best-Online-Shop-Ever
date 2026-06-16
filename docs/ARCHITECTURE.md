@@ -1753,6 +1753,66 @@ than the admin FSM which can also cancel `ready_for_pickup`) lives in
 and `POST /track/:token/cancel` (guest); both re-read the row `FOR UPDATE` so a
 racing admin transition wins and the stale cancel returns 422.
 
+### 13.x Crawlability — serve 301s on the would-be-404 path, not in the proxy
+
+The category cascade-delete has always *written* `redirects` rows (one per
+removed category/product URL → nearest surviving ancestor, or home), but nothing
+*served* them, so deleted URLs returned 404 and leaked SEO link equity. The
+serving design (2026-06-16):
+
+- **Resolve on the would-be-404 path, in the storefront catch-all — NOT in the
+  Next.js proxy.** The original schema comment imagined the proxy reading
+  redirects "on every request (with caching)". But the proxy is deliberately
+  *thin* (§5.2): it runs on every navigation including prefetches and must never
+  call the API/DB. Every redirect source is a `/products/*` URL, so the
+  `/products/[...path]` catch-all is the complete serving point — and it only
+  consults `GET /redirects/resolve` when a path matches no live category/product,
+  i.e. on the rare would-be-404. The happy path pays nothing.
+- **Transitive chain resolution, server-side.** A later delete of a redirect's
+  target turns `A → B` into `A → B → home`. Google follows ≤ 5 hops and
+  recommends ≤ 2, so `lib/redirect-resolve.ts` (a pure, injectable-lookup
+  function — unit-tested with no DB, like `guest-track.ts`) collapses the whole
+  chain to one final hop, with a `seen` cycle guard and a hop cap. A degenerate
+  self-redirect resolves to "no redirect" → a real 404.
+- **301 vs 308.** Rows store 301; the storefront serves it with Next.js
+  `permanentRedirect()`, which emits **308**. Google treats 301 and 308
+  identically for indexing/PageRank, and 308 matches the bare-slug
+  canonicalisation the catch-all already does — so it's consistent and
+  penalty-free. 302/307 ("short-term move") are wired through for completeness
+  but the delete writer never emits them. No migration — the `redirects` table
+  already existed.
+- **Spec's moved-resource toast via a URL fragment.** `docs/README.md`
+  §"Пренасочване при изтрит ресурс" wants an unobtrusive notice after the 301.
+  The redirect appends a `#moved` **fragment** (not a `?query=` param like the
+  account pages' `?confirm=1`): a fragment is never sent to the server and is
+  ignored by crawlers, so the indexable 301 target stays canonically clean while
+  `components/layout/MovedNotice` (a `useSyncExternalStore` client component in
+  the shop layout) still shows the toast and strips the fragment on view.
+
+### 13.x Sitemap `lastmod` from the DB; robots "block-training, allow-search" AI policy
+
+- **Sitemap built server-side for accurate `lastmod`.** `lastmod` is the only
+  sitemap field search engines meaningfully weight — and Google *ignores it
+  site-wide* once it looks fabricated. The `/products` list DTO doesn't expose
+  `updated_at`, so a dedicated `GET /sitemap` projects every live category +
+  product to its canonical path + real `updated_at`, using the SAME
+  `category-tree.ts` URL helpers the storefront serves with (no drift). The
+  storefront `app/sitemap.ts` just prefixes the origin and degrades to
+  static-only if the API is briefly unreachable. A single file is correct under
+  the 50K-URL cap (this catalog is far below the §16.3 20K-SKU threshold); the
+  documented trigger to shard via `generateSitemaps()` is crossing 50K.
+- **robots.txt AI-crawler policy.** The 2026 e-commerce consensus is to block
+  training/bulk crawlers (GPTBot, CCBot, ClaudeBot, Google-Extended, Bytespider,
+  Meta-ExternalAgent, …) while allowing search/retrieval bots (Googlebot,
+  Bingbot, OAI-SearchBot, PerplexityBot, ChatGPT-User, …) so the shop stays
+  visible in AI answers (with citations → referral traffic) without feeding model
+  training. For a per-invocation serverless shop this is also a cost control —
+  training bots send almost no referrals (GPTBot ≈ 1,255:1, ClaudeBot ≈
+  20,583:1 crawl-to-refer) while costing real Lambda + bandwidth. robots.txt is a
+  request, not a fence; WAF rate-limiting (opt-in) is the enforcement layer. The
+  policy is one editable list, and non-production hosts return a blanket
+  `Disallow: /`.
+
 ## 14. Honest assessment vs A+ target
 
 **Current state, scored against AWS Well-Architected:**
@@ -2269,9 +2329,39 @@ Ranked by `(impact ÷ effort)` — highest leverage first. Items marked
     page; `/track/find` in the footer. **No migration** — activates the dormant
     `orders.guest_track_token` column. Token design is a durable, plaintext
     256-bit capability URL (see §13). Tests: `tests/routes/guest.test.ts` +
-    `tests/lib/guest-track.test.ts`. The remaining guest niceties (corporate
-    guest checkout with EIK at checkout; serving the `redirects` 301s a category
-    delete writes) stay as scoped follow-ups.
+    `tests/lib/guest-track.test.ts`. Corporate guest checkout (EIK at checkout
+    without an account) stays a scoped follow-up; the `redirects`-serving
+    follow-up this item flagged shipped as item 43.
+
+43. ✅ **Site-level crawlability & SEO — sitemap, robots, 301 serving — shipped
+    2026-06-16.** The shop had sophisticated *page-level* SEO (JSON-LD `@graph`,
+    canonical URLs, OpenGraph, Rich-Results compliance) but **no** *site-level*
+    primitives — no sitemap, no robots.txt — and the `redirects` table the
+    category delete writes (item 22) was never served, so deleted URLs 404'd
+    instead of 301'ing (link-equity leak). One coherent slice closes all three:
+    - **Dynamic `/sitemap.xml`** (`app/sitemap.ts` ← new public `GET /sitemap`):
+      every live category + product as an absolute URL with an ACCURATE
+      `lastmod` from `updated_at` (Google ignores `lastmod` site-wide once it
+      looks fabricated, so it's built from the source of truth via the same
+      `category-tree.ts` URL helpers the storefront serves — no drift). Degrades
+      to static-only if the API blips; single file under the 50K cap (shard via
+      `generateSitemaps()` past it; trigger documented).
+    - **`/robots.txt`** (`app/robots.ts`): catalog open, private routes
+      disallowed (`/account /admin /checkout /cart /search /track /api`), the
+      2026 AI-crawler policy (block training crawlers, allow search/retrieval —
+      both an SEO and a serverless-cost choice), sitemap pointer, and a blanket
+      `Disallow: /` on any non-production host.
+    - **301 redirect serving** (`GET /redirects/resolve` + the
+      `/products/[...path]` catch-all): resolves a deleted URL to its surviving
+      target on the would-be-404 path only — NOT in the thin proxy (§13) —
+      collapsing redirect chains server-side with a cycle guard. `permanentRedirect()`
+      emits 308, which Google treats as 301. Fulfils the spec's
+      §"Пренасочване при изтрит ресурс" in full — the 301 AND the „вече не е
+      наличен" toast (`MovedNotice`, driven by a crawler-invisible `#moved`
+      fragment).
+      Pure logic in `lib/redirect-resolve.ts` + `lib/sitemap.ts` (injectable,
+      DB-free unit tests). Tests: `tests/routes/seo.test.ts` +
+      `tests/lib/seo.test.ts`. No migration. Design rationale in §13.
 
 **Doing items 15–27 closes every meaningful 2026 gap in ~4–6
 working days. Items 28–33 raise the quality bar further at ~3 more

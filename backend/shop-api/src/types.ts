@@ -102,3 +102,10 @@ export type {
   TrackWithdrawalEligibility,
   TrackWithdrawalRecord,
 } from "./routes/guest.js";
+
+// SEO / crawlability DTOs from routes/seo.ts. The storefront's app/sitemap.ts
+// and the catch-all's redirect-serving client annotate their fetch helpers with
+// these concrete shapes, independent of how the workspace symlink resolves
+// AppType. `SitemapResponse` = canonical paths + lastmod for the live catalog;
+// `RedirectResolution` = the final 301 target for a deleted URL.
+export type { RedirectResolution, SitemapResponse } from "./routes/seo.js";

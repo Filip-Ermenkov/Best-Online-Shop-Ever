@@ -13,8 +13,11 @@ Hono on Lambda. Same handler runs locally on Node via `@hono/node-server`.
 > authoritative, up-to-date route
 > inventory lives in the root `README.md` → "What's wired up"; the
 > machine-readable contract is `GET /openapi.json`. The newest slice is
-> **guest checkout + order tracking** — the anonymous `/guest/orders` +
-> `/track/*` capability surface (2026-06-16).
+> **SEO / crawlability** — the anonymous `GET /sitemap` (live-catalog sitemap
+> data with accurate `lastmod`) + `GET /redirects/resolve` (serves the 301s the
+> category cascade-delete writes), 2026-06-16. Preceded by **guest checkout +
+> order tracking** — the anonymous `/guest/orders` + `/track/*` capability
+> surface.
 
 ## Quick start
 
