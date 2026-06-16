@@ -1,7 +1,8 @@
 > **Project note.** This file is the stock `create-next-app` boilerplate and
 > intentionally makes no claims about the shop. For what this frontend
 > actually implements (storefront, account flows, cart/checkout, guest
-> checkout + order tracking, admin sign-in + admin orders + admin categories)
+> checkout + order tracking, SEO `sitemap.ts`/`robots.ts` + 301 redirect
+> serving, admin sign-in + admin orders + admin categories)
 > and how to run/test it, see the root `README.md`
 > and `docs/ARCHITECTURE.md` §5.
 

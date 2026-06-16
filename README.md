@@ -176,6 +176,7 @@ they aren't. The honest state:
 | Distributed tracing (OpenTelemetry) | **Shipped 2026-06-13 (roadmap item 18)** — `shop-api` emits OTel traces behind `ENABLE_TRACING`: `@hono/otel` request spans + undici/fetch downstream spans + Pino `trace_id`/`span_id` log↔trace correlation. Exports OTLP to AWS X-Ray via the ADOT collector layer (`enable_tracing` + `adot_collector_layer_arn`), or any OTLP backend. Closes the last OWASP A09 / NIST CSF Detect gap. App-level instrumentation + correlation unit-tested and harness-verified against the real libraries (incl. a clean esbuild bundle); live X-Ray export validated on deploy. Runbook in `infra/README.md` → "Tracing runbook" |
 | SLOs + burn-rate alerting (OpenSLO) | **Shipped 2026-06-14 (roadmap items 24/25)** — `infra/slos.yaml` (OpenSLO v1: availability 99.9%, order-success 99.9%, p95 latency <1000ms) + `infra/slo.tf` multi-window multi-burn-rate composite alarms over CloudWatch Logs metric filters on the `request_end` log line. Behind `enable_slo_alarms` (default off); requires `log_level = "info"` (plan-time precondition). Defined + apply-ready; awaits live traffic to exercise the budgets. Runbook in `infra/README.md` → "SLO + burn-rate runbook" |
 | Terraform / IaC | **Live-apply-validated** (`infra/`) — a successful end-to-end `terraform apply` (2026-06-07) returned HTTP 200 through CloudFront→OAC→Lambda; fmt/validate/tflint/checkov green. A maintained prod env (domain + migrated schema + frontend) is the next step |
+| SEO / crawlability (sitemap, robots, 301s) | **Shipped end-to-end (2026-06-16)** — dynamic `/sitemap.xml` (live catalog with accurate `lastmod`) + `/robots.txt` (2026 AI-crawler policy: block training bots, allow search/retrieval; private routes disallowed) + **serving the 301 `redirects`** the category cascade-delete writes (closes a half-open loop: deleted URLs were returning 404 instead of 301). New public `shop-api` `GET /sitemap` + `GET /redirects/resolve`; storefront `app/sitemap.ts` + `app/robots.ts`; redirect served on the catch-all's would-be-404 path. No migration |
 
 The architecture documentation (`docs/ARCHITECTURE.md`) describes the
 intended production posture. The roadmap (§15 of that file) tracks
@@ -273,6 +274,17 @@ what needs to happen to get from today's repo state to that posture.
   visitor's current choice. Anonymous (like `/csp-report`). Activates
   the `cookie_consents` table the schema has modelled since the initial
   migration; the banner now writes here, not just to `localStorage`.
+- **`/sitemap`** — **sitemap source data (2026-06-16)**, anonymous. Every
+  non-deleted category + product as a canonical storefront path with its real
+  `updated_at` `lastmod`, built server-side (same URL helpers the storefront
+  uses, so a sitemap URL can never drift from the served URL). Backs the
+  storefront `/sitemap.xml`. ETag + 1h edge cache.
+- **`/redirects/resolve`** — **301 redirect serving (2026-06-16)**, anonymous.
+  `GET /redirects/resolve?path=…` looks up a deleted URL in the `redirects` table
+  (written by the admin category cascade-delete) and follows any chain to the
+  final surviving target. The storefront catch-all calls it on the would-be-404
+  path. Closes the half-open loop where deleted category/product URLs returned
+  404 instead of 301 (SEO link-equity leak).
 - `/health`, `/openapi.json`
 
 Test counts as of 2026-06-16, by `it`/`test` block: addresses 28,
@@ -281,16 +293,18 @@ consent 10, csp-report 25, data-export 14, email-change 21,
 order-emails 5, orders 25, password-reset 19, products 15,
 verification 11, withdrawal 23, **guest 23** (guest checkout +
 `/track` view/cancel/withdrawal + find-my-order + authenticated
-cancel, 2026-06-16), **jobs 18** (pickup-expiry 4,
+cancel, 2026-06-16), **seo 11** (sitemap data + redirect-resolve +
+chain collapse + OpenAPI registration, 2026-06-16), **jobs 18** (pickup-expiry 4,
 unverified-cleanup 8, catalog-backup + dispatch 6 — the scheduler-fn
 sweeps, 2026-06-12), plus lib suites (phone-validation;
 **email-transport-config 3** — the `EMAIL_TRANSPORT=sqs` boot contract;
 **tracing 5** — the OpenTelemetry flag toggle, log↔trace correlation,
 and the `@hono/otel` request span, 2026-06-13;
 **guest-track 10** — the 256-bit token + the in-memory rate-limiter
-units, 2026-06-16) — **422 blocks**. The
+units, 2026-06-16; **seo 12** — the pure redirect-chain resolver +
+the sitemap URL builder, 2026-06-16) — **445 blocks**. The
 `csp-report` and `phone` suites are table-driven (`it.each`), so
-`vitest run` expands them and reports **~456 cases total** (run
+`vitest run` expands them and reports **~479 cases total** (run
 `vitest run` for the exact figure), all against a real `shop_test`
 Postgres in CI.
 
@@ -438,6 +452,20 @@ flow, and the 14-day withdrawal form; `/track/find` (linked in the footer) is
 the lost-link recovery page. Typed client in `frontend/src/lib/track/`. The
 `/track` route is served `robots: noindex` + `referrer: no-referrer` so the
 capability token never leaks via indexing or the Referer header.
+
+**SEO / crawlability** wired end-to-end (2026-06-16): `app/sitemap.ts` emits a
+dynamic `/sitemap.xml` from the live catalog (`GET /sitemap`) with accurate
+`lastmod`, degrading to static-only if the API is briefly unreachable;
+`app/robots.ts` emits `/robots.txt` with the 2026 AI-crawler policy (block
+training bots, allow search/retrieval), the private-route disallows, and the
+sitemap pointer — and `Disallow: /` on any non-production host. Deleted
+category/product URLs now **301 to the surviving target** instead of 404ing:
+the catch-all `/products/[...path]` resolves the `redirects` table (via
+`GET /redirects/resolve`) on its would-be-404 path, so the happy path is
+untouched. The redirect appends a `#moved` fragment so the destination shows the
+spec's „вече не е наличен" toast (`MovedNotice`) — a fragment, not a query param,
+so the 301 target stays canonically clean for crawlers. Typed client in
+`frontend/src/lib/seo/`.
 
 Real address book wired end-to-end at `/account/addresses` (linked from
 `/account/profile`): list + add + inline-edit + two-step-confirm delete,
@@ -903,6 +931,35 @@ curl -s localhost:3001/track/zzz                # → 404 (malformed/unknown tok
 The full behaviour is covered by
 `backend/shop-api/tests/routes/guest.test.ts` and the pure-unit suite
 `backend/shop-api/tests/lib/guest-track.test.ts`.
+
+### SEO: sitemap, robots, and 301 redirects
+
+Three site-level crawlability primitives (2026-06-16). With the frontend and API
+running (`npm run api:dev`, `npm run frontend:dev`):
+
+- **Sitemap.** Open http://localhost:3000/sitemap.xml — an `<urlset>` listing the
+  home + static pages and every live category/product as an absolute URL with a
+  `<lastmod>`. The data comes from the API: `curl -s localhost:3001/sitemap` →
+  `{ "categories": [...], "products": [...], "generatedAt": "…" }` (canonical
+  relative paths + ISO `lastmod`). Seed the catalog first (`npm run db:reset`).
+- **Robots.** Open http://localhost:3000/robots.txt. In local dev (a non-https
+  host) it returns a blanket `Disallow: /` so dev never gets indexed. On a real
+  `https://` `NEXT_PUBLIC_SITE_URL` it returns the catalog-open policy, the
+  private-route disallows (`/account /admin /checkout /cart /search /track /api`),
+  the training-bot blocks (GPTBot, CCBot, ClaudeBot, Google-Extended, …), and the
+  `Sitemap:` pointer.
+- **301 redirect serving.** Delete a category in `/admin/categories` (this writes
+  `redirects` rows). Then visit one of the now-deleted category/product URLs:
+  the storefront **301s** to the surviving parent (or home) instead of 404ing,
+  and shows the spec's „вече не е наличен" toast (`MovedNotice`, via a `#moved`
+  fragment). Backend directly:
+  `curl.exe -s "localhost:3001/redirects/resolve?path=/products/<old-path>"`
+  → `{ "target": "/products/<survivor>", "statusCode": 301 }`; an unknown path → 404.
+
+The full behaviour is covered by
+`backend/shop-api/tests/routes/seo.test.ts` and the pure-unit suite
+`backend/shop-api/tests/lib/seo.test.ts`. A detailed step-by-step manual test
+guide is in `docs/TESTING-seo-crawlability.md`.
 
 ### Durable email delivery (SQS → email-fn → SES)
 

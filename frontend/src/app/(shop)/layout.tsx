@@ -3,6 +3,7 @@ import NavBar from "@/components/layout/NavBar";
 import Footer from "@/components/layout/Footer";
 import CookieBanner from "@/components/layout/CookieBanner";
 import EmailVerificationBanner from "@/components/layout/EmailVerificationBanner";
+import MovedNotice from "@/components/layout/MovedNotice";
 import { fetchCategoryTree } from "@/lib/api";
 import type { CategoryTreeNode } from "@/lib/catalog";
 
@@ -50,6 +51,10 @@ export default async function ShopLayout({
       </main>
       <Footer />
       <CookieBanner />
+      {/* Spec §"Пренасочване при изтрит ресурс": the toast shown after a 301
+          from a deleted category/product URL (triggered by the `#moved`
+          fragment the products catch-all appends to the redirect target). */}
+      <MovedNotice />
     </>
   );
 }

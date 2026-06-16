@@ -26,6 +26,7 @@ import { cspRoutes } from "./routes/csp.js";
 import { guestRoutes, trackRoutes } from "./routes/guest.js";
 import { ordersRoutes } from "./routes/orders.js";
 import { productsRoutes } from "./routes/products.js";
+import { redirectsRoutes, sitemapRoutes } from "./routes/seo.js";
 
 /**
  * Variables we attach to every Hono Context. Declared as a type parameter on
@@ -194,6 +195,9 @@ export function buildApp() {
   app.use("/products", etag());
   app.use("/categories/*", etag());
   app.use("/categories", etag());
+  // SEO surface — cacheable public GETs, same ETag treatment as the catalog.
+  app.use("/sitemap", etag());
+  app.use("/redirects/*", etag());
 
   app.use("/products/*", currentUser);
   app.use("/products", currentUser);
@@ -241,6 +245,12 @@ export function buildApp() {
   // Always returns 204 No Content; see backend/shop-api/src/routes/csp.ts for
   // the full design rationale.
   app.route("/csp-report", cspRoutes);
+  // SEO / crawlability — anonymous, no currentUser (public like /products):
+  //   GET /sitemap             → sitemap source data (storefront app/sitemap.ts)
+  //   GET /redirects/resolve   → serve the 301s the category delete writes
+  // See routes/seo.ts for why neither belongs in the (deliberately thin) proxy.
+  app.route("/sitemap", sitemapRoutes);
+  app.route("/redirects", redirectsRoutes);
 
   app.doc("/openapi.json", {
     openapi: "3.1.0",
