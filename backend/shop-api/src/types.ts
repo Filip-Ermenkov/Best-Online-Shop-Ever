@@ -90,3 +90,15 @@ export type {
   AdminCategoryTree,
   AdminCategoryDeletionImpact,
 } from "./routes/admin/categories.js";
+
+// Guest checkout + order-tracking DTOs from routes/guest.ts (the spec's "Гост"
+// role). The storefront annotates its lib/track + guest-checkout clients with
+// these concrete shapes, independent of how the workspace symlink resolves
+// AppType.
+export type {
+  GuestOrder,
+  TrackedOrder,
+  TrackOrderItem,
+  TrackWithdrawalEligibility,
+  TrackWithdrawalRecord,
+} from "./routes/guest.js";

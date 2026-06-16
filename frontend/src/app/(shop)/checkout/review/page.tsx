@@ -13,6 +13,8 @@ import { CheckCircle, ArrowLeft, Truck, Store, Banknote } from "lucide-react";
 import { getOfficeById } from "@/lib/mock-data/courier-offices";
 import { placeOrder } from "@/lib/orders/client";
 import type { OrderError, PlaceOrderInput } from "@/lib/orders/types";
+import { placeGuestOrder } from "@/lib/track/client";
+import type { GuestPlaceOrderInput } from "@/lib/track/types";
 
 const deliveryLabels = { courier: "Доставка с куриер", pickup: "Вземане от магазин" };
 const paymentLabels: Record<string, string> = { cash_on_delivery: "Наложен платеж", pay_at_store: "Плащане на място" };
@@ -102,10 +104,19 @@ export default function CheckoutReviewPage() {
     idempotencyKeyRef.current = freshIdempotencyKey();
   }
 
+  // Set true the moment a successful placement starts navigating to the
+  // confirmation/track page. Placement clears the checkout draft (and, for
+  // guests, the cart synchronously) — without this guard the draft-clear would
+  // trip the "no draft → bounce to /checkout" redirect below and race the
+  // success navigation, dumping the buyer on an empty /checkout.
+  const leavingAfterPlaceRef = useRef(false);
+
   // Side effect (navigation) is the only thing left for useEffect to do
   // here — formData is now derived from savedRaw above, no setState needed.
   useEffect(() => {
-    if (savedRaw === null) router.replace("/checkout");
+    if (savedRaw === null && !leavingAfterPlaceRef.current) {
+      router.replace("/checkout");
+    }
   }, [savedRaw, router]);
 
   // TODO(auth slice 2): the public /auth/me endpoint does not yet expose
@@ -225,17 +236,74 @@ export default function CheckoutReviewPage() {
     return null;
   }
 
+  /**
+   * Guest checkout. Places via /guest/orders — the cart travels in the body
+   * (guests have no server cart), the contact comes from the checkout form —
+   * and routes to the durable /track/<token> capability page.
+   */
+  async function placeAsGuest(input: PlaceOrderInput) {
+    if (!formData) return;
+    setPlacing(true);
+    try {
+      const guestInput: GuestPlaceOrderInput = {
+        contact: {
+          email: formData.email,
+          name: `${formData.firstName} ${formData.lastName}`.trim(),
+          phone: formData.phone,
+        },
+        paymentMethod: input.paymentMethod,
+        deliveryAddress: input.deliveryAddress,
+        items: items.map((i) => ({ productId: i.productId, quantity: i.quantity })),
+      };
+      const res = await placeGuestOrder(guestInput, idempotencyKeyRef.current!);
+      if (res.ok) {
+        void clearCart();
+        sessionStorage.removeItem("checkoutData");
+        sessionStorage.removeItem("checkoutOffice");
+        leavingAfterPlaceRef.current = true;
+        router.push(
+          `/track/${encodeURIComponent(res.value.trackToken)}?confirm=1`,
+        );
+        router.refresh();
+        return;
+      }
+      switch (res.error.kind) {
+        case "idempotency_conflict":
+          idempotencyKeyRef.current = freshIdempotencyKey();
+          setError("Възникна конфликт при изпращането. Опитайте отново.");
+          return;
+        case "out_of_stock":
+          setError(
+            "Някои продукти вече не са налични. Премахнете ги от количката и опитайте отново.",
+          );
+          return;
+        case "cart_empty":
+          setError("Количката е празна. Добавете продукти, за да направите поръчка.");
+          sessionStorage.removeItem("checkoutData");
+          sessionStorage.removeItem("checkoutOffice");
+          return;
+        case "rate_limited":
+          setError("Твърде много поръчки от тази мрежа. Опитайте отново по-късно.");
+          return;
+        case "validation":
+          setError(
+            res.error.detail ??
+              "Невалидни данни за поръчката. Проверете телефонния номер и адреса.",
+          );
+          return;
+        default:
+          setError("Неуспешно създаване на поръчката. Опитайте отново.");
+          return;
+      }
+    } finally {
+      setPlacing(false);
+    }
+  }
+
   async function handleConfirm() {
     if (!formData) return;
     setError(null);
 
-    // Pre-flight UX guards. These don't *need* to be here — the backend
-    // would reject with 401 / 422 / 400 anyway — but skipping the network
-    // round-trip on a clear user-state error is faster and friendlier.
-    if (authStatus !== "authenticated" || !isAuthenticated || !user) {
-      router.push(`/account/login?next=${encodeURIComponent("/checkout/review")}`);
-      return;
-    }
     if (items.length === 0) {
       setError("Количката е празна. Добавете продукти, за да направите поръчка.");
       return;
@@ -244,6 +312,16 @@ export default function CheckoutReviewPage() {
     const input = buildOrderInput(formData);
     if (!input) {
       setError("Моля, посочете адрес или офис за доставка.");
+      return;
+    }
+
+    // Guests check out without an account — "Регистрацията е по желание" (spec
+    // §8). Authenticated users place through /orders (server cart); guests place
+    // through /guest/orders (cart carried in the body) and land on their
+    // /track/<token> page instead of /account/orders.
+    const isGuest = authStatus !== "authenticated" || !isAuthenticated || !user;
+    if (isGuest) {
+      await placeAsGuest(input);
       return;
     }
 
@@ -275,6 +353,7 @@ export default function CheckoutReviewPage() {
         // (green success banner). On regular history-navigation visits to
         // the same page the param is absent and only the order detail
         // shows. The query param is intentionally lightweight — no PII.
+        leavingAfterPlaceRef.current = true;
         router.push(
           `/account/orders/${encodeURIComponent(res.value.orderNumber)}?confirm=1`,
         );

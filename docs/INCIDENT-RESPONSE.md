@@ -446,6 +446,7 @@ Knowing the blast radius up front makes the risk assessment fast:
 | Profile (name, phone, company, VAT/EIK) | profile tables | — |
 | Address book + order delivery snapshots | `addresses`, `order_delivery_address` | — |
 | Order history + line snapshots | `orders`, `order_items` | — |
+| Guest order contact (email, name, phone) | `orders` (NULL `customer_id`) | — — same PII categories as account orders, just no account; reachable via the order's `guest_track_token` capability URL (256-bit, plaintext at rest by design — see `ARCHITECTURE.md` §13). A token leak exposes one order's contact data + the cancel/withdrawal actions, never an account |
 | Login telemetry (IP, UA) | `login_attempts` | 180-day retention prune (item 23) |
 | Cookie-consent receipts (IP, UA, `visitor_id`) | `cookie_consents` | opaque visitor id, no account link |
 | Admin actions (actor, IP, UA, diffs) | `admin_audit_log` | append-only — also your forensic source (§10) |

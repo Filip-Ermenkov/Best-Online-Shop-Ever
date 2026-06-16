@@ -170,6 +170,7 @@ they aren't. The honest state:
 | Admin authentication (TOTP MFA) | **Shipped end-to-end** — `shop-api` `/admin/auth/*` + the `/admin` frontend `AdminAuthGate` (login → MFA → enrolment) |
 | Admin order management | **Shipped end-to-end (2026-06-10)** — `shop-api` `/admin/orders/*` (list + filters + search, detail + history, state-machine status transitions with optimistic locking + customer emails, CSV export) + the real `/admin/orders` UI |
 | Admin category management | **Shipped end-to-end (2026-06-15)** — `shop-api` `/admin/categories/*` (tree with counts, create, rename/move with cycle prevention + optimistic locking, sibling reorder, deletion-impact preview, cascade soft-delete writing 301 `redirects` + `admin_audit_log`) + the real `/admin/categories` UI |
+| Guest checkout + order tracking | **Shipped end-to-end (2026-06-16)** — the spec's "Гост" role (orders without an account). `shop-api` `/guest/orders` (anonymous checkout, 256-bit capability token) + `/track/:token` (view, cancel-while-processing, 14-day withdrawal) + `/track/find` (rate-limited lost-link resend) + the public `/track/[token]` & `/track/find` UI. Checkout no longer forces login (`POST /orders/:n/cancel` also added for account customers). No migration — activates the dormant `orders.guest_track_token` column |
 | `admin-api` Lambda | Not built (admin auth + the orders slice currently live in `shop-api`; extract when the admin CRUD surface grows) |
 | `scheduler-fn` Lambda | **Shipped 2026-06-12, live-validated 2026-06-13** (roadmap item 23) — jobs in `@shop/api` `src/jobs/*` + own pure-JS bundle (`build:scheduler`) + `infra/scheduler.tf` (EventBridge Scheduler, 3 Sofia-time crons, delivery DLQ, backup bucket, 2 alarms) behind `enable_scheduler`. All three `aws lambda invoke` drills passed against the Neon test branch; the catalog-backup drill also caught a prod-only bug (the `neon-http` driver can't run `db.transaction(...)`) now fixed by the Neon serverless WebSocket driver — see [decisions](#architecture-decisions-in-force). Runbook in `infra/README.md` |
 | Distributed tracing (OpenTelemetry) | **Shipped 2026-06-13 (roadmap item 18)** — `shop-api` emits OTel traces behind `ENABLE_TRACING`: `@hono/otel` request spans + undici/fetch downstream spans + Pino `trace_id`/`span_id` log↔trace correlation. Exports OTLP to AWS X-Ray via the ADOT collector layer (`enable_tracing` + `adot_collector_layer_arn`), or any OTLP backend. Closes the last OWASP A09 / NIST CSF Detect gap. App-level instrumentation + correlation unit-tested and harness-verified against the real libraries (incl. a clean esbuild bundle); live X-Ray export validated on deploy. Runbook in `infra/README.md` → "Tracing runbook" |
@@ -194,7 +195,19 @@ what needs to happen to get from today's repo state to that posture.
 - `/cart`, `/cart/items`, `/cart/items/:productId`, `/cart/merge`
 - `/orders`, `/orders/:orderNumber`,
   `/orders/:orderNumber/withdrawal`,
-  `/orders/:orderNumber/withdrawal/eligibility`
+  `/orders/:orderNumber/withdrawal/eligibility`,
+  `/orders/:orderNumber/cancel` (customer-initiated cancel, `processing` only)
+- **`/guest/orders`** — **guest checkout (2026-06-16)**, anonymous (no
+  `requireAuth`). Cart carried in the body (guests have no server cart),
+  contact + delivery snapshotted onto the order, no account discount, per-IP
+  anti-abuse rate limit, `Idempotency-Key` replay. Returns the order plus a
+  256-bit `trackToken` (the spec's "Гост" capability URL).
+- **`/track/:token`** — **guest order tracking (2026-06-16)**, anonymous,
+  token-authenticated: `GET /track/:token` (status + details + timeline +
+  shop contact at shipped/ready), `POST /track/:token/cancel` (cancel while
+  `processing`), `GET|POST /track/:token/withdrawal[/eligibility]` (the 14-day
+  right via the tracking page), `POST /track/find` (lost-link resend, **3/hour/
+  IP**, enumeration-resistant). Malformed/unknown tokens → uniform `404`.
 - `/addresses`, `/addresses/:id` — customer address-book CRUD
   (list / create / partial-update / soft-delete). `requireAuth`-gated,
   per-user ownership-scoped, 4-digit Bulgarian postal-code validation,
@@ -262,19 +275,24 @@ what needs to happen to get from today's repo state to that posture.
   migration; the banner now writes here, not just to `localStorage`.
 - `/health`, `/openapi.json`
 
-Test counts as of 2026-06-15, by `it`/`test` block: addresses 28,
+Test counts as of 2026-06-16, by `it`/`test` block: addresses 28,
 admin-auth 17, **admin-orders 26**, **admin-categories 39**, auth 48, cart 30, categories 7,
 consent 10, csp-report 25, data-export 14, email-change 21,
 order-emails 5, orders 25, password-reset 19, products 15,
-verification 11, withdrawal 23, **jobs 18** (pickup-expiry 4,
+verification 11, withdrawal 23, **guest 23** (guest checkout +
+`/track` view/cancel/withdrawal + find-my-order + authenticated
+cancel, 2026-06-16), **jobs 18** (pickup-expiry 4,
 unverified-cleanup 8, catalog-backup + dispatch 6 — the scheduler-fn
-sweeps, 2026-06-12), plus three lib suites (phone-validation;
+sweeps, 2026-06-12), plus lib suites (phone-validation;
 **email-transport-config 3** — the `EMAIL_TRANSPORT=sqs` boot contract;
 **tracing 5** — the OpenTelemetry flag toggle, log↔trace correlation,
-and the `@hono/otel` request span, 2026-06-13) — **389 blocks**. The
+and the `@hono/otel` request span, 2026-06-13;
+**guest-track 10** — the 256-bit token + the in-memory rate-limiter
+units, 2026-06-16) — **422 blocks**. The
 `csp-report` and `phone` suites are table-driven (`it.each`), so
-`vitest run` expands them and reports **423 cases total**, all against
-a real `shop_test` Postgres in CI.
+`vitest run` expands them and reports **~456 cases total** (run
+`vitest run` for the exact figure), all against a real `shop_test`
+Postgres in CI.
 
 ### Backend (`@shop/db` schema)
 
@@ -410,6 +428,16 @@ discriminated union.
 Real order placement wired end-to-end: `Idempotency-Key`-headered
 `POST /orders`, full `OrderError` discriminated union, listing + detail
 + withdrawal flow at `/account/orders/[orderNumber]`.
+
+Real **guest checkout** wired end-to-end (2026-06-16): `/checkout` no longer
+bounces anonymous visitors to login — the review step branches on auth and
+places guests through `POST /guest/orders`, landing them on
+`/track/[token]?confirm=1`. The public `/track/[token]` page renders status,
+timeline, shop contact (at shipped/ready), an inline cancel-while-processing
+flow, and the 14-day withdrawal form; `/track/find` (linked in the footer) is
+the lost-link recovery page. Typed client in `frontend/src/lib/track/`. The
+`/track` route is served `robots: noindex` + `referrer: no-referrer` so the
+capability token never leaks via indexing or the Referer header.
 
 Real address book wired end-to-end at `/account/addresses` (linked from
 `/account/profile`): list + add + inline-edit + two-step-confirm delete,
@@ -843,6 +871,39 @@ remain). Every action appends an `admin_audit_log` row (GDPR Art. 30).
 The full behaviour is covered by
 `backend/shop-api/tests/routes/admin-categories.test.ts` (39 cases).
 
+### Guest checkout & order tracking
+
+The spec's "Гост" role — buy, track, cancel, and withdraw with no account.
+In the browser: add products to the cart while logged out, go through
+`/checkout` → `/checkout/review`, fill the contact fields, click **Потвърди
+поръчката**. You land on `/track/<token>?confirm=1` with a green banner; the
+`console` email transport prints an order-confirmation carrying the
+`…/track/<token>` link. On that page you can **Анулирай поръчката** while the
+order is „Обработва се"; once an admin moves it to „Приета" the 14-day
+**Подай рекламация / Върни стока** form appears. The footer's **Намери
+поръчката ми (гост)** link goes to `/track/find`, which re-sends the link for a
+matching order number + email (always shows the same neutral message; max
+3/hour/IP).
+
+Backend-only (no browser), against `npm run api:dev`:
+
+```bash
+# Place a guest order (use a real product id from the seed; see /products).
+curl -s -X POST localhost:3001/guest/orders \
+  -H 'Content-Type: application/json' -H 'Idempotency-Key: '"$(uuidgen)" \
+  -d '{"contact":{"email":"guest@example.com","name":"Гост","phone":"0888123456"},
+       "paymentMethod":"pay_at_store","items":[{"productId":"<PRODUCT_UUID>","quantity":1}]}'
+#   → 201 { ..., "trackToken":"<43-char token>", "trackPath":"/track/<token>" }
+
+curl -s localhost:3001/track/<token>            # → the tracked order
+curl -s -X POST localhost:3001/track/<token>/cancel   # → 200 (status cancelled)
+curl -s localhost:3001/track/zzz                # → 404 (malformed/unknown token)
+```
+
+The full behaviour is covered by
+`backend/shop-api/tests/routes/guest.test.ts` and the pure-unit suite
+`backend/shop-api/tests/lib/guest-track.test.ts`.
+
 ### Durable email delivery (SQS → email-fn → SES)
 
 Local dev keeps the `console` transport, so nothing changes day-to-day.
@@ -1127,6 +1188,20 @@ CSPRNG → base64url, SHA-256-hashed in `*_tokens.token_hash`,
 single-use (`consumed_at`), validity 24h for signup, 1h for reset
 and email-change. Bad / expired / consumed all return the SAME
 generic 400 — no enumeration of token state.
+
+**Guest order-tracking token (capability URL):** 32-byte CSPRNG → base64url
+(256-bit), stored in `orders.guest_track_token`. Unlike the credential tokens
+above it is a *capability URL* (W3C TAG), not a login magic link, so it is
+**durable** (no expiry — the spec needs last-week's email to still work) and
+deliberately **NOT hashed at rest**: the PII it gates (customer email/name/
+phone, delivery address) sits in plaintext in the same row, so hashing the
+token would defend against nothing a DB-read attacker doesn't already have,
+while costing the ability to re-embed the link in later status emails. Its job
+is outside-unguessability — 256 CSPRNG bits over-satisfy OWASP's ≥128-bit bar
+(the prior `crypto.randomUUID()` was 122). Leak mitigations: never logged,
+`/track` served `noindex` + `no-referrer`, find-my-order rate-limited and
+enumeration-resistant, unknown/malformed tokens → uniform `404`. Full rationale
+in `docs/ARCHITECTURE.md` §13.
 
 **Enumeration resistance by contract:**
 `POST /auth/forgot-password`, `POST /auth/email-change/request`, and

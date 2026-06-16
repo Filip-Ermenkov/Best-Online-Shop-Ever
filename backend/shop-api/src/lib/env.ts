@@ -81,6 +81,16 @@ const EnvSchema = z.object({
     .string()
     .default("http://localhost:3000")
     .transform((s) => s.replace(/\/+$/, "")),
+  /**
+   * Optional public shop phone number, shown (alongside the support email
+   * derived from EMAIL_FROM) on the guest order-tracking page when an order is
+   * `shipped` or `ready_for_pickup` — the spec's "данни за контакт с магазина"
+   * block (`docs/README.md` §7). Empty string = omit the phone line; the email
+   * is always shown. A standalone env var rather than a settings-table lookup
+   * because the admin settings slice is not built yet; migrate this to the
+   * settings table when it lands.
+   */
+  SHOP_CONTACT_PHONE: z.string().default(""),
 
   // ─── Scheduled jobs (scheduler-fn) ───────────────────────────────────────
   /**

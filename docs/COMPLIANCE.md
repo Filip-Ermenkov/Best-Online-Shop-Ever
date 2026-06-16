@@ -509,6 +509,20 @@ Implemented in the May 2026 withdrawal slice. Three routes:
 partial unique index on `complaints.order_id WHERE
 reason='withdrawal'`.
 
+**Extended to guests 2026-06-16.** The directive's withdrawal right does not
+depend on having an account, and guest checkout shipped the same day, so the
+right is now exercisable without one: `GET|POST /track/:token/withdrawal[/
+eligibility]` mirrors the authenticated routes through the order's tracking-token
+capability URL (same `lib/withdrawal.ts` core, refactored to resolve the order
+by token instead of by user id). Guest orders also receive the Art. 8(7)
+order-confirmation email — carrying the durable `/track/:token` link instead of
+an account page — and the spec's customer/guest cancellation right
+(`POST /track/:token/cancel`, while `processing`). GDPR note: guest order PII is
+processed on the Art. 6(1)(b) contract basis and retained under the same
+Art. 17(3)(b) invoice-retention exemption as account orders; a guest erasure
+request is handled out-of-band (no self-service guest DSAR in this slice — the
+data is contract/legal-obligation based).
+
 The order-confirmation email rows were added 2026-05-27 after the
 `orders.order-confirmation` template + `sendOrderConfirmationEmail`
 helper + `POST /orders` wire-up shipped. Until that revision, order

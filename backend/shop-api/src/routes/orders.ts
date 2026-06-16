@@ -13,7 +13,12 @@ import { buildImageUrl } from "../lib/images.js";
 import { logger as baseLogger } from "../lib/logger.js";
 import { validationHook } from "../lib/validation-hook.js";
 import { parseEnv } from "../lib/env.js";
-import { sendOrderConfirmationEmail } from "../lib/order-emails.js";
+import { issueGuestTrackToken } from "../lib/guest-track.js";
+import { cancelOrderByCustomer } from "../lib/order-cancellation.js";
+import {
+  sendOrderConfirmationEmail,
+  sendOrderStatusUpdateEmail,
+} from "../lib/order-emails.js";
 import {
   createOrFetchWithdrawalRecord,
   deriveSupportEmail,
@@ -463,6 +468,33 @@ const postWithdrawalRoute = createRoute({
   },
 });
 
+const cancelOrderRoute = createRoute({
+  method: "post",
+  path: "/{orderNumber}/cancel",
+  tags: ["orders"],
+  summary:
+    "Cancel your own order. Allowed only while the order is still 'processing'.",
+  request: { params: OrderNumberParamSchema },
+  responses: {
+    200: {
+      description: "Order cancelled; the refreshed order is returned.",
+      content: { "application/json": { schema: OrderSchema } },
+    },
+    401: {
+      description: "Not authenticated.",
+      content: { "application/problem+json": { schema: ProblemSchema } },
+    },
+    404: {
+      description: "Order not found, or does not belong to this user.",
+      content: { "application/problem+json": { schema: ProblemSchema } },
+    },
+    422: {
+      description: "Order has moved past 'processing' and can no longer be cancelled.",
+      content: { "application/problem+json": { schema: ProblemSchema } },
+    },
+  },
+});
+
 // ─── Router ────────────────────────────────────────────────────────────────
 
 export const ordersRoutes = new OpenAPIHono<{ Variables: AuthVariables }>({
@@ -636,11 +668,12 @@ ordersRoutes.openapi(placeOrderRoute, async (c) => {
       const orderNumber = numRow.order_number;
 
       // 5. Insert the order header.
-      const guestTrackToken =
-        // crypto.randomUUID is guaranteed in Node ≥19 (we're on ≥20).
-        // We populate it for every order — even logged-in ones — so future
-        // shareable-tracking-link UX doesn't require a backfill.
-        crypto.randomUUID();
+      // Every order gets a 256-bit capability token (lib/guest-track.ts) —
+      // even logged-in ones, so a future "share a tracking link" UX needs no
+      // backfill. For authenticated orders the token is simply never surfaced
+      // (the confirmation email links to /account/orders, and /track works for
+      // anyone who holds the token). Guest orders surface it in the email.
+      const guestTrackToken = issueGuestTrackToken();
 
       const [order] = await tx
         .insert(schema.orders)
@@ -863,6 +896,58 @@ ordersRoutes.openapi(getOrderRoute, async (c) => {
     throw notFound(`Order ${orderNumber} not found.`);
   }
   return c.json(order, 200);
+});
+
+ordersRoutes.openapi(cancelOrderRoute, async (c) => {
+  const user = c.get("user")!;
+  const { orderNumber } = c.req.valid("param");
+  const db = getDb();
+
+  // Resolve the order scoped to the owner — not-found / not-yours collapse to
+  // the same 404 (enumeration-resistant, like the rest of /orders). The
+  // shared cancel op re-reads FOR UPDATE and enforces the processing-only rule.
+  const [orderRow] = await db
+    .select({ id: schema.orders.id })
+    .from(schema.orders)
+    .where(
+      and(
+        eq(schema.orders.orderNumber, orderNumber),
+        eq(schema.orders.customerId, user.id),
+      ),
+    )
+    .limit(1);
+  if (!orderRow) throw notFound(`Order ${orderNumber} not found.`);
+
+  const result = await cancelOrderByCustomer(db, {
+    orderId: orderRow.id,
+    actorUserId: user.id,
+    reason: "Анулирана от клиента",
+  });
+  if (!result.ok) {
+    if (result.reason === "not_found") {
+      throw notFound(`Order ${orderNumber} not found.`);
+    }
+    throw new ApiError({
+      type: "/problems/order-not-cancellable",
+      title: "Order Cannot Be Cancelled",
+      status: 422,
+      detail:
+        "This order can no longer be cancelled — it has moved past 'processing'. Contact the shop to arrange a cancellation.",
+    });
+  }
+
+  // Best-effort cancellation notice. Account order → default account link.
+  await sendOrderStatusUpdateEmail({
+    to: result.order.customerEmail,
+    customerName: result.order.customerName,
+    orderNumber: result.order.orderNumber,
+    status: "cancelled",
+    changedAt: new Date(),
+    cancelledReason: result.order.cancelledReason,
+    logger: baseLogger,
+  });
+
+  return c.json(await loadFullOrder(db, result.order), 200);
 });
 
 // ─── Withdrawal handlers ───────────────────────────────────────────────────

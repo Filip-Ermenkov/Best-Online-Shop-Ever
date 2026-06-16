@@ -15,6 +15,7 @@ import {
 } from "drizzle-orm";
 import type { Logger } from "pino";
 import { getDb } from "../../lib/db.js";
+import { parseEnv } from "../../lib/env.js";
 import { ApiError, ProblemSchema, badRequest, notFound } from "../../lib/errors.js";
 import { buildImageUrl } from "../../lib/images.js";
 import { logger as baseLogger } from "../../lib/logger.js";
@@ -953,6 +954,13 @@ adminOrdersRoutes.openapi(transitionRoute, async (c) => {
 
   // ─ Customer notification (best-effort, never blocks the transition) ────
   if (isCustomerNotifiableStatus(to)) {
+    // Guest orders (no account) get the durable /track capability link so the
+    // status email lands somewhere they can actually open; account orders fall
+    // back to the helper's default /account/orders page.
+    const guestTrackUrl =
+      updatedRow.customerId === null && updatedRow.guestTrackToken
+        ? `${parseEnv().PUBLIC_APP_BASE_URL}/track/${updatedRow.guestTrackToken}`
+        : undefined;
     await sendOrderStatusUpdateEmail({
       to: updatedRow.customerEmail,
       customerName: updatedRow.customerName,
@@ -963,6 +971,7 @@ adminOrdersRoutes.openapi(transitionRoute, async (c) => {
       trackingNumber: to === "shipped" ? updatedRow.trackingNumber : null,
       pickupDeadline: to === "ready_for_pickup" ? updatedRow.pickupDeadline : null,
       cancelledReason: to === "cancelled" ? updatedRow.cancelledReason : null,
+      orderUrl: guestTrackUrl,
       logger: log,
     });
   }

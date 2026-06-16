@@ -2,6 +2,7 @@ import { afterAll, beforeEach } from "vitest";
 import { sql } from "drizzle-orm";
 import { _resetRateLimitForTests } from "../../src/lib/csp-report.js";
 import { _resetExportRateLimitForTests } from "../../src/lib/data-export.js";
+import { _resetGuestRateLimitsForTests } from "../../src/routes/guest.js";
 import { getDb } from "../../src/lib/db.js";
 import {
   _resetEmailTransportForTests,
@@ -85,6 +86,10 @@ beforeEach(async () => {
   // POST /auth/me/export maintains an in-memory per-user frequency counter.
   // Reset it for the same reasons as the CSP bucket above.
   _resetExportRateLimitForTests();
+
+  // Guest checkout + find-my-order maintain in-memory per-IP limiters. Reset
+  // them so a limit tripped in one test doesn't bleed into the next.
+  _resetGuestRateLimitsForTests();
 });
 
 afterAll(async () => {
