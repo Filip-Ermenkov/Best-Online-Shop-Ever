@@ -16,9 +16,9 @@
     "@dnd-kit/sortable": "^10.0.0",
     "@dnd-kit/utilities": "^3.2.2",
     "@shop/api": "*",
-    "hono": "^4.12.25",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
+    "hono": "^4.12.25",
     "lucide-react": "^1.17.0",
     "next": "16.2.7",
     "react": "19.2.7",
@@ -30,14 +30,14 @@
   "devDependencies": {
     "@axe-core/playwright": "^4.10.2",
     "@playwright/test": "^1.50.1",
-    "@tailwindcss/postcss": "^4",
-    "@types/node": "^20",
+    "@tailwindcss/postcss": "^4.3.0",
+    "@types/node": "^25",
     "@types/react": "^19",
     "@types/react-dom": "^19",
-    "eslint": "^9",
-    "eslint-config-next": "16.2.2",
+    "eslint": "^10",
+    "eslint-config-next": "16.2.9",
     "eslint-plugin-jsx-a11y": "^6.10.2",
     "tailwindcss": "^4",
-    "typescript": "^5"
+    "typescript": "^6"
   }
 }
