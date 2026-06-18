@@ -33,14 +33,8 @@ name: Infra (Terraform)
 on:
   pull_request:
     branches: [main]
-    paths:
-      - 'infra/**'
-      - '.github/workflows/infra.yml'
   push:
     branches: [main]
-    paths:
-      - 'infra/**'
-      - '.github/workflows/infra.yml'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
