@@ -67,8 +67,13 @@ neonConfig.poolQueryViaFetch = true;
 // harmless no-op on a runtime that already wired its own constructor.
 const webSocketCtor = (globalThis as { WebSocket?: unknown }).WebSocket;
 if (typeof webSocketCtor === "function" && !neonConfig.webSocketConstructor) {
+  // Cast via `unknown`: as of @neondatabase/serverless 1.x,
+  // `neonConfig.webSocketConstructor` is a typed accessor
+  // (`WebSocketConstructor | undefined`), so a direct `Function`→that-type
+  // cast no longer overlaps (TS2352). The runtime `typeof … === "function"`
+  // guard above makes the assignment sound.
   neonConfig.webSocketConstructor =
-    webSocketCtor as typeof neonConfig.webSocketConstructor;
+    webSocketCtor as unknown as typeof neonConfig.webSocketConstructor;
 }
 
 /**
@@ -141,7 +146,7 @@ export function createDb({ databaseUrl, driver }: CreateDbOptions): DbClient {
     // "error" so a dead idle socket cannot crash the process — the next
     // transaction opens a fresh connection. NB: an "error" listener is the one
     // listener that does NOT disable `poolQueryViaFetch`.
-    pool.on("error", (err) => {
+    pool.on("error", (err: Error) => {
       console.error("[db] neon pool socket error:", err.message);
     });
     return drizzleNeon(pool, { schema, casing: "snake_case" });
