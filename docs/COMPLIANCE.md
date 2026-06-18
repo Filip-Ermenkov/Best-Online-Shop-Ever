@@ -89,7 +89,7 @@ exercised until deployment, the cell is annotated.
 | Best practice | Status | Notes |
 |---|---|---|
 | Infrastructure as Code (Terraform) | ✅ | `infra/` authored, validated (fmt/validate/tflint/checkov green), and **live-apply-validated 2026-06-07** — a successful end-to-end `terraform apply` returned HTTP 200 through CloudFront→OAC→Lambda. Roadmap item 17 |
-| Automated CI/CD | ✅ | GitHub Actions, 5 parallel jobs in ci.yml + CodeQL + SBOM workflows |
+| Automated CI/CD | ✅ | GitHub Actions — 6 parallel jobs in ci.yml (incl. an `npm audit` critical-gate) + CodeQL + SBOM + infra workflows; Dependabot version updates (`.github/dependabot.yml`) |
 | Atomic blue/green deployments | N/A today | Target: AWS Amplify atomic deploys once deployed |
 | Structured JSON logs | ✅ | Pino + PII redaction. Runs locally; lands in CloudWatch once deployed |
 | Per-request correlation IDs | ✅ | `X-Request-Id` |

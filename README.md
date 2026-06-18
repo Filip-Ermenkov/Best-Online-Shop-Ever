@@ -966,8 +966,8 @@ running (`npm run api:dev`, `npm run frontend:dev`):
 
 The full behaviour is covered by
 `backend/shop-api/tests/routes/seo.test.ts` and the pure-unit suite
-`backend/shop-api/tests/lib/seo.test.ts`. A detailed step-by-step manual test
-guide is in `docs/TESTING-seo-crawlability.md`.
+`backend/shop-api/tests/lib/seo.test.ts`; the design rationale is in
+`docs/ARCHITECTURE.md` §13.
 
 ### Durable email delivery (SQS → email-fn → SES)
 

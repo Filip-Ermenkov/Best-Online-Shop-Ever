@@ -585,10 +585,13 @@ not provisioned.
 
 ### 3.12 CI/CD — GitHub Actions
 
-**Today:** Three workflows in `.github/workflows/` —
+**Today:** Four workflows in `.github/workflows/` plus a Dependabot
+config (`.github/dependabot.yml`) —
 
-- **`ci.yml`** — five parallel jobs (`typecheck`, `lint`,
-  `auth-tests`, `email-tests`, `api-tests`) on every PR and push to
+- **`ci.yml`** — six parallel jobs (`typecheck`, `lint`,
+  `auth-tests`, `email-tests`, `api-tests`, and `audit` — an
+  informational `npm audit` plus a blocking gate on CRITICAL
+  advisories in the production tree) on every PR and push to
   `main`. `api-tests` uses a Postgres 17 service container.
 - **`codeql.yml`** — CodeQL `security-extended` query suite on
   JavaScript / TypeScript + the `actions` query pack on workflow
@@ -598,8 +601,14 @@ not provisioned.
   `@cyclonedx/cyclonedx-npm`, signs each via
   `actions/attest-build-provenance` (GitHub OIDC → Sigstore Fulcio
   → Rekor), attaches to releases.
+- **`infra.yml`** — gates `infra/` Terraform on PRs that touch it
+  (`fmt` / `validate` / `tflint` / `checkov`); deploy-less.
+- **`dependabot.yml`** (config, not a workflow) — automated, grouped,
+  cooldown-gated dependency *version* updates across npm, GitHub
+  Actions, Terraform, and Docker-Compose (Dependabot, not Renovate —
+  see §9.6).
 
-All three workflows pin third-party actions to commit SHAs, run
+All four workflows pin third-party actions to commit SHAs, run
 with top-level `permissions: contents: read`, set
 `persist-credentials: false` on checkouts, and use
 `concurrency.cancel-in-progress: true`.
