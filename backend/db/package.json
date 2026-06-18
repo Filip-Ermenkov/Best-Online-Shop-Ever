@@ -25,7 +25,7 @@
     "lint": "echo 'add eslint when shared config lands'"
   },
   "dependencies": {
-    "@neondatabase/serverless": "^0.10.4",
+    "@neondatabase/serverless": "^1.1.0",
     "dotenv": "^17.4.2",
     "drizzle-orm": "^0.45.2",
     "pg": "^8.21.0"
