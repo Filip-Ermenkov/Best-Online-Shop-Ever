@@ -89,9 +89,12 @@ updates:
   #    share a single root package-lock.json. Production and development
   #    dependencies are split into two groups so a routine devDependency bump
   #    never rides in the same PR as a runtime one (different blast radius,
-  #    different review depth). Production MAJORS are deliberately left OUT of
-  #    the group so each lands as its own reviewable PR. cooldown is longest
-  #    here: npm is the largest and most-attacked ecosystem.
+  #    different review depth). MAJORS (production AND development) are
+  #    deliberately left OUT of both groups, so each major lands as its own
+  #    reviewable, individually-revertible PR — a grouped multi-major dev bump
+  #    (e.g. eslint 10 + typescript 6 + @types/node 25 at once) is exactly the
+  #    pile-up to avoid. cooldown is longest here: npm is the most-attacked
+  #    ecosystem.
   # ---------------------------------------------------------------------------
   - package-ecosystem: "npm"
     directory: "/"
@@ -105,6 +108,15 @@ updates:
       - "dependencies"
       - "npm"
     versioning-strategy: increase
+    ignore:
+      # ESLint 10 (Feb 2026) removed context.getFilename(); the Next.js lint
+      # stack still ships eslint-plugin-react 7.x (peer dep: eslint up to ^9.7)
+      # via eslint-config-next, so eslint 10 crashes `npm run lint`
+      # (jsx-eslint/eslint-plugin-react#3977, vercel/next.js#89764). Hold ESLint
+      # at 9 until eslint-config-next / Next ship ESLint-10 support, then remove
+      # this entry and take the major deliberately.
+      - dependency-name: "eslint"
+        update-types: ["version-update:semver-major"]
     commit-message:
       prefix: "chore(deps)"
       prefix-development: "chore(deps-dev)"
@@ -122,6 +134,9 @@ updates:
       npm-development:
         applies-to: version-updates
         dependency-type: development
+        update-types:
+          - "minor"
+          - "patch"
       npm-security:
         applies-to: security-updates
         patterns:
