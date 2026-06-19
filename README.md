@@ -202,14 +202,17 @@ what needs to happen to get from today's repo state to that posture.
 - **`/guest/orders`** — **guest checkout (2026-06-16)**, anonymous (no
   `requireAuth`). Cart carried in the body (guests have no server cart),
   contact + delivery snapshotted onto the order, no account discount, per-IP
-  anti-abuse rate limit, `Idempotency-Key` replay. Returns the order plus a
-  256-bit `trackToken` (the spec's "Гост" capability URL).
+  anti-abuse rate limit (**distributed — Postgres-backed since 2026-06-19, so it
+  holds across Lambda containers**), `Idempotency-Key` replay. Returns the order
+  plus a 256-bit `trackToken` (the spec's "Гост" capability URL).
 - **`/track/:token`** — **guest order tracking (2026-06-16)**, anonymous,
   token-authenticated: `GET /track/:token` (status + details + timeline +
   shop contact at shipped/ready), `POST /track/:token/cancel` (cancel while
   `processing`), `GET|POST /track/:token/withdrawal[/eligibility]` (the 14-day
   right via the tracking page), `POST /track/find` (lost-link resend, **3/hour/
-  IP**, enumeration-resistant). Malformed/unknown tokens → uniform `404`.
+  IP**, enumeration-resistant — the cap is enforced **cluster-wide** via the
+  Postgres-backed limiter, not per-container). Malformed/unknown tokens →
+  uniform `404`.
 - `/addresses`, `/addresses/:id` — customer address-book CRUD
   (list / create / partial-update / soft-delete). `requireAuth`-gated,
   per-user ownership-scoped, 4-digit Bulgarian postal-code validation,
@@ -295,31 +298,36 @@ order-emails 5, orders 25, password-reset 19, products 15,
 verification 11, withdrawal 23, **guest 23** (guest checkout +
 `/track` view/cancel/withdrawal + find-my-order + authenticated
 cancel, 2026-06-16), **seo 11** (sitemap data + redirect-resolve +
-chain collapse + OpenAPI registration, 2026-06-16), **jobs 18** (pickup-expiry 4,
-unverified-cleanup 8, catalog-backup + dispatch 6 — the scheduler-fn
-sweeps, 2026-06-12), plus lib suites (phone-validation;
+chain collapse + OpenAPI registration, 2026-06-16), **jobs 19** (pickup-expiry 4,
+unverified-cleanup 9 — incl. the `rate_limit_counters` retention prune —
+catalog-backup + dispatch 6 — the scheduler-fn sweeps, 2026-06-12/2026-06-19),
+plus lib suites (phone-validation;
 **email-transport-config 3** — the `EMAIL_TRANSPORT=sqs` boot contract;
 **tracing 5** — the OpenTelemetry flag toggle, log↔trace correlation,
 and the `@hono/otel` request span, 2026-06-13;
-**guest-track 10** — the 256-bit token + the in-memory rate-limiter
-units, 2026-06-16; **seo 12** — the pure redirect-chain resolver +
-the sitemap URL builder, 2026-06-16) — **445 blocks**. The
+**guest-track 6** — the 256-bit token + the `clientIpFromXff` helper,
+2026-06-16; **rate-limit-db 6** — the distributed Postgres-backed limiter:
+count-to-limit, cross-instance shared budget, no over-increment, window roll,
+subject isolation, fail-open, 2026-06-19; **seo 12** — the pure redirect-chain
+resolver + the sitemap URL builder, 2026-06-16) — **448 blocks**. The
 `csp-report` and `phone` suites are table-driven (`it.each`), so
-`vitest run` expands them and reports **~479 cases total** (run
+`vitest run` expands them and reports **~482 cases total** (run
 `vitest run` for the exact figure), all against a real `shop_test`
 Postgres in CI.
 
 ### Backend (`@shop/db` schema)
 
-30 tables, 32 FKs, 46 indexes, 10 enums, 5 migrations
+31 tables, 32 FKs, 47 indexes, 10 enums, 6 migrations
 (`0000_initial.sql`, `0001_orders_sequence.sql`,
 `0002_complaints_withdrawal.sql`,
 `0003_admin_mfa_replay_guard.sql` — adds `users.mfa_last_used_step` +
 `mfa_enrolled_at` for the admin TOTP flow,
 `0004_scheduler_jobs.sql` — adds the two scheduler claim markers
 `orders.pickup_expired_notified_at` +
-`users.unverified_deletion_warning_at` and their partial indexes).
-Idempotent seed in `backend/db/scripts/seed.ts`.
+`users.unverified_deletion_warning_at` and their partial indexes,
+`0005_rate_limit_counters.sql` — adds the `rate_limit_counters` table
+(composite-PK fixed-window counters) backing the distributed guest
+rate limiters). Idempotent seed in `backend/db/scripts/seed.ts`.
 
 ### Backend (`@shop/auth`)
 
@@ -417,8 +425,11 @@ by hand locally (`npm --workspace @shop/api run job -- <name>
   `unverified_deletion_warning_at` + fresh 24h token), day-7 HARD
   delete of unverified customers (no orders ⇒ nothing legally
   retained; `role='customer'` + `NOT EXISTS(orders)` rails keep the
-  bootstrap admin and any anomaly out), plus the 180-day
-  `login_attempts` retention prune the schema promised since 0000.
+  bootstrap admin and any anomaly out), the 180-day
+  `login_attempts` retention prune the schema promised since 0000,
+  plus (2026-06-19) a `rate_limit_counters` prune that drops counter
+  rows from windows older than 2 days — the one janitor that keeps the
+  distributed rate-limiter table bounded without its own cron.
 
 Migration `0004_scheduler_jobs` adds the two claim markers + their
 partial indexes. Job failures propagate (async invoke → Lambda
@@ -919,7 +930,8 @@ order is „Обработва се"; once an admin moves it to „Приета"
 **Подай рекламация / Върни стока** form appears. The footer's **Намери
 поръчката ми (гост)** link goes to `/track/find`, which re-sends the link for a
 matching order number + email (always shows the same neutral message; max
-3/hour/IP).
+3/hour/IP — enforced cluster-wide via the Postgres `rate_limit_counters`
+table, so it holds across Lambda containers, not just one).
 
 Backend-only (no browser), against `npm run api:dev`:
 

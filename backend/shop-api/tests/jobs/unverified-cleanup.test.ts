@@ -86,6 +86,7 @@ describe("runUnverifiedCleanupJob — day-6 warning", () => {
       warningEmailsSent: 1,
       deleted: 0,
       prunedLoginAttempts: 0,
+      prunedRateLimits: 0,
     });
 
     const db = getDb();
@@ -160,6 +161,7 @@ describe("runUnverifiedCleanupJob — day-6 warning", () => {
       warningEmailsSent: 0,
       deleted: 0,
       prunedLoginAttempts: 0,
+      prunedRateLimits: 0,
     });
 
     const db = getDb();
@@ -177,6 +179,7 @@ describe("runUnverifiedCleanupJob — day-6 warning", () => {
       warningEmailsSent: 1,
       deleted: 0,
       prunedLoginAttempts: 0,
+      prunedRateLimits: 0,
     });
   });
 });
@@ -269,6 +272,7 @@ describe("runUnverifiedCleanupJob — day-7 deletion", () => {
       warningEmailsSent: 0,
       deleted: 1,
       prunedLoginAttempts: 0,
+      prunedRateLimits: 0,
     });
     expect(await userExists(user.id)).toBe(false);
   });
@@ -311,6 +315,51 @@ describe("runUnverifiedCleanupJob — login_attempts retention", () => {
     expect(remaining.map((r) => r.email).sort()).toEqual([
       "recent@example.com",
       "today@example.com",
+    ]);
+  });
+});
+
+describe("runUnverifiedCleanupJob — rate_limit_counters retention", () => {
+  it("prunes counter rows from windows older than the 2-day horizon, keeps recent ones", async () => {
+    const db = getDb();
+    await db.insert(schema.rateLimitCounters).values([
+      // Past the 2-day horizon — dead windows, must go.
+      {
+        bucket: "guest_find",
+        subject: "1.1.1.1",
+        windowStart: daysAgo(3),
+        count: 3,
+      },
+      {
+        bucket: "guest_place",
+        subject: "2.2.2.2",
+        windowStart: daysAgo(10),
+        count: 1,
+      },
+      // Inside the horizon — must stay.
+      {
+        bucket: "guest_find",
+        subject: "3.3.3.3",
+        windowStart: daysAgo(1),
+        count: 2,
+      },
+      {
+        bucket: "guest_place",
+        subject: "4.4.4.4",
+        windowStart: daysAgo(0.01),
+        count: 1,
+      },
+    ]);
+
+    const result = await runUnverifiedCleanupJob({ now: NOW });
+    expect(result.prunedRateLimits).toBe(2);
+
+    const remaining = await db
+      .select({ subject: schema.rateLimitCounters.subject })
+      .from(schema.rateLimitCounters);
+    expect(remaining.map((r) => r.subject).sort()).toEqual([
+      "3.3.3.3",
+      "4.4.4.4",
     ]);
   });
 });

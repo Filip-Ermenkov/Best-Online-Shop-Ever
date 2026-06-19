@@ -118,8 +118,9 @@ exercised until deployment, the cell is annotated.
 | Zod schema validation on every endpoint | ✅ | |
 | WAF managed rules | N/A today | Target: AWS WAF Common + SQLi managed rules, or Cloudflare equivalent |
 | `__Host-`-prefixed session cookies | ✅ Code ready | Switches on `NODE_ENV=production` |
-| Brute-force defence (per-email) | ✅ | 5 fails / 15 min lockout |
+| Brute-force defence (per-email) | ✅ | 5 fails / 15 min lockout (DB-backed `login_attempts`) |
 | Account enumeration resistance | ✅ | Identical responses for known/unknown emails on register, login, forgot-password, email-change/request |
+| **Distributed per-IP rate limiting (public guest surface)** | ✅ | Lost-link resend 3/h/IP + guest order placement 30/h/IP enforced **cluster-wide** via the Postgres `rate_limit_counters` table (single-statement atomic upsert) — not per-Lambda-container in-memory (2026-06-19). ARCHITECTURE.md §13 |
 | RFC 9457 Problem Details | ✅ | No internal-state leakage |
 | Encryption at rest | N/A today | Target: Neon-managed encryption + S3 SSE |
 | Idempotency on orders | ✅ | `Idempotency-Key` UNIQUE on orders row |

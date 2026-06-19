@@ -18,7 +18,8 @@ import {
   issueGuestTrackToken,
   isWellFormedTrackToken,
 } from "../lib/guest-track.js";
-import { clientIpFromXff, createRateLimiter } from "../lib/rate-limit.js";
+import { clientIpFromXff } from "../lib/rate-limit.js";
+import { createDbRateLimiter } from "../lib/rate-limit-db.js";
 import { cancelOrderByCustomer } from "../lib/order-cancellation.js";
 import {
   sendOrderConfirmationEmail,
@@ -61,30 +62,39 @@ import {
  * same enumeration-resistant stance the rest of the orders API takes.
  */
 
-// ─── Anti-abuse limiters (in-memory, per container — see lib/rate-limit.ts) ──
+// ─── Anti-abuse limiters (distributed — Postgres-backed, see lib/rate-limit-db.ts) ──
+//
+// These were in-memory `Map`s, which on Lambda are per-CONTAINER: the effective
+// ceiling multiplied by the number of warm containers and reset on every cold
+// start, so the hard per-IP guarantees below did not actually hold in
+// production. They now count in `rate_limit_counters` so the limit holds
+// cluster-wide — the same DB-as-shared-state stance as the login lockout and the
+// scheduler claim markers (ARCHITECTURE §13). State is cleared between tests by
+// truncating `rate_limit_counters` (tests/setup/per-test.ts), so there is no
+// in-memory reset hook any more.
 
 /**
  * Anonymous order placement is a spam/COD-fraud vector, so we cap it per IP.
  * Generous (a real shopper places one order); the cap only bites bots. The
  * Idempotency-Key already de-dupes honest retries, so this never blocks them.
  */
-const placeLimiter = createRateLimiter({ limit: 30, windowMs: 60 * 60 * 1000 });
+const placeLimiter = createDbRateLimiter({
+  bucket: "guest_place",
+  limit: 30,
+  windowMs: 60 * 60 * 1000,
+  logger: baseLogger,
+});
 
 /**
  * find-my-order resend: spec §7 mandates "максимум 3 заявки на час от един IP
- * адрес". This is the exact knob.
+ * адрес". This is the exact knob — and now it is enforced cluster-wide.
  */
-const findLimiter = createRateLimiter({ limit: 3, windowMs: 60 * 60 * 1000 });
-
-/**
- * Test-only: clear the in-memory limiter windows. Called from tests/setup
- * (per-test.ts) `beforeEach`, mirroring the CSP-report and data-export reset
- * hooks, so a limit tripped in one test never bleeds into the next.
- */
-export function _resetGuestRateLimitsForTests(): void {
-  placeLimiter.reset();
-  findLimiter.reset();
-}
+const findLimiter = createDbRateLimiter({
+  bucket: "guest_find",
+  limit: 3,
+  windowMs: 60 * 60 * 1000,
+  logger: baseLogger,
+});
 
 // ─── Shared DTO fragments ────────────────────────────────────────────────────
 
@@ -440,7 +450,7 @@ guestRoutes.openapi(placeGuestOrderRoute, async (c) => {
   const ip = clientIpFromXff(c.req.header("x-forwarded-for"));
 
   // ─ Anti-abuse rate limit ─────────────────────────────────────────────────
-  if (!placeLimiter.hit(ip).allowed) {
+  if (!(await placeLimiter.hit(ip)).allowed) {
     throw new ApiError({
       type: "/problems/guest-order-rate-limited",
       title: "Too Many Requests",
@@ -864,7 +874,7 @@ trackRoutes.openapi(findOrderRoute, async (c) => {
   const db = getDb();
   const ip = clientIpFromXff(c.req.header("x-forwarded-for"));
 
-  if (!findLimiter.hit(ip).allowed) {
+  if (!(await findLimiter.hit(ip)).allowed) {
     throw new ApiError({
       type: "/problems/find-rate-limited",
       title: "Too Many Requests",

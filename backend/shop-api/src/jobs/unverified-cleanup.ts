@@ -50,6 +50,14 @@ export const UNVERIFIED_RETENTION_DAYS = 7;
 export const UNVERIFIED_WARNING_DAYS = 6;
 /** Schema-promised audit-log retention (backend/db schema/auth.ts). */
 export const LOGIN_ATTEMPTS_RETENTION_DAYS = 180;
+/**
+ * Distributed rate-limit counters self-prune here. The longest window in use is
+ * 1 hour (guest find/place), so any row whose window started more than this many
+ * days ago is certainly dead — keeping a 2-day horizon needs no per-limiter
+ * knowledge and leaves generous slack. Bounds `rate_limit_counters` to roughly
+ * "active + last couple of days" so it never grows unbounded without its own cron.
+ */
+export const RATE_LIMIT_RETENTION_DAYS = 2;
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -62,6 +70,8 @@ export interface UnverifiedCleanupResult {
   deleted: number;
   /** login_attempts rows older than the 180-day retention, pruned. */
   prunedLoginAttempts: number;
+  /** rate_limit_counters rows from windows older than the 2-day horizon, pruned. */
+  prunedRateLimits: number;
 }
 
 export async function runUnverifiedCleanupJob(opts?: {
@@ -179,10 +189,31 @@ export async function runUnverifiedCleanupJob(opts?: {
     );
   }
 
+  // ── Phase 4: rate_limit_counters prune ────────────────────────────────────
+  // The distributed limiters (lib/rate-limit-db.ts) leave one row per
+  // (bucket, subject, window). Past windows are never read again, so anything
+  // older than the 2-day horizon is dead weight — drop it. This is the table's
+  // only janitor; no dedicated cron, same idempotent-sweep model as above.
+  const rateLimitCutoff = new Date(
+    now.getTime() - RATE_LIMIT_RETENTION_DAYS * DAY_MS,
+  );
+  const prunedRateLimitRows = await db
+    .delete(schema.rateLimitCounters)
+    .where(lt(schema.rateLimitCounters.windowStart, rateLimitCutoff))
+    .returning();
+
+  if (prunedRateLimitRows.length > 0) {
+    logger?.info(
+      { count: prunedRateLimitRows.length },
+      "rate_limit_counters_pruned",
+    );
+  }
+
   return {
     warned: claimed.length,
     warningEmailsSent,
     deleted: deletedRows.length,
     prunedLoginAttempts: prunedRows.length,
+    prunedRateLimits: prunedRateLimitRows.length,
   };
 }
