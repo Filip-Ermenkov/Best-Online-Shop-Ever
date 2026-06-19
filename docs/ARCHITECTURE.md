@@ -1908,6 +1908,67 @@ serving design (2026-06-16):
   policy is one editable list, and non-production hosts return a blanket
   `Disallow: /`.
 
+### 13.x Rate limiting is distributed (Postgres), not in-memory — and not DynamoDB/Redis
+
+- **The defect this fixes.** The public guest surface caps abuse per IP — the
+  spec-§7 lost-link resend at 3/hour and anonymous order placement at 30/hour.
+  The first implementation kept those counters in a per-process `Map`. On Lambda
+  that is per-**container** state: with N warm containers the effective ceiling
+  is N × limit, and every cold start wipes the window. So the hard guarantee the
+  product copy asserts ("максимум 3 заявки на час от един IP адрес") silently did
+  **not** hold in the target deployment. The rest of the codebase already counted
+  in shared state — the login lockout reads `login_attempts`, forgot-password /
+  resend / email-change count token rows — so the in-memory guest limiter was the
+  one place that regressed the standard. This slice brings it back in line.
+- **Postgres, because it is the state every container already shares.** The
+  counter lives in `rate_limit_counters` (composite PK `(bucket, subject,
+  window_start)`, an `integer` count). This is the same "the database marker *is*
+  the coordination primitive" stance as the scheduler claim markers and the
+  DB-backed lockout — **no new infrastructure, no new trust surface**. DynamoDB
+  was rejected for the same reason the scheduler jobs rejected it (we keep one
+  datastore; an atomic-counter table in Dynamo would be a second one with its own
+  IAM, capacity model, and failure semantics). Redis/Upstash was rejected because
+  it adds a network dependency and a long-lived credential for what is a
+  low-traffic abuse dampener — the exact "is this complexity justified?" test from
+  §14 that the project applies to every dependency.
+- **Atomicity with no advisory lock.** One statement does check-and-count:
+  `INSERT … VALUES (…, 1) ON CONFLICT (pk) DO UPDATE SET count = count + 1 WHERE
+  count < <limit> RETURNING count`. Postgres locks the conflicting row and
+  re-reads its latest committed version before applying the UPDATE, so concurrent
+  writers serialise on the row lock with **no lost increments** — verified with a
+  50-parallel-hit test that admits exactly the limit. This is deliberately
+  simpler than the common `pg_advisory_xact_lock` recipe (e.g. Neon's how-to),
+  which needs the lock only because it reads the count in a *second* statement;
+  `RETURNING` collapses that to one round-trip. The `WHERE count < limit` guard
+  means an already-blocked caller is **not** re-incremented (a flood can't grow
+  the row unboundedly, and a blocked hit costs no extra write): when the guard
+  fails the statement returns zero rows, and that empty result *is* the "blocked"
+  signal.
+- **Fixed (tumbling) window, computed app-side.** `window_start = floor(now /
+  windowMs) * windowMs`, stored as part of the PK, so a new window is just a new
+  row that starts again at 1 — no reset/CASE logic. The accepted trade-off is
+  fixed-window boundary amplification (up to ~2× across the instant a window
+  rolls); that is fine for an abuse dampener (it matches the semantics the
+  in-memory limiter already had) and never weakens enumeration resistance, which
+  comes from the uniform response, not this counter. The clock is injectable, so
+  window behaviour is unit-tested deterministically.
+- **Fail-open.** A limiter fault must not take down a public endpoint, and this
+  counter is a dampener, not a security boundary — the 256-bit tracking token is.
+  A DB error in the limiter is logged and allows the request.
+- **Two limiters stay in-memory, by explicit decision.** *csp-report* (60/min/IP)
+  is fail-open noise control on a fire-hose endpoint; a per-report DB write would
+  itself be a write-amplification DoS vector, so the bounded in-memory bucket is
+  the correct design there. *data-export* (5/hour/user) sits behind a **mandatory
+  password re-auth** — the re-auth is the real, already-distributed control, and
+  the counter is a best-effort secondary email-bomb brake. Both are documented
+  here rather than silently left as the kind of per-container limiter this slice
+  set out to remove; promoting either to the DB limiter is a one-line change if a
+  reason ever appears.
+- **Retention.** Past windows are never read again, so the daily
+  `unverified-cleanup` sweep drops `rate_limit_counters` rows older than 2 days
+  (the longest window is 1 hour) — the table's only janitor, same idempotent-sweep
+  model as the `login_attempts` prune, no dedicated cron.
+
 ## 14. Honest assessment vs A+ target
 
 **Current state, scored against AWS Well-Architected:**
@@ -2457,6 +2518,30 @@ Ranked by `(impact ÷ effort)` — highest leverage first. Items marked
       Pure logic in `lib/redirect-resolve.ts` + `lib/sitemap.ts` (injectable,
       DB-free unit tests). Tests: `tests/routes/seo.test.ts` +
       `tests/lib/seo.test.ts`. No migration. Design rationale in §13.
+
+44. ✅ **Distributed (Postgres-backed) rate limiting — shipped 2026-06-19.**
+    Closed a serverless-correctness defect, not a missing feature: the public
+    guest limiters (lost-link resend 3/h/IP, anonymous placement 30/h/IP) kept
+    their counters in a per-process `Map`, which on Lambda is per-CONTAINER — the
+    effective ceiling multiplied by warm-container count and reset on cold start,
+    so the spec's hard "3 заявки на час от един IP" guarantee did not actually
+    hold in production. New `rate_limit_counters` table (migration
+    `0005_rate_limit_counters`, composite-PK fixed-window counters) + a
+    `lib/rate-limit-db.ts` limiter whose check-and-count is a single atomic
+    `INSERT … ON CONFLICT … DO UPDATE SET count = count + 1 WHERE count < limit
+    RETURNING count` — race-free under the row lock with **no advisory lock**
+    (proved with a 50-parallel-hit "exactly-the-limit" test). The guest routes
+    now `await` it; the old in-memory `createRateLimiter` was removed (its only
+    consumer was the guest surface). `csp-report` and `data-export` stay
+    in-memory **by explicit decision** (fire-hose fail-open noise control; and a
+    secondary brake behind mandatory password re-auth, respectively) — both now
+    documented in §13 rather than left as silent per-container limiters. The
+    daily `unverified-cleanup` sweep prunes counter rows older than 2 days (no
+    new cron). Tests: `tests/lib/rate-limit-db.test.ts` (6, incl. the
+    cross-instance shared-budget proof) + the new prune case in
+    `tests/jobs/unverified-cleanup.test.ts`. Brings the guest surface up to the
+    DB-backed-counter standard the auth surface (lockout, token-count limits)
+    already met. Full rationale in §13.
 
 **Doing items 15–27 closes every meaningful 2026 gap in ~4–6
 working days. Items 28–33 raise the quality bar further at ~3 more

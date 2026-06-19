@@ -12,7 +12,12 @@ Hono on Lambda. Same handler runs locally on Node via `@hono/node-server`.
 > (`src/jobs/*` → the `scheduler-fn` Lambda bundle, 2026-06-12). The
 > authoritative, up-to-date route
 > inventory lives in the root `README.md` → "What's wired up"; the
-> machine-readable contract is `GET /openapi.json`. The newest slice is
+> machine-readable contract is `GET /openapi.json`. The newest change is
+> **distributed (Postgres-backed) rate limiting** (2026-06-19) — the public
+> guest limiters (`/track/find` 3/h/IP, `/guest/orders` 30/h/IP) moved off a
+> per-container in-memory `Map` onto the `rate_limit_counters` table
+> (`lib/rate-limit-db.ts`), so the caps hold cluster-wide on Lambda; rationale in
+> `docs/ARCHITECTURE.md` §13. The newest feature slice before it was
 > **SEO / crawlability** — the anonymous `GET /sitemap` (live-catalog sitemap
 > data with accurate `lastmod`) + `GET /redirects/resolve` (serves the 301s the
 > category cascade-delete writes), 2026-06-16. Preceded by **guest checkout +

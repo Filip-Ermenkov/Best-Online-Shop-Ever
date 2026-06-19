@@ -4,12 +4,14 @@ import {
   issueGuestTrackToken,
   isWellFormedTrackToken,
 } from "../../src/lib/guest-track.js";
-import { clientIpFromXff, createRateLimiter } from "../../src/lib/rate-limit.js";
+import { clientIpFromXff } from "../../src/lib/rate-limit.js";
 
 /**
- * Pure-unit coverage for the guest tracking-token + rate-limit primitives.
- * These run with no DB, mirroring the @shop/auth crypto suites. The route-level
- * behaviour is exercised in tests/routes/guest.test.ts.
+ * Pure-unit coverage for the guest tracking-token + client-IP primitives. These
+ * run with no DB, mirroring the @shop/auth crypto suites. The per-IP rate limit
+ * is now distributed (Postgres-backed) and exercised in
+ * tests/lib/rate-limit-db.test.ts; the route-level behaviour is in
+ * tests/routes/guest.test.ts.
  */
 
 describe("guest tracking token", () => {
@@ -47,42 +49,7 @@ describe("guest tracking token", () => {
   });
 });
 
-describe("rate limiter", () => {
-  it("allows up to the limit then blocks within the window", () => {
-    let clock = 0;
-    const rl = createRateLimiter({ limit: 3, windowMs: 1000, now: () => clock });
-    expect(rl.hit("ip").allowed).toBe(true);
-    expect(rl.hit("ip").allowed).toBe(true);
-    const third = rl.hit("ip");
-    expect(third.allowed).toBe(true);
-    expect(third.remaining).toBe(0);
-    expect(rl.hit("ip").allowed).toBe(false);
-  });
-
-  it("isolates keys", () => {
-    let clock = 0;
-    const rl = createRateLimiter({ limit: 1, windowMs: 1000, now: () => clock });
-    expect(rl.hit("a").allowed).toBe(true);
-    expect(rl.hit("a").allowed).toBe(false);
-    expect(rl.hit("b").allowed).toBe(true);
-  });
-
-  it("resets after the window elapses", () => {
-    let clock = 0;
-    const rl = createRateLimiter({ limit: 1, windowMs: 1000, now: () => clock });
-    expect(rl.hit("ip").allowed).toBe(true);
-    expect(rl.hit("ip").allowed).toBe(false);
-    clock += 1001;
-    expect(rl.hit("ip").allowed).toBe(true);
-  });
-
-  it("is bounded and fail-open under a flood of distinct keys", () => {
-    const rl = createRateLimiter({ limit: 1, windowMs: 10_000, maxKeys: 5 });
-    for (let i = 0; i < 100; i++) {
-      expect(rl.hit(`k${i}`).allowed).toBe(true);
-    }
-  });
-
+describe("clientIpFromXff", () => {
   it("extracts the left-most XFF hop, falling back to 'unknown'", () => {
     expect(clientIpFromXff("1.2.3.4, 5.6.7.8")).toBe("1.2.3.4");
     expect(clientIpFromXff("  9.9.9.9 ")).toBe("9.9.9.9");

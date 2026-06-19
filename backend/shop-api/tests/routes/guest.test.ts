@@ -21,8 +21,8 @@ import { seedSmallCatalog } from "../fixtures.js";
  *   POST /orders/:orderNumber/cancel   (authenticated customer cancel)
  *
  * The per-test TRUNCATE (tests/setup/per-test.ts) gives every test a clean DB
- * and resets the in-memory rate limiters, so we don't juggle IPs except in the
- * dedicated rate-limit test.
+ * and clears the distributed rate-limit counters (`rate_limit_counters`), so we
+ * don't juggle IPs except in the dedicated rate-limit test.
  */
 
 let app: ReturnType<typeof buildApp>;

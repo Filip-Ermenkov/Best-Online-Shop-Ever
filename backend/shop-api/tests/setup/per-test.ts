@@ -2,7 +2,6 @@ import { afterAll, beforeEach } from "vitest";
 import { sql } from "drizzle-orm";
 import { _resetRateLimitForTests } from "../../src/lib/csp-report.js";
 import { _resetExportRateLimitForTests } from "../../src/lib/data-export.js";
-import { _resetGuestRateLimitsForTests } from "../../src/routes/guest.js";
 import { getDb } from "../../src/lib/db.js";
 import {
   _resetEmailTransportForTests,
@@ -51,6 +50,10 @@ const TABLES_TO_TRUNCATE = [
   // to users is ON DELETE SET NULL, so be explicit rather than relying on
   // the users CASCADE to reach it.
   "catalog_backups",
+  // Distributed rate-limit counters (guest find/place limiters). No FK, so it
+  // is never reached by a CASCADE — clear it explicitly or a limit tripped in
+  // one test bleeds into the next.
+  "rate_limit_counters",
   // Settings / content
   "settings",
   "tos_versions",
@@ -87,9 +90,8 @@ beforeEach(async () => {
   // Reset it for the same reasons as the CSP bucket above.
   _resetExportRateLimitForTests();
 
-  // Guest checkout + find-my-order maintain in-memory per-IP limiters. Reset
-  // them so a limit tripped in one test doesn't bleed into the next.
-  _resetGuestRateLimitsForTests();
+  // The guest find/place limiters are now distributed (Postgres-backed); their
+  // state lives in `rate_limit_counters`, truncated above — no in-memory reset.
 });
 
 afterAll(async () => {
