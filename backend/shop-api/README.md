@@ -8,16 +8,23 @@ Hono on Lambda. Same handler runs locally on Node via `@hono/node-server`.
 > orders + 14-day withdrawal, address book, consent receipts, CSP
 > reporting, **admin auth (TOTP MFA)**, **admin order management**
 > (`/admin/orders/*`, 2026-06-10), **admin category management**
-> (`/admin/categories/*`, 2026-06-15), and the **scheduled jobs**
+> (`/admin/categories/*`, 2026-06-15), **admin product management**
+> (`/admin/products/*`, 2026-06-22), and the **scheduled jobs**
 > (`src/jobs/*` → the `scheduler-fn` Lambda bundle, 2026-06-12). The
 > authoritative, up-to-date route
 > inventory lives in the root `README.md` → "What's wired up"; the
-> machine-readable contract is `GET /openapi.json`. The newest change is the
-> **framework-error mapping** (2026-06-22) — the global `onError` now returns a
+> machine-readable contract is `GET /openapi.json`. The newest slice is
+> **admin product management** (2026-06-22) — the third admin CRUD slice
+> (`/admin/products/*`): product CRUD + within-category reorder + soft-delete
+> writing a 301 redirect + archive/restore, optimistic-locked on `updatedAt` and
+> audit-logged, activating the dormant `products` write surface and the
+> `product_images` table (backend only — the `/admin/products` frontend page is
+> still mock); rationale in `docs/ARCHITECTURE.md` §13. Alongside it the same day,
+> the **framework-error mapping** — the global `onError` now returns a
 > framework throw's true HTTP status instead of a blanket 500, so a malformed JSON
 > request body is `400 /problems/malformed-json` (the pure `lib/error-response.ts`
 > classifier), not a 500 that would mislead the client *and* burn the availability
-> SLO budget; rationale in `docs/ARCHITECTURE.md` §13. Before it,
+> SLO budget. Before those,
 > **distributed (Postgres-backed) rate limiting** (2026-06-19) — the public
 > guest limiters (`/track/find` 3/h/IP, `/guest/orders` 30/h/IP) moved off a
 > per-container in-memory `Map` onto the `rate_limit_counters` table

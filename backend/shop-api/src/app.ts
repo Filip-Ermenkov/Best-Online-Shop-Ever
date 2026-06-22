@@ -18,6 +18,7 @@ import { currentUser, type AuthVariables } from "./middleware/auth.js";
 import { adminAuthRoutes } from "./routes/admin/auth.js";
 import { adminCategoriesRoutes } from "./routes/admin/categories.js";
 import { adminOrdersRoutes } from "./routes/admin/orders.js";
+import { adminProductsRoutes } from "./routes/admin/products.js";
 import { addressesRoutes } from "./routes/addresses.js";
 import { authRoutes } from "./routes/auth.js";
 import { cartRoutes } from "./routes/cart.js";
@@ -221,6 +222,9 @@ export function buildApp() {
   // Admin category management — every route requireAdmin-gated inside the router.
   app.use("/admin/categories/*", currentUser);
   app.use("/admin/categories", currentUser);
+  // Admin product management — every route requireAdmin-gated inside the router.
+  app.use("/admin/products/*", currentUser);
+  app.use("/admin/products", currentUser);
 
   app.get("/health", (c) => c.json({ ok: true }));
 
@@ -230,6 +234,7 @@ export function buildApp() {
   app.route("/admin/auth", adminAuthRoutes);
   app.route("/admin/orders", adminOrdersRoutes);
   app.route("/admin/categories", adminCategoriesRoutes);
+  app.route("/admin/products", adminProductsRoutes);
   app.route("/cart", cartRoutes);
   app.route("/orders", ordersRoutes);
   app.route("/addresses", addressesRoutes);
