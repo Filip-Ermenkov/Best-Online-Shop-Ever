@@ -12,12 +12,17 @@ Hono on Lambda. Same handler runs locally on Node via `@hono/node-server`.
 > (`src/jobs/*` → the `scheduler-fn` Lambda bundle, 2026-06-12). The
 > authoritative, up-to-date route
 > inventory lives in the root `README.md` → "What's wired up"; the
-> machine-readable contract is `GET /openapi.json`. The newest change is
+> machine-readable contract is `GET /openapi.json`. The newest change is the
+> **framework-error mapping** (2026-06-22) — the global `onError` now returns a
+> framework throw's true HTTP status instead of a blanket 500, so a malformed JSON
+> request body is `400 /problems/malformed-json` (the pure `lib/error-response.ts`
+> classifier), not a 500 that would mislead the client *and* burn the availability
+> SLO budget; rationale in `docs/ARCHITECTURE.md` §13. Before it,
 > **distributed (Postgres-backed) rate limiting** (2026-06-19) — the public
 > guest limiters (`/track/find` 3/h/IP, `/guest/orders` 30/h/IP) moved off a
 > per-container in-memory `Map` onto the `rate_limit_counters` table
-> (`lib/rate-limit-db.ts`), so the caps hold cluster-wide on Lambda; rationale in
-> `docs/ARCHITECTURE.md` §13. The newest feature slice before it was
+> (`lib/rate-limit-db.ts`), so the caps hold cluster-wide on Lambda. The newest
+> feature slice was
 > **SEO / crawlability** — the anonymous `GET /sitemap` (live-catalog sitemap
 > data with accurate `lastmod`) + `GET /redirects/resolve` (serves the 301s the
 > category cascade-delete writes), 2026-06-16. Preceded by **guest checkout +

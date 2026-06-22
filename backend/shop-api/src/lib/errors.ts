@@ -74,6 +74,28 @@ export function badRequest(detail: string, errors?: Problem["errors"]): ApiError
   });
 }
 
+/**
+ * The request body could not be parsed as JSON (a SYNTAX failure, distinct from
+ * a schema-validation failure — RFC 9110 §15.5.1 / RFC 9457). 400, never 500: a
+ * 5xx tells the client the fault is the server's and an identical retry might
+ * succeed, which is wrong here, and a 5xx would also burn the availability SLI's
+ * error budget (5xx ÷ total; §15 items 24/25) on a client mistake.
+ *
+ * The detail is deliberately a FIXED string — it never reflects the offending
+ * token or any slice of the (possibly PII-bearing) request body back to the
+ * caller.
+ */
+export function malformedJson(
+  detail = "The request body could not be parsed as JSON.",
+): ApiError {
+  return new ApiError({
+    type: "/problems/malformed-json",
+    title: "Malformed JSON",
+    status: 400,
+    detail,
+  });
+}
+
 export function internal(detail = "Internal Server Error"): ApiError {
   return new ApiError({
     type: "about:blank",

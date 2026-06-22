@@ -291,9 +291,11 @@ what needs to happen to get from today's repo state to that posture.
   404 instead of 301 (SEO link-equity leak).
 - `/health`, `/openapi.json`
 
-Test counts as of 2026-06-16, by `it`/`test` block: addresses 28,
+Test counts as of 2026-06-22, by `it`/`test` block: addresses 28,
 admin-auth 17, **admin-orders 26**, **admin-categories 39**, auth 48, cart 30, categories 7,
 consent 10, csp-report 25, data-export 14, email-change 21,
+**error-handling 3** (the global `onError` framework-error contract — a
+malformed JSON body → 400 `/problems/malformed-json`, not 500; 2026-06-22),
 order-emails 5, orders 25, password-reset 19, products 15,
 verification 11, withdrawal 23, **guest 23** (guest checkout +
 `/track` view/cancel/withdrawal + find-my-order + authenticated
@@ -309,9 +311,12 @@ and the `@hono/otel` request span, 2026-06-13;
 2026-06-16; **rate-limit-db 6** — the distributed Postgres-backed limiter:
 count-to-limit, cross-instance shared budget, no over-increment, window roll,
 subject isolation, fail-open, 2026-06-19; **seo 12** — the pure redirect-chain
-resolver + the sitemap URL builder, 2026-06-16) — **448 blocks**. The
+resolver + the sitemap URL builder, 2026-06-16; **error-response 10** — the pure
+framework-error classifier: malformed-JSON detection, status-honouring, RFC 9110
+reason-phrase titles, and that `ApiError`/`ZodError`/unknown correctly fall
+through, 2026-06-22) — **461 blocks**. The
 `csp-report` and `phone` suites are table-driven (`it.each`), so
-`vitest run` expands them and reports **~482 cases total** (run
+`vitest run` expands them and reports **~495 cases total** (run
 `vitest run` for the exact figure), all against a real `shop_test`
 Postgres in CI.
 
