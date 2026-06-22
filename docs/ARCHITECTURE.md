@@ -76,10 +76,12 @@ Three actors are present in the codebase:
   `AdminAuthGate` (login → MFA → enrolment) wired to those endpoints. The
   first real admin CRUD slice — **order management** (`/admin/orders` list +
   detail + state-machine status transitions + CSV export) — shipped
-  2026-06-10, backend and frontend. Still pending: the REMAINING admin CRUD
-  pages (products, categories, customers, banners, archive, settings — mock
-  data) and the dedicated **`admin-api`** Lambda the admin panel will
-  eventually live on.
+  2026-06-10, backend and frontend, followed by **category management**
+  (2026-06-15, backend + frontend) and the **product management** BACKEND
+  (`/admin/products/*`, 2026-06-22; the `/admin/products` page is still mock
+  pending frontend wiring). Still pending: the remaining admin CRUD pages
+  (customers, banners, archive, settings — mock data) and the dedicated
+  **`admin-api`** Lambda the admin panel will eventually live on.
 
 Functional scope is in `docs/README.md`. Deployment status is in
 `README.md` ("Deployment status" section).
@@ -202,13 +204,14 @@ without WAF.
   `/account/reset-password`, `/account/delete`), cart, and orders are
   all real and wired to `@shop/api`. Storefront browsing
   (`/products/[...path]`, `/search`, home product rails) moved to the
-  live catalog API 2026-05-28. The admin sign-in (2026-06-08) and the
+  live catalog API 2026-05-28. The admin sign-in (2026-06-08), the
   admin **orders** pages (list + detail + status transitions,
-  2026-06-10) are real.
+  2026-06-10) and the admin **categories** page (2026-06-15) are real.
 - Pages still on mock data: home banner carousel, the checkout
   courier-office picker, and the remaining `/admin/*` pages
-  (dashboard, products, categories, customers, banners, archive,
-  settings).
+  (dashboard, products, customers, banners, archive, settings). The
+  `/admin/products` page is mock too, but its backend API shipped
+  2026-06-22 — only the frontend wiring is left.
 
 **Target (deployment):** AWS Amplify Hosting, two apps (shop + admin)
 on two CloudFront distributions.
@@ -245,12 +248,13 @@ runnable locally via `@hono/node-server`. Routes mounted in
 - **`admin-api`** — admin panel backend. Order / product / category /
   customer / discount CRUD, banner management, content versioning,
   backup orchestration. **Not yet split out.** Admin *authentication*
-  (`/admin/auth/*`, mandatory TOTP MFA — see below) and the first CRUD
-  slice — **order management** (`/admin/orders` list / detail /
-  state-machine status transitions / CSV export, shipped 2026-06-10) —
-  live in `shop-api` today as self-contained, portable Hono modules
-  (`routes/admin/*`) that will move here when the admin CRUD surface
-  justifies a separate Lambda + subdomain.
+  (`/admin/auth/*`, mandatory TOTP MFA — see below) and the CRUD slices
+  shipped so far — **order management** (2026-06-10), **category management**
+  (2026-06-15), and **product management** (backend, 2026-06-22) at
+  `/admin/orders/*`, `/admin/categories/*`, `/admin/products/*` — live in
+  `shop-api` today as self-contained, portable Hono modules (`routes/admin/*`)
+  that will move here when the admin CRUD surface justifies a separate
+  Lambda + subdomain.
 - **`scheduler-fn`** — three cron rules: daily catalog backup, hourly
   expired-pickup check, daily unverified-account cleanup (+ the
   login_attempts retention prune). **Shipped 2026-06-12** (roadmap
@@ -2015,6 +2019,51 @@ serving design (2026-06-16):
   (it can carry PII). Pure + DB-free, so the whole decision table is unit-tested
   without booting the app — the same convention as the rest of `lib/*.ts`.
 
+### 13.x Admin product CRUD — single-SKU, uniqueness across archived rows, image-by-key
+
+- **Single-SKU, no variant matrix (researched).** Each product carries one
+  `code` (SKU); there is no `product_variants` child table. The 2026 guidance is
+  unambiguous for a small catalog — "when a product has no variations, SKU and
+  product are one and the same, and the data model is extremely simple." A
+  variant/option matrix is a real cost (two-level ID resolution, a combinatorial
+  SKU table, variant-aware cart/checkout/search) that earns its keep only past a
+  genuine size/colour requirement. So variants are a deliberate §16 door, opened
+  on demand — the same posture as the search-infra and multi-tenant doors, not a
+  silent omission.
+- **Uniqueness checks deliberately span soft-deleted rows.** `products_slug_unique`
+  and `products_code_unique` are non-partial indexes, so an archived product still
+  holds its slug and SKU. The create/edit pre-checks therefore query ALL rows (not
+  just live ones): a collision returns a clean `409`
+  (`/problems/product-slug-conflict` / `…-code-conflict`) instead of letting the DB
+  constraint surface as a 500, and it is the correct behaviour anyway — a
+  soft-deleted slug still 301s away (SEO), and a SKU is a stable identifier. To
+  reuse an archived product's slug/SKU you restore it, not recreate it.
+- **Category parity for the lifecycle.** Optimistic locking is `updatedAt` +
+  `SELECT … FOR UPDATE` + a millisecond compare (no `version` column, no migration
+  — identical to the categories slice and for the same reasons). Soft-delete writes
+  a 301 `redirects` row from the product's canonical URL to its surviving category
+  (or home), mirroring the category cascade so a removed product URL 301s rather
+  than soft-404s; restore clears that redirect and re-homes an orphan (whose
+  category was cascade-deleted) to uncategorised so a live product never dangles
+  under a dead category. Every state change appends an `admin_audit_log` row.
+- **Images stored as S3 keys; the upload pipeline is a separate, infra-bearing
+  slice.** Create/PATCH accept an ordered image list of `{ s3Key, altText }` and
+  the public URL is derived at the edge by `buildImageUrl` — exactly the existing
+  categories/banners convention. No entity has an actual file-upload path yet. The
+  2026-correct one (researched) is a **presigned direct-to-S3 POST** — the browser
+  uploads straight to the bucket, never through Lambda (which has a 6 MB sync
+  payload cap and would pay for the bytes) — with the POST policy pinning a
+  content-type allowlist, a `content-length-range`, and a key prefix, plus a
+  `PutObject`-triggered Lambda that re-checks the real MIME by magic bytes (client
+  validation is bypassable), behind the bucket + CloudFront/OAC Terraform. Built
+  once it serves products, categories AND banners uniformly, so it is its own slice
+  rather than bolted onto this one.
+- **Pure helpers.** Slug resolution, image-list normalisation (trim / dedup / cap /
+  dense order), the canonical-URL builder for the redirect, and the three-way
+  `new_until` resolution live in `lib/product-admin.ts` — DB-free, unit-tested in
+  isolation, ready for a future `admin-api` Lambda, same split as
+  `lib/category-tree.ts` and `lib/order-status.ts`.
+
 ## 14. Honest assessment vs A+ target
 
 **Current state, scored against AWS Well-Architected:**
@@ -2304,11 +2353,27 @@ Ranked by `(impact ÷ effort)` — highest leverage first. Items marked
     no migration; see §13). First writer of the `redirects` and
     `admin_audit_log` (GDPR Art. 30) tables. 39 integration tests
     (admin-categories.test.ts), pure tree helpers unit-isolated in
-    `lib/category-tree.ts`. **What remains of the original item:** the
+    `lib/category-tree.ts`. **Products slice (backend) shipped 2026-06-22** —
+    `/admin/products/*`: offset list + category/stock/status filters + name/SKU
+    search; create (auto-slug from the Bulgarian name, end-of-category append,
+    SKU+slug uniqueness that deliberately SPANS archived rows so a collision is
+    a clean 409 not a DB-constraint 500); detail carrying an active-order count
+    (the delete warning); edit/move/re-image under the same `updatedAt` +
+    `SELECT … FOR UPDATE` optimistic lock as categories; within-category
+    reorder; soft-delete writing a 301 `redirect` to the surviving category or
+    home (mirrors the category cascade); and restore (clears the redirect,
+    re-homes an orphan whose category was removed to uncategorised). Single-SKU
+    model — no variant matrix (a §16 door, opened only on a real size/colour
+    need); images stored as S3 keys exactly like categories (the presigned
+    direct-to-S3 upload pipeline is its own infra-bearing slice — §13). No
+    migration (the `products` / `product_images` tables were dormant). 35
+    integration tests (admin-products.test.ts) + 17 pure-helper tests
+    (product-admin.test.ts). **What remains of the original item:** the
+    `/admin/products` FRONTEND wiring (the page is still mock data), the
     dedicated `admin-api` Lambda extraction (structural, with item 35's
-    module) and the REMAINING admin CRUD slices — products, customers,
-    banners, settings (each its own slice; the full categories-AND-products
-    interleaved „Наредба" ordering arrives with the products slice).
+    module), and the remaining admin CRUD slices — customers, banners,
+    settings (each its own slice; the full categories-AND-products interleaved
+    „Наредба" ordering arrives once the products page is wired).
 23. ✅ **Scheduler-fn Lambda + the three cron rules — shipped
     2026-06-12, live-validated 2026-06-13** (code + tests + Terraform;
     the manual `aws lambda invoke` drills for all three jobs passed on

@@ -57,11 +57,14 @@ Still not present in the repo (mentioned in `docs/ARCHITECTURE.md` as
 future work):
 
 - `backend/admin-api/` — admin Lambda. There is no separate admin-api
-  Lambda yet: admin **authentication** (`/admin/auth/*`) and the first
-  admin CRUD slice — **order management** (`/admin/orders/*`, shipped
-  2026-06-10) — live in `shop-api` as portable `routes/admin/*` modules.
-  The REMAINING admin CRUD flows (products, categories, customers,
-  banners, settings) are still stubbed on the frontend with mock data.
+  Lambda yet: admin **authentication** (`/admin/auth/*`) and the admin CRUD
+  slices shipped so far — **order management** (`/admin/orders/*`, 2026-06-10),
+  **category management** (`/admin/categories/*`, 2026-06-15), and **product
+  management** (`/admin/products/*`, backend 2026-06-22) — live in `shop-api`
+  as portable `routes/admin/*` modules. The `/admin/products` **frontend** page
+  is still mock pending a wiring slice; the REMAINING admin CRUD flows
+  (customers, banners, settings, archive) are still stubbed on the frontend
+  with mock data.
 - `scheduler-fn` — the scheduled-jobs Lambda (three cron rules: daily
   catalog backup, hourly pickup expiry, daily unverified-account
   cleanup + retention prune). **Shipped 2026-06-12** — there is no
@@ -171,6 +174,7 @@ they aren't. The honest state:
 | Admin authentication (TOTP MFA) | **Shipped end-to-end** — `shop-api` `/admin/auth/*` + the `/admin` frontend `AdminAuthGate` (login → MFA → enrolment) |
 | Admin order management | **Shipped end-to-end (2026-06-10)** — `shop-api` `/admin/orders/*` (list + filters + search, detail + history, state-machine status transitions with optimistic locking + customer emails, CSV export) + the real `/admin/orders` UI |
 | Admin category management | **Shipped end-to-end (2026-06-15)** — `shop-api` `/admin/categories/*` (tree with counts, create, rename/move with cycle prevention + optimistic locking, sibling reorder, deletion-impact preview, cascade soft-delete writing 301 `redirects` + `admin_audit_log`) + the real `/admin/categories` UI |
+| Admin product management | **Backend shipped (2026-06-22)** — `shop-api` `/admin/products/*` (offset list + filters + search, create with auto-slug + SKU/slug uniqueness spanning archived rows, detail with active-order count, edit/move/re-image with `updatedAt` optimistic locking, within-category reorder, soft-delete writing a 301 `redirect`, restore) + `admin_audit_log`. Activates the dormant `products` write surface + `product_images` table. **Frontend `/admin/products` page still mock** — wiring is the follow-up |
 | Guest checkout + order tracking | **Shipped end-to-end (2026-06-16)** — the spec's "Гост" role (orders without an account). `shop-api` `/guest/orders` (anonymous checkout, 256-bit capability token) + `/track/:token` (view, cancel-while-processing, 14-day withdrawal) + `/track/find` (rate-limited lost-link resend) + the public `/track/[token]` & `/track/find` UI. Checkout no longer forces login (`POST /orders/:n/cancel` also added for account customers). No migration — activates the dormant `orders.guest_track_token` column |
 | `admin-api` Lambda | Not built (admin auth + the orders slice currently live in `shop-api`; extract when the admin CRUD surface grows) |
 | `scheduler-fn` Lambda | **Shipped 2026-06-12, live-validated 2026-06-13** (roadmap item 23) — jobs in `@shop/api` `src/jobs/*` + own pure-JS bundle (`build:scheduler`) + `infra/scheduler.tf` (EventBridge Scheduler, 3 Sofia-time crons, delivery DLQ, backup bucket, 2 alarms) behind `enable_scheduler`. All three `aws lambda invoke` drills passed against the Neon test branch; the catalog-backup drill also caught a prod-only bug (the `neon-http` driver can't run `db.transaction(...)`) now fixed by the Neon serverless WebSocket driver — see [decisions](#architecture-decisions-in-force). Runbook in `infra/README.md` |
@@ -269,6 +273,34 @@ what needs to happen to get from today's repo state to that posture.
   products, writes 301 `redirects` rows to the surviving parent / home,
   requires `confirmConsequences: true`). Writes the first `admin_audit_log`
   rows (GDPR Art. 30). Un-mocks the `/admin/categories` screen.
+- `/admin/products/*` — **admin product management** (2026-06-22), the
+  third admin CRUD slice, `requireAdmin`-gated (uniform `404`): `GET
+  /admin/products` (offset-paginated list, 25/page with total count;
+  filters: category, stock status, active / archived / all; search across
+  name + SKU; sort by newest / oldest / price / name), `POST
+  /admin/products` (create — slug auto-derived from the Bulgarian name,
+  appended to the end of its category; SKU + slug uniqueness enforced across
+  archived rows too, so a clean `409` instead of a DB constraint `500`;
+  ordered image set supplied by S3 key), `GET /admin/products/:id` (full
+  detail incl. the ordered images, category breadcrumb, and the active-order
+  count that powers the delete warning; serves archived rows too), `PATCH
+  /admin/products/:id` (edit / re-price / re-stock / **move** / re-image,
+  optimistic-locked on `updatedAt` via `SELECT … FOR UPDATE` → `409
+  /problems/product-version-conflict`; `409 /problems/product-slug-conflict`
+  / `…-code-conflict` on a collision), `POST /admin/products/reorder`
+  (rewrite one category's product `display_order`; the supplied id set must
+  equal that layer or `409`), `DELETE /admin/products/:id` (soft-delete +
+  a 301 `redirects` row to the surviving category or home, mirroring the
+  category cascade; requires `confirmConsequences: true`), and `POST
+  /admin/products/:id/restore` (un-archive + clear the redirect, re-homing an
+  orphan whose category was removed to uncategorised). Every state change
+  appends an `admin_audit_log` row (GDPR Art. 30). **Activates the dormant
+  `products` write surface + the `product_images` table** (the catalog could
+  previously only be seeded via SQL). Backend only this slice — the
+  `/admin/products` frontend page stays on mock data pending a wiring
+  follow-up; images are stored as S3 keys exactly like the categories slice
+  (the actual presigned direct-to-S3 upload pipeline is its own infra-bearing
+  slice — see `docs/ARCHITECTURE.md` §13).
 - `/csp-report` — accepts both legacy `application/csp-report` and
   modern `application/reports+json`. Anonymous (intentionally outside
   the auth chain).
@@ -292,7 +324,8 @@ what needs to happen to get from today's repo state to that posture.
 - `/health`, `/openapi.json`
 
 Test counts as of 2026-06-22, by `it`/`test` block: addresses 28,
-admin-auth 17, **admin-orders 26**, **admin-categories 39**, auth 48, cart 30, categories 7,
+admin-auth 17, **admin-orders 26**, **admin-categories 39**, **admin-products 35**,
+auth 48, cart 30, categories 7,
 consent 10, csp-report 25, data-export 14, email-change 21,
 **error-handling 3** (the global `onError` framework-error contract — a
 malformed JSON body → 400 `/problems/malformed-json`, not 500; 2026-06-22),
@@ -314,9 +347,12 @@ subject isolation, fail-open, 2026-06-19; **seo 12** — the pure redirect-chain
 resolver + the sitemap URL builder, 2026-06-16; **error-response 10** — the pure
 framework-error classifier: malformed-JSON detection, status-honouring, RFC 9110
 reason-phrase titles, and that `ApiError`/`ZodError`/unknown correctly fall
-through, 2026-06-22) — **461 blocks**. The
+through, 2026-06-22; **product-admin 17** — the pure admin-product helpers:
+slug resolution (derive vs explicit), image-list normalisation (trim / dedup /
+cap / dense order), the canonical-URL builder for the soft-delete redirect, and
+the three-way `new_until` resolution, 2026-06-22) — **513 blocks**. The
 `csp-report` and `phone` suites are table-driven (`it.each`), so
-`vitest run` expands them and reports **~495 cases total** (run
+`vitest run` expands them and reports **~547 cases total** (run
 `vitest run` for the exact figure), all against a real `shop_test`
 Postgres in CI.
 
@@ -507,12 +543,15 @@ at runtime locally (`npm run test:a11y`, axe-core). See
   Econt/Speedy office lists are real-world data not yet ingested into
   the DB.
 - **Most admin pages** under `/admin/*` (dashboard tiles, banners,
-  products, customers, archive, settings) render mock
+  customers, archive, settings) render mock
   data — no admin API behind those screens yet. **Exceptions:** the
   admin **orders** screens (`/admin/orders` + `/admin/orders/[orderNumber]`,
   real since 2026-06-10) and the admin **categories** screen
   (`/admin/categories`, real since 2026-06-15), backed by `/admin/orders/*`
-  and `/admin/categories/*` on `shop-api`.
+  and `/admin/categories/*` on `shop-api`. The admin **products** screen
+  still renders mock data, but its backend API (`/admin/products/*`) shipped
+  2026-06-22 (full CRUD + reorder + archive/restore + tests) — only the
+  frontend wiring remains.
 
 Category-tree browsing (`/products/[...path]`) and search (`/search`)
 moved off mock data on 2026-05-28 — see [Storefront browsing](#storefront-browsing)
@@ -923,6 +962,53 @@ remain). Every action appends an `admin_audit_log` row (GDPR Art. 30).
 The full behaviour is covered by
 `backend/shop-api/tests/routes/admin-categories.test.ts` (39 cases).
 
+### Admin product management
+
+The catalog can finally be managed without raw SQL. **Backend only this
+slice** — the `/admin/products` screen is still mock, so exercise the API
+directly against `npm run api:dev` (an admin session cookie is required — see
+[Admin authentication](#admin-authentication-totp-mfa); save it to
+`cookies.txt`). On PowerShell put JSON bodies in a file and send `--data
+"@body.json"` — inline `\"`-escaped JSON gets mangled by the shell.
+
+```bash
+# Create — slug auto-derives from the Bulgarian name; the SKU (code) is yours.
+#   body.json: {"name":"Слушалки Сони","code":"SONY-WH-1000","priceCents":29999,
+#               "categoryId":"<CAT_UUID>","images":[{"s3Key":"products/sony/main.jpg"}]}
+curl.exe -s -X POST localhost:3001/admin/products -b cookies.txt \
+  -H 'Content-Type: application/json' --data "@body.json"
+#   → 201 { "id":"…","slug":"slushalki-soni","isNew":true,"updatedAt":"…", … }
+
+# List — offset paging + filters + search (25/page, with a total count).
+curl.exe -s "localhost:3001/admin/products?q=sony&stockStatus=in_stock&page=1" -b cookies.txt
+
+# Edit — echo the updatedAt you last saw as the optimistic-lock token.
+#   {"expectedUpdatedAt":"<updatedAt>","priceCents":24999}
+curl.exe -s -X PATCH localhost:3001/admin/products/<ID> -b cookies.txt \
+  -H 'Content-Type: application/json' --data "@patch.json"
+#   a stale token → 409 /problems/product-version-conflict
+
+# Archive (soft-delete) — writes a 301 from the product URL to its category,
+# then verify the redirect serves (the same one the storefront catch-all reads).
+#   {"expectedUpdatedAt":"<updatedAt>","confirmConsequences":true}
+curl.exe -s -X DELETE localhost:3001/admin/products/<ID> -b cookies.txt \
+  -H 'Content-Type: application/json' --data "@del.json"
+curl.exe -s "localhost:3001/redirects/resolve?path=/products/<cat-slug>/<slug>"  # → 301 target
+
+# Restore — un-archives and removes that redirect.
+curl.exe -s -X POST localhost:3001/admin/products/<ID>/restore -b cookies.txt
+```
+
+Things worth checking: a duplicate SKU or slug → `409`
+(`/problems/product-code-conflict` / `…-slug-conflict`) — even against an
+*archived* product (restore it instead of recreating); moving a product to an
+unknown category → `400`; `GET /admin/products/:id` returns `activeOrderCount`
+so the UI can warn before archiving a product that sits in live orders (order
+history is untouched regardless — `order_items` snapshot their lines). The full
+behaviour is covered by
+`backend/shop-api/tests/routes/admin-products.test.ts` (35 cases) plus the pure
+helpers in `backend/shop-api/tests/lib/product-admin.test.ts` (17 cases).
+
 ### Guest checkout & order tracking
 
 The spec's "Гост" role — buy, track, cancel, and withdraw with no account.
@@ -1322,9 +1408,11 @@ reality, as of 2026-06-07:
   test deploy can be torn down with `terraform destroy`).
 - **`admin-api` Lambda** — referenced in `docs/ARCHITECTURE.md` §3.4;
   not created as a separate Lambda. The admin surface that exists
-  (auth + the orders and categories slices) lives in `shop-api` under
-  `routes/admin/*`; the remaining `/admin/*` frontend pages (products,
-  customers, banners, settings, archive) render mock data.
+  (auth + the orders, categories, and products slices) lives in `shop-api`
+  under `routes/admin/*`; the remaining `/admin/*` frontend pages (customers,
+  banners, settings, archive) render mock data — as does the products page,
+  though its backend `/admin/products/*` now exists (2026-06-22) and only
+  needs frontend wiring.
 - ~~**`scheduler-fn` Lambda**~~ ✅ Shipped 2026-06-12 (roadmap item
   23): the three cron rules run as idempotent sweeps in `@shop/api`
   `src/jobs/*` behind EventBridge Scheduler (`infra/scheduler.tf`,
@@ -1428,10 +1516,11 @@ In priority order (also tracked in `docs/ARCHITECTURE.md` §15):
    filters + search + CSV export, detail + audit timeline,
    state-machine status transitions with optimistic locking and the
    customer status-update emails) plus the real `/admin/orders` UI.
-   The manual `status='accepted'` psql is retired. What remains from
-   the original item: the dedicated `admin-api` Lambda extraction and
-   the other admin CRUD slices (products, categories, customers,
-   banners, settings).
+   The manual `status='accepted'` psql is retired. Since then the
+   **categories** slice shipped (2026-06-15, backend + frontend) and the
+   **products** backend shipped (2026-06-22; `/admin/products` frontend
+   pending). What remains: the dedicated `admin-api` Lambda extraction and
+   the customers / banners / settings / archive slices.
 
 Items currently described in the architecture but not yet real
 (the remaining admin CRUD slices, the `admin-api` Lambda split, a

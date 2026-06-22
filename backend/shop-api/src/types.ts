@@ -91,6 +91,16 @@ export type {
   AdminCategoryDeletionImpact,
 } from "./routes/admin/categories.js";
 
+// Admin product-management DTOs from routes/admin/products.ts. The admin
+// frontend (frontend/src/lib/admin/products/) will annotate its typed client
+// with these concrete shapes, independent of how the workspace symlink resolves
+// AppType.
+export type {
+  AdminProductSummary,
+  AdminProductDetail,
+  AdminProductList,
+} from "./routes/admin/products.js";
+
 // Guest checkout + order-tracking DTOs from routes/guest.ts (the spec's "Гост"
 // role). The storefront annotates its lib/track + guest-checkout clients with
 // these concrete shapes, independent of how the workspace symlink resolves
