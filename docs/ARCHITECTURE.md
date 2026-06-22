@@ -1150,6 +1150,13 @@ table.
   only counts invocations that *threw* — it misses every 5xx that `app.onError`
   returns gracefully (the invocation "succeeded" from Lambda's view). The SLI
   reads the actual HTTP status from the log, so it sees those.
+- **Corollary: a client error must never reach the 5xx bucket.** Because the SLI
+  reads the real status and counts the graceful 500s `onError` returns, any client
+  fault mislabelled as a 5xx would wrongly burn the availability budget. The global
+  error handler therefore maps framework-level throws to their true status — above
+  all a malformed JSON body to `400 /problems/malformed-json`, not 500 (§13, item
+  45) — so the budget tracks *server* faults only, per the Google SRE 4xx-vs-5xx
+  split.
 - **Multi-window multi-burn-rate (Google SRE Workbook).** Each burn tier fires
   only when a **long and a short window both breach** (a CloudWatch composite
   alarm `ALARM(long) AND ALARM(short)`): the long window proves a sustained
@@ -1969,6 +1976,45 @@ serving design (2026-06-16):
   (the longest window is 1 hour) — the table's only janitor, same idempotent-sweep
   model as the `login_attempts` prune, no dedicated cron.
 
+### 13.x Framework-level errors map to their true HTTP status, never a blanket 500
+
+- **The defect this fixes.** The global `onError` (`app.ts`) mapped our own
+  `ApiError` and Zod's `ZodError` to RFC 9457 Problem responses, then treated
+  every *other* throw as a 500. But the framework itself throws typed errors that
+  already carry a status — above all the `HTTPException(400, "Malformed JSON in
+  request body")` Hono's request-body validator raises when `JSON.parse` fails.
+  That parse runs *before* the Zod `defaultHook`, so the throw is neither an
+  `ApiError` nor a `ZodError`; it fell through to the 500 branch. A client posting
+  an unparseable body was told the **server** had failed.
+- **Why 400, not 500 (the standard).** RFC 9110 §15.6 frames a 5xx as "the server
+  failed; an identical retry may succeed" — false for malformed JSON, where the
+  retry *must* change. Every 2026 reference (RFC 9457, the OWASP error-handling
+  guidance, Spring/ASP.NET) puts an unparseable body at **400** (a syntax error),
+  distinct from **422** for a parseable-but-semantically-invalid one. We keep
+  schema-validation failures at **400** as well (not 422): 422 is optional under
+  RFC 9110, and splitting it out would be a breaking contract change across every
+  endpoint and its tests for no functional gain. The only new behaviour is that a
+  *parse* failure is now a first-class `400 /problems/malformed-json` rather than
+  a 500.
+- **Why it also matters for the SLO, not just the client.** The availability SLI
+  counts `status >= 500` on the `request_end` log line (§8.5, items 24/25) and —
+  unlike the legacy AWS `Errors` alarm — it *sees* the graceful 500s `onError`
+  returns. So every malformed-body request was silently burning the **server**
+  error budget on a **client** mistake — exactly the 4xx-vs-5xx confusion the
+  Google SRE Workbook warns against. Mapping the parse error to 400 keeps client
+  faults out of the budget.
+- **Implementation.** Classification is a pure `frameworkProblem(err)`
+  (`lib/error-response.ts`): a Hono `HTTPException` (explicitly excluding our own
+  `ApiError`, which `onError` maps first) is honoured at its real status — the
+  malformed-JSON message becomes `/problems/malformed-json`, any other becomes
+  `about:blank` with the RFC 9110 reason phrase as `title` (an `HTTPException`'s
+  message can be empty); a raw `SyntaxError` (the native `Request.json()` path —
+  no route uses it today) degrades to the same 400 as defence-in-depth. Anything
+  else returns `null`, so the existing 500 path is untouched and a genuine server
+  fault is never masked. The offending body is never reflected back in `detail`
+  (it can carry PII). Pure + DB-free, so the whole decision table is unit-tested
+  without booting the app — the same convention as the rest of `lib/*.ts`.
+
 ## 14. Honest assessment vs A+ target
 
 **Current state, scored against AWS Well-Architected:**
@@ -2542,6 +2588,25 @@ Ranked by `(impact ÷ effort)` — highest leverage first. Items marked
     `tests/jobs/unverified-cleanup.test.ts`. Brings the guest surface up to the
     DB-backed-counter standard the auth surface (lockout, token-count limits)
     already met. Full rationale in §13.
+
+45. ✅ **Framework errors return their true HTTP status, not a blanket 500 —
+    shipped 2026-06-22.** A correctness defect, not a feature. The global
+    `onError` mapped `ApiError` and `ZodError` to Problem responses but sent
+    everything else to 500 — including the `HTTPException(400)` Hono throws on a
+    malformed JSON body (the parse fails *before* the Zod `defaultHook`, so it is
+    neither). A client posting unparseable JSON got a **500**, which both (a)
+    tells the client the server failed and an identical retry may work (RFC 9110
+    §15.6 — false here) and (b) burned the availability SLI's error budget (it
+    counts `status >= 500` on `request_end`, graceful 500s included — §8.5) on a
+    client mistake, the precise 4xx-vs-5xx confusion the Google SRE Workbook
+    warns against. New pure `lib/error-response.ts` `frameworkProblem()` honours
+    an `HTTPException`'s real status (malformed JSON → `400
+    /problems/malformed-json`; others → `about:blank` + the RFC 9110 reason
+    phrase) and degrades a raw `SyntaxError` to the same 400; unknown throws still
+    fall through to the 500 path, so real faults are never masked, and the body is
+    never reflected back in `detail` (PII). Tests:
+    `tests/lib/error-response.test.ts` (10) + `tests/routes/error-handling.test.ts`
+    (3). No migration, no infra, no new dependency. Full rationale in §13.
 
 **Doing items 15–27 closes every meaningful 2026 gap in ~4–6
 working days. Items 28–33 raise the quality bar further at ~3 more

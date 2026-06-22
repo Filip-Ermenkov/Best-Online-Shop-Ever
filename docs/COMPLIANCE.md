@@ -121,7 +121,7 @@ exercised until deployment, the cell is annotated.
 | Brute-force defence (per-email) | ✅ | 5 fails / 15 min lockout (DB-backed `login_attempts`) |
 | Account enumeration resistance | ✅ | Identical responses for known/unknown emails on register, login, forgot-password, email-change/request |
 | **Distributed per-IP rate limiting (public guest surface)** | ✅ | Lost-link resend 3/h/IP + guest order placement 30/h/IP enforced **cluster-wide** via the Postgres `rate_limit_counters` table (single-statement atomic upsert) — not per-Lambda-container in-memory (2026-06-19). ARCHITECTURE.md §13 |
-| RFC 9457 Problem Details | ✅ | No internal-state leakage |
+| RFC 9457 Problem Details | ✅ | No internal-state leakage; framework-level throws (an unparseable JSON body) now map to their true status — `400 /problems/malformed-json`, never a blanket 500 (item 45, 2026-06-22) |
 | Encryption at rest | N/A today | Target: Neon-managed encryption + S3 SSE |
 | Idempotency on orders | ✅ | `Idempotency-Key` UNIQUE on orders row |
 | Email-verified gate on order placement | ✅ | `/problems/email-not-verified` 403 |
@@ -282,7 +282,7 @@ Published 2024–2025 (eighth edition). Notable changes vs 2021:
 | A07 | Authentication Failures | ✅ | Customer-side ✅ (Argon2id RFC 9106, constant-time login, per-email lockout, NIST 800-63B-4 + HIBP). **Admin MFA shipped 2026-06-08** — mandatory TOTP at AAL2 (`/admin/auth/*`, Roadmap item 35 backend). Customer MFA remains a growth-stage residual (Roadmap item 34) |
 | A08 | Software and Data Integrity Failures | ✅ | Every SBOM signed via Sigstore Fulcio/Rekor, keyless OIDC, transparency log. Verification in ARCHITECTURE.md §9.5 |
 | A09 | Security Logging and Monitoring Failures | ✅ | Pino structured logs ✅; CSP violation reporting ✅ (May 2026); **distributed tracing ✅** (OpenTelemetry on shop-api, 2026-06-13, Roadmap item 18) — request + downstream-fetch spans, log↔trace correlation, OTLP→X-Ray via the ADOT collector layer. Closes the last A09 gap |
-| A10 | Mishandling of Exceptional Conditions (new) | ✅ | RFC 9457 Problem Details on every error; graceful degradation; best-effort emails never block |
+| A10 | Mishandling of Exceptional Conditions (new) | ✅ | RFC 9457 Problem Details on every error; graceful degradation; best-effort emails never block; framework parse errors return **400, not 500** (item 45) so a client fault is never reported — or SLO error-budget-counted — as a server fault |
 
 E-commerce-specific OWASP 2025 vulnerabilities flagged in research:
 

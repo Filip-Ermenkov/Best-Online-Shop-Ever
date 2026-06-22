@@ -9,6 +9,7 @@ import type { ContentfulStatusCode } from "hono/utils/http-status";
 import type { Logger } from "pino";
 import { ZodError } from "zod";
 import { parseEnv } from "./lib/env.js";
+import { frameworkProblem } from "./lib/error-response.js";
 import { ApiError, badRequest, internal, type Problem } from "./lib/errors.js";
 import { logger as baseLogger, requestLogger } from "./lib/logger.js";
 import { isTracingEnabled } from "./lib/tracing.js";
@@ -292,6 +293,29 @@ export function buildApp() {
         400,
         { "Content-Type": "application/problem+json; charset=utf-8" },
       );
+    }
+
+    // Framework-level errors that already carry an HTTP status — most importantly
+    // the HTTPException Hono throws for a malformed JSON body (its validator's
+    // JSON.parse fails BEFORE our Zod defaultHook runs, so it is neither an
+    // ApiError nor a ZodError). Honour the real status instead of letting it fall
+    // through to the 500 below: a client 4xx must never be reported as a server
+    // 5xx — RFC 9110 §15.6 frames a 5xx as "retry the identical request, it may
+    // work", and the availability SLI (5xx ÷ total; §15 items 24/25) would burn
+    // its budget on a client mistake. Classification is the pure
+    // `frameworkProblem` (lib/error-response.ts); it returns null for anything we
+    // don't specially handle, so genuine unexpected errors still reach the 500.
+    const fwk = frameworkProblem(err);
+    if (fwk) {
+      const problem: Problem = { ...fwk, instance: c.get("requestId") };
+      if (problem.status >= 500) {
+        log.error({ err, problem }, "api_error_5xx");
+      } else {
+        log.warn({ problem }, "api_error_4xx");
+      }
+      return c.json(problem, problem.status as ContentfulStatusCode, {
+        "Content-Type": "application/problem+json; charset=utf-8",
+      });
     }
 
     log.error({ err }, "unhandled_error");
