@@ -191,6 +191,7 @@ resource "aws_cloudfront_distribution" "assets" {
   #checkov:skip=CKV_AWS_68:WAF is opt-in for the API; the assets distribution serves only public, validated catalog images (no auth, no PII) so a WAF earns nothing here.
   #checkov:skip=CKV_AWS_86:Access logging needs a log bucket; same accepted-finding posture as the API distribution. CloudFront/S3 request metrics cover the operational need.
   #checkov:skip=CKV2_AWS_47:Log4Shell WAF rule is moot without a WAF (see CKV_AWS_68) — there is no app server behind this origin, only static S3 objects.
+  #checkov:skip=CKV2_AWS_42:Serves public catalog images on the default *.cloudfront.net domain — a custom ACM cert requires a custom domain this image CDN does not need (CDN_BASE_URL points at the default domain; the R2 swap is config-only). Same default-cert posture as the API distribution with no custom domain; cf. the accepted CKV_AWS_174. Add the ACM path here (mirroring cdn.tf) if an images.<domain> alias is ever wanted.
   count           = var.enable_asset_uploads ? 1 : 0
   enabled         = true
   comment         = "${local.name_prefix} catalog assets"
