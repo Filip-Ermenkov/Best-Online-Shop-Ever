@@ -300,6 +300,29 @@ api role can `PutObject` only under `pending/*` (it signs the presigned POST) an
 `GetObject` only under `uploads/*` (the status HEAD); the assets-fn role can read
 `pending/*`, write `uploads/*`, and delete `pending/*` — nothing else.
 
+**Three prerequisites that separate "deployed" from "actually serves an image"**
+(all now in code after the 2026-06-27 live validation — listed so a future change
+doesn't quietly undo them):
+
+1. **With `enable_kms_cmk = true` (the default), CloudFront needs a KMS grant.**
+   The assets bucket is SSE-KMS, so CloudFront's OAC fetch must `kms:Decrypt`, and
+   the CloudFront *service* principal can only be granted that in the KMS **key
+   policy** (`kms.tf` → `AllowCloudFrontDecryptAssets`), never via IAM. Without it
+   every image returns **403 at the edge** even though the upload, validation, and
+   promotion to `uploads/` all succeeded.
+2. **`asset_cors_allowed_origins` is the BROWSER PAGE origin — not the CDN domain.**
+   It is the origin the admin/storefront HTML is served from (e.g.
+   `https://shop.example.com`, or `http://localhost:3000` when driving the UI
+   locally) — the page that issues the cross-origin POST to S3. Pointing it at the
+   assets CDN domain makes every upload fail CORS in the browser.
+3. **The frontend CSP must allow both hops.** `frontend/src/proxy.ts` reads
+   `NEXT_PUBLIC_ASSET_S3_ORIGIN` (added to `connect-src` — the direct upload) and
+   `NEXT_PUBLIC_ASSET_CDN_ORIGIN` (added to `img-src` — the rendered image); set
+   both in the frontend env to the `assets_bucket` S3 endpoint and `assets_cdn_url`.
+   Separately, the `assets-fn` validator is intentionally **DB-free** (it has no
+   `DATABASE_URL`) — any import that transitively pulls in `parseEnv()` crashes it
+   on cold start, so it promotes nothing (see ARCHITECTURE §13).
+
 ## Tracing runbook (roadmap item 18)
 
 App-level OpenTelemetry on `shop-api`: `@hono/otel` request spans + undici/fetch

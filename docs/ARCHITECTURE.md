@@ -77,11 +77,11 @@ Three actors are present in the codebase:
   first real admin CRUD slice — **order management** (`/admin/orders` list +
   detail + state-machine status transitions + CSV export) — shipped
   2026-06-10, backend and frontend, followed by **category management**
-  (2026-06-15, backend + frontend) and the **product management** BACKEND
-  (`/admin/products/*`, 2026-06-22; the `/admin/products` page is still mock
-  pending frontend wiring). Still pending: the remaining admin CRUD pages
-  (customers, banners, archive, settings — mock data) and the dedicated
-  **`admin-api`** Lambda the admin panel will eventually live on.
+  (2026-06-15, backend + frontend) and **product management** end-to-end
+  (`/admin/products/*` backend 2026-06-22; the `/admin/products` list + create/
+  edit frontend and the image-upload widget wired 2026-06-27). Still pending: the
+  remaining admin CRUD pages (customers, banners, archive, settings — mock data)
+  and the dedicated **`admin-api`** Lambda the admin panel will eventually live on.
 
 Functional scope is in `docs/README.md`. Deployment status is in
 `README.md` ("Deployment status" section).
@@ -2150,6 +2150,36 @@ decisions below were researched against 2026 practice.
   split as `lib/category-tree.ts` / `lib/product-admin.ts`, and the single source
   of truth both the presign route and the validator Lambda import so the contract
   can never drift.
+- **Live-validated end-to-end 2026-06-27 — three latent deploy bugs fixed (do NOT
+  regress).** The pipeline shipped 2026-06-22 but had never actually moved a byte
+  through to the CDN until the products-admin frontend exercised it on a real
+  stack. Three independent things must hold, each now in code:
+  1. **The validator must be DB-free.** `assets-fn` has no `DATABASE_URL`
+     (correct — it never queries), yet it imported the shared `logger`, which
+     eagerly ran `parseEnv()` whose schema *requires* `DATABASE_URL` → the Lambda
+     threw on cold start and promoted nothing (every object stuck in `pending/`).
+     `lib/logger.ts` now reads `LOG_LEVEL` / `NODE_ENV` directly from
+     `process.env`, so logging never drags the DB schema into a DB-free bundle.
+     The API still fails fast on a bad env at boot via `app.ts`'s `parseEnv()`.
+  2. **CloudFront OAC + SSE-KMS needs a KMS *key-policy* grant.** Serving an
+     SSE-KMS object means S3 must `kms:Decrypt` on CloudFront's behalf, and the
+     CloudFront SERVICE principal can only be granted that in the key policy (IAM
+     cannot grant a service principal). Missing it → every image 403s at the edge
+     even though upload + validation + promotion all succeeded. `kms.tf` now
+     grants `cloudfront.amazonaws.com` `kms:Decrypt`, `AWS:SourceArn`-scoped to
+     this account's distributions (account-wildcard to avoid a TF cycle, since the
+     bucket SSE already depends on the key).
+  3. **The browser's own CSP must allow the upload + the render.** The strict CSP
+     in `frontend/src/proxy.ts` gained the S3 bucket origin in `connect-src` (the
+     direct POST) and the assets CDN in `img-src` (the rendered image), both
+     env-driven (`NEXT_PUBLIC_ASSET_S3_ORIGIN` / `NEXT_PUBLIC_ASSET_CDN_ORIGIN`).
+     And `asset_cors_allowed_origins` (the S3 bucket CORS) is the BROWSER PAGE
+     origin the admin UI is served from — never the CDN's own domain.
+
+  The `ImageUploadField` widget also now confirms promotion (`waitUntilReady`)
+  before saving a key, so a rejected upload (e.g. a `.jpg` that isn't really a
+  JPEG — the validator deletes it) surfaces immediately instead of becoming a
+  silent broken image on the entity.
 
 ## 14. Honest assessment vs A+ target
 
@@ -2455,12 +2485,16 @@ Ranked by `(impact ÷ effort)` — highest leverage first. Items marked
     direct-to-S3 upload pipeline is its own infra-bearing slice — §13). No
     migration (the `products` / `product_images` tables were dormant). 35
     integration tests (admin-products.test.ts) + 17 pure-helper tests
-    (product-admin.test.ts). **What remains of the original item:** the
-    `/admin/products` FRONTEND wiring (the page is still mock data), the
-    dedicated `admin-api` Lambda extraction (structural, with item 35's
-    module), and the remaining admin CRUD slices — customers, banners,
-    settings (each its own slice; the full categories-AND-products interleaved
-    „Наредба" ordering arrives once the products page is wired).
+    (product-admin.test.ts). **Products FRONTEND wired 2026-06-27** — the real
+    `/admin/products` list (filters + search + offset paging + accessible
+    within-category reorder) and the create/edit editor (optimistic-locked,
+    archive/restore) in `components/admin/ProductsManager` + `ProductEditor`,
+    typed client in `lib/admin/products/`, with product images uploaded through
+    the presigned pipeline via the reusable `ImageUploadField` widget (item 46).
+    **What remains of the original item:** the dedicated `admin-api` Lambda
+    extraction (structural, with item 35's module) and the remaining admin CRUD
+    slices — customers, banners, settings (each its own slice; the full
+    categories-AND-products interleaved „Наредба" ordering is a later enhancement).
 23. ✅ **Scheduler-fn Lambda + the three cron rules — shipped
     2026-06-12, live-validated 2026-06-13** (code + tests + Terraform;
     the manual `aws lambda invoke` drills for all three jobs passed on
@@ -2783,10 +2817,13 @@ Ranked by `(impact ÷ effort)` — highest leverage first. Items marked
     Tests: `tests/lib/asset-upload.test.ts` (pure helpers, real format heads),
     `tests/routes/admin-uploads.test.ts` (the presign route, S3 adapters
     injected), `tests/assets/validate-upload.test.ts` (the validator). Reusable
-    frontend client in `frontend/src/lib/uploads/`. **What remains:** wiring the
-    upload widget into the product / category / banner admin EDITORS (frontend),
-    and the optional Sharp transcode/EXIF-strip enhancement (§3.6, §13). Full
-    rationale in §13.
+    frontend client in `frontend/src/lib/uploads/`, now consumed by the
+    accessible `ImageUploadField` widget (components/admin/) wired into the
+    product editor (2026-06-27 — drag-or-pick with a WCAG 2.5.7 single-pointer
+    path, an ARIA live-region status, and client-side type/size pre-checks
+    mirroring the server allowlist). **What remains:** reusing that same widget
+    in the category / banner editors when those slices land, and the optional
+    Sharp transcode/EXIF-strip enhancement (§3.6, §13). Full rationale in §13.
 
 **Doing items 15–27 closes every meaningful 2026 gap in ~4–6
 working days. Items 28–33 raise the quality bar further at ~3 more

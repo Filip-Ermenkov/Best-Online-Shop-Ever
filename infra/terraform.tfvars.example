@@ -80,10 +80,14 @@ enable_scheduler = false
 # distribution serving only uploads/, and the assets-fn validator (magic-byte
 # check → promote/delete). shop-api then mints presigned POSTs and CDN_BASE_URL
 # is auto-pointed at the new distribution (unless cdn_base_url above is set).
-# asset_cors_allowed_origins is REQUIRED (the browser uploads cross-origin).
-# See infra/README.md → "Image upload runbook".
+# asset_cors_allowed_origins is REQUIRED — it is the BROWSER PAGE origin(s) the
+# admin/storefront HTML is served from (the page that POSTs to S3), NOT the CDN
+# domain. The frontend CSP must ALSO allow the S3 + assets-CDN origins via
+# NEXT_PUBLIC_ASSET_* in frontend/.env.local. With enable_kms_cmk=true the KMS key
+# policy grants CloudFront kms:Decrypt (kms.tf) so OAC can serve the SSE-KMS
+# objects. See infra/README.md → "Image upload runbook".
 enable_asset_uploads       = false
-asset_cors_allowed_origins = [] # e.g. ["https://shop.example.com"]
+asset_cors_allowed_origins = [] # the browser origin(s), e.g. ["https://shop.example.com"]
 # asset_max_upload_mb          = 10
 # asset_pending_retention_days = 1
 

@@ -27,8 +27,12 @@ Hono on Lambda. Same handler runs locally on Node via `@hono/node-server`.
 > slice (`/admin/products/*`): product CRUD + within-category reorder +
 > soft-delete writing a 301 redirect + archive/restore, optimistic-locked on
 > `updatedAt` and audit-logged, activating the dormant `products` write surface
-> and the `product_images` table (backend only — the `/admin/products` frontend
-> page is still mock). And the same day,
+> and the `product_images` table. The `/admin/products` frontend was wired to this
+> API on 2026-06-27 (with the `ImageUploadField` upload widget), and the upload
+> pipeline was live-validated end-to-end that day after three latent-bug fixes —
+> a DB-free validator (`logger.ts` no longer forces `DATABASE_URL` on the
+> DB-less `assets-fn`), the CloudFront `kms:Decrypt` grant, and the frontend CSP
+> origins (see `docs/ARCHITECTURE.md` §13). Also on 2026-06-22,
 > the **framework-error mapping** — the global `onError` now returns a
 > framework throw's true HTTP status instead of a blanket 500, so a malformed JSON
 > request body is `400 /problems/malformed-json` (the pure `lib/error-response.ts`

@@ -61,10 +61,10 @@ future work):
   slices shipped so far — **order management** (`/admin/orders/*`, 2026-06-10),
   **category management** (`/admin/categories/*`, 2026-06-15), and **product
   management** (`/admin/products/*`, backend 2026-06-22) — live in `shop-api`
-  as portable `routes/admin/*` modules. The `/admin/products` **frontend** page
-  is still mock pending a wiring slice; the REMAINING admin CRUD flows
-  (customers, banners, settings, archive) are still stubbed on the frontend
-  with mock data.
+  as portable `routes/admin/*` modules. The `/admin/products` **frontend** is
+  now wired to that API (2026-06-27), including the real image-upload widget;
+  the REMAINING admin CRUD flows (customers, banners, settings, archive) are
+  still stubbed on the frontend with mock data.
 - `scheduler-fn` — the scheduled-jobs Lambda (three cron rules: daily
   catalog backup, hourly pickup expiry, daily unverified-account
   cleanup + retention prune). **Shipped 2026-06-12** — there is no
@@ -174,9 +174,9 @@ they aren't. The honest state:
 | Admin authentication (TOTP MFA) | **Shipped end-to-end** — `shop-api` `/admin/auth/*` + the `/admin` frontend `AdminAuthGate` (login → MFA → enrolment) |
 | Admin order management | **Shipped end-to-end (2026-06-10)** — `shop-api` `/admin/orders/*` (list + filters + search, detail + history, state-machine status transitions with optimistic locking + customer emails, CSV export) + the real `/admin/orders` UI |
 | Admin category management | **Shipped end-to-end (2026-06-15)** — `shop-api` `/admin/categories/*` (tree with counts, create, rename/move with cycle prevention + optimistic locking, sibling reorder, deletion-impact preview, cascade soft-delete writing 301 `redirects` + `admin_audit_log`) + the real `/admin/categories` UI |
-| Admin product management | **Backend shipped (2026-06-22)** — `shop-api` `/admin/products/*` (offset list + filters + search, create with auto-slug + SKU/slug uniqueness spanning archived rows, detail with active-order count, edit/move/re-image with `updatedAt` optimistic locking, within-category reorder, soft-delete writing a 301 `redirect`, restore) + `admin_audit_log`. Activates the dormant `products` write surface + `product_images` table. **Frontend `/admin/products` page still mock** — wiring is the follow-up |
+| Admin product management | **Shipped end-to-end (backend 2026-06-22, frontend wired 2026-06-27)** — `shop-api` `/admin/products/*` (offset list + filters + search, create with auto-slug + SKU/slug uniqueness spanning archived rows, detail with active-order count, edit/move/re-image with `updatedAt` optimistic locking, within-category reorder, soft-delete writing a 301 `redirect`, restore) + `admin_audit_log`, now driven by the real `/admin/products` list + create/edit UI (`components/admin/ProductsManager` + `ProductEditor`) with the **image-upload widget** wired in. Activates the dormant `products` write surface + `product_images` table |
 | Guest checkout + order tracking | **Shipped end-to-end (2026-06-16)** — the spec's "Гост" role (orders without an account). `shop-api` `/guest/orders` (anonymous checkout, 256-bit capability token) + `/track/:token` (view, cancel-while-processing, 14-day withdrawal) + `/track/find` (rate-limited lost-link resend) + the public `/track/[token]` & `/track/find` UI. Checkout no longer forces login (`POST /orders/:n/cancel` also added for account customers). No migration — activates the dormant `orders.guest_track_token` column |
-| Image-upload pipeline | **Backend + infra shipped (2026-06-22, roadmap item 46)** — `shop-api` `/admin/uploads` mints a **presigned POST** (browser → S3 directly, policy-pinned size + type) + `/admin/uploads/status`; the **assets-fn** validator Lambda magic-byte-checks each upload and promotes only genuine images to a CloudFront+OAC-served `uploads/` prefix (deletes spoofs). `infra/assets.tf` (private assets bucket, OAC distribution, S3→Lambda notification, least-priv IAM) behind `enable_asset_uploads`. Activates every dormant image key the catalog stores. **Frontend:** reusable client shipped (`lib/uploads/`); wiring the widget into the product/category/banner editors is the follow-up. No migration |
+| Image-upload pipeline | **Backend + infra shipped (2026-06-22, roadmap item 46)** — `shop-api` `/admin/uploads` mints a **presigned POST** (browser → S3 directly, policy-pinned size + type) + `/admin/uploads/status`; the **assets-fn** validator Lambda magic-byte-checks each upload and promotes only genuine images to a CloudFront+OAC-served `uploads/` prefix (deletes spoofs). `infra/assets.tf` (private assets bucket, OAC distribution, S3→Lambda notification, least-priv IAM) behind `enable_asset_uploads`. Activates every dormant image key the catalog stores. **Frontend (2026-06-27):** the reusable client (`lib/uploads/`) is now consumed by the accessible `ImageUploadField` widget (drag-or-pick, WCAG 2.5.7 single-pointer path, magic-byte-validated server-side), wired into the product editor; the category/banner editors reuse it unchanged when those slices land. **Live-validated end-to-end 2026-06-27** (presign → direct-to-S3 → assets-fn promote → CDN render) — which required three latent-bug fixes from the 2026-06-22 ship: the validator is now DB-free (`logger.ts` no longer forces `DATABASE_URL` on a Lambda that has none), the KMS key policy grants CloudFront `kms:Decrypt` so OAC can serve the SSE-KMS objects, and the frontend CSP allows the S3 + assets-CDN origins (`docs/ARCHITECTURE.md` §13). No migration |
 | `admin-api` Lambda | Not built (admin auth + the orders slice currently live in `shop-api`; extract when the admin CRUD surface grows) |
 | `scheduler-fn` Lambda | **Shipped 2026-06-12, live-validated 2026-06-13** (roadmap item 23) — jobs in `@shop/api` `src/jobs/*` + own pure-JS bundle (`build:scheduler`) + `infra/scheduler.tf` (EventBridge Scheduler, 3 Sofia-time crons, delivery DLQ, backup bucket, 2 alarms) behind `enable_scheduler`. All three `aws lambda invoke` drills passed against the Neon test branch; the catalog-backup drill also caught a prod-only bug (the `neon-http` driver can't run `db.transaction(...)`) now fixed by the Neon serverless WebSocket driver — see [decisions](#architecture-decisions-in-force). Runbook in `infra/README.md` |
 | Distributed tracing (OpenTelemetry) | **Shipped 2026-06-13 (roadmap item 18)** — `shop-api` emits OTel traces behind `ENABLE_TRACING`: `@hono/otel` request spans + undici/fetch downstream spans + Pino `trace_id`/`span_id` log↔trace correlation. Exports OTLP to AWS X-Ray via the ADOT collector layer (`enable_tracing` + `adot_collector_layer_arn`), or any OTLP backend. Closes the last OWASP A09 / NIST CSF Detect gap. App-level instrumentation + correlation unit-tested and harness-verified against the real libraries (incl. a clean esbuild bundle); live X-Ray export validated on deploy. Runbook in `infra/README.md` → "Tracing runbook" |
@@ -297,12 +297,12 @@ what needs to happen to get from today's repo state to that posture.
   orphan whose category was removed to uncategorised). Every state change
   appends an `admin_audit_log` row (GDPR Art. 30). **Activates the dormant
   `products` write surface + the `product_images` table** (the catalog could
-  previously only be seeded via SQL). Backend only this slice — the
-  `/admin/products` frontend page stays on mock data pending a wiring
-  follow-up; images are stored as S3 keys exactly like the categories slice
-  (the presigned direct-to-S3 upload pipeline that finally puts bytes behind
-  those keys shipped 2026-06-22 as `/admin/uploads`, below — see
-  `docs/ARCHITECTURE.md` §13).
+  previously only be seeded via SQL). The `/admin/products` frontend was wired
+  to this API on 2026-06-27 (`components/admin/ProductsManager` +
+  `ProductEditor`); product images go through the presigned direct-to-S3 upload
+  pipeline (`/admin/uploads`, below) via the reusable `ImageUploadField` widget,
+  stored as S3 keys exactly like the categories slice — see
+  `docs/ARCHITECTURE.md` §13.
 - `/admin/uploads/*` — **admin image uploads (2026-06-22)**, the image-upload
   pipeline (roadmap item 46), `requireAdmin`-gated (uniform `404`): `POST
   /admin/uploads` (mint a short-lived **presigned POST** so the browser uploads
@@ -572,16 +572,14 @@ at runtime locally (`npm run test:a11y`, axe-core). See
   (`frontend/src/lib/mock-data/courier-offices.ts`) — Bulgarian
   Econt/Speedy office lists are real-world data not yet ingested into
   the DB.
-- **Most admin pages** under `/admin/*` (dashboard tiles, banners,
-  customers, archive, settings) render mock
-  data — no admin API behind those screens yet. **Exceptions:** the
-  admin **orders** screens (`/admin/orders` + `/admin/orders/[orderNumber]`,
-  real since 2026-06-10) and the admin **categories** screen
-  (`/admin/categories`, real since 2026-06-15), backed by `/admin/orders/*`
-  and `/admin/categories/*` on `shop-api`. The admin **products** screen
-  still renders mock data, but its backend API (`/admin/products/*`) shipped
-  2026-06-22 (full CRUD + reorder + archive/restore + tests) — only the
-  frontend wiring remains.
+- **Some admin pages** under `/admin/*` (dashboard tiles, banners,
+  customers, archive, settings) render mock data — no admin API behind those
+  screens yet. **The real admin screens:** **orders**
+  (`/admin/orders` + `/admin/orders/[orderNumber]`, since 2026-06-10),
+  **categories** (`/admin/categories`, since 2026-06-15), and **products**
+  (`/admin/products` list + `new` + `[id]` edit, since 2026-06-27 — backed by
+  `/admin/products/*`, with product images uploaded through the real
+  presigned-POST pipeline via the reusable `ImageUploadField` widget).
 
 Category-tree browsing (`/products/[...path]`) and search (`/search`)
 moved off mock data on 2026-05-28 — see [Storefront browsing](#storefront-browsing)
@@ -994,8 +992,11 @@ The full behaviour is covered by
 
 ### Admin product management
 
-The catalog can finally be managed without raw SQL. **Backend only this
-slice** — the `/admin/products` screen is still mock, so exercise the API
+The catalog can be managed without raw SQL — and as of 2026-06-27 the
+`/admin/products` screen is **real**: list + filters + search + offset paging,
+create, edit (optimistic-locked), archive/restore, within-category reorder, and
+product-image upload through the `ImageUploadField` widget (the first real
+consumer of the presigned-POST pipeline). You can also exercise the API
 directly against `npm run api:dev` (an admin session cookie is required — see
 [Admin authentication](#admin-authentication-totp-mfa); save it to
 `cookies.txt`). On PowerShell put JSON bodies in a file and send `--data
@@ -1577,9 +1578,10 @@ In priority order (also tracked in `docs/ARCHITECTURE.md` §15):
    customer status-update emails) plus the real `/admin/orders` UI.
    The manual `status='accepted'` psql is retired. Since then the
    **categories** slice shipped (2026-06-15, backend + frontend) and the
-   **products** backend shipped (2026-06-22; `/admin/products` frontend
-   pending). What remains: the dedicated `admin-api` Lambda extraction and
-   the customers / banners / settings / archive slices.
+   **products** slice shipped end-to-end (backend 2026-06-22; `/admin/products`
+   frontend + image-upload widget wired 2026-06-27). What remains: the
+   dedicated `admin-api` Lambda extraction and the customers / banners /
+   settings / archive slices.
 
 Items currently described in the architecture but not yet real
 (the remaining admin CRUD slices, the `admin-api` Lambda split, a
