@@ -101,6 +101,16 @@ export type {
   AdminProductList,
 } from "./routes/admin/products.js";
 
+// Admin image-upload DTOs from routes/admin/uploads.js (roadmap item 46). The
+// admin frontend's upload client (frontend/src/lib/uploads/) annotates its typed
+// helpers with these: `AdminPresignedUpload` is the presign response (POST target
+// + fields + the storedKey to save on the entity); `AdminUploadStatus` is the
+// validate-and-promote poll. Single image pipeline for products/categories/banners.
+export type {
+  AdminPresignedUpload,
+  AdminUploadStatus,
+} from "./routes/admin/uploads.js";
+
 // Guest checkout + order-tracking DTOs from routes/guest.ts (the spec's "Гост"
 // role). The storefront annotates its lib/track + guest-checkout clients with
 // these concrete shapes, independent of how the workspace symlink resolves

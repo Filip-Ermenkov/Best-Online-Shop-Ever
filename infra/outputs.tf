@@ -113,3 +113,20 @@ output "dmarc_record_hint" {
   description = "Suggested initial DMARC TXT record to publish at _dmarc.<domain> (start at p=none, tighten later)."
   value       = var.enable_ses ? "_dmarc.${var.ses_domain} TXT \"v=DMARC1; p=none; rua=mailto:dmarc@${var.ses_domain}\"" : ""
 }
+
+# ─── Image uploads (roadmap item 46) ─────────────────────────────────────────
+
+output "assets_bucket" {
+  description = "S3 bucket for catalog-image uploads (shop-api's ASSET_UPLOAD_BUCKET — wired automatically), or null when enable_asset_uploads = false."
+  value       = one(aws_s3_bucket.assets[*].bucket)
+}
+
+output "assets_cdn_domain" {
+  description = "CloudFront domain serving validated catalog images (the uploads/ prefix). shop-api's CDN_BASE_URL is set to https://<this> unless cdn_base_url overrides it. Null when enable_asset_uploads = false."
+  value       = one(aws_cloudfront_distribution.assets[*].domain_name)
+}
+
+output "assets_cdn_url" {
+  description = "Convenience https URL of the assets CDN (the value CDN_BASE_URL takes by default), or null when enable_asset_uploads = false."
+  value       = var.enable_asset_uploads ? "https://${aws_cloudfront_distribution.assets[0].domain_name}" : null
+}
