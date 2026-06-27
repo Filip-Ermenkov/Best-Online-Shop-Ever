@@ -32,6 +32,11 @@ yarn-error.log*
 
 # env files (can opt-in for committing if needed)
 .env*
+# ...but DO commit the *.example templates — the documented setup step copies
+# them (`copy frontend\.env.local.example frontend\.env.local`), so they must be
+# in the repo. Next.js's default `.env*` above would otherwise swallow them and
+# override the root .gitignore's `!.env.*.example` negation.
+!.env*.example
 
 # vercel
 .vercel

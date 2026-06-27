@@ -1,6 +1,5 @@
 import { trace } from "@opentelemetry/api";
 import pino from "pino";
-import { parseEnv } from "./env.js";
 
 /**
  * Log↔trace correlation (roadmap item 18). Runs on every log call: if a span is
@@ -34,13 +33,36 @@ export function traceContextMixin(): Record<string, string> {
  * Lambda context (request id, cold start, ARN) inside the handler wrapper
  * (handler.ts) where we have access to the actual Lambda event/context.
  */
-const env = parseEnv();
+// LOG_LEVEL / NODE_ENV are read straight from process.env here rather than via
+// the full parseEnv(), so the logger never transitively depends on DB / email
+// config. This is what lets DB-free Lambdas in this package — notably the
+// assets-fn image validator (roadmap item 46) — import the logger without a
+// DATABASE_URL: parseEnv() requires DATABASE_URL (env.ts) and would otherwise
+// crash assets-fn on cold start (it has no database, so the var is unset). The
+// API still fails fast on a missing/malformed env at boot via app.ts's
+// parseEnv(); logging just no longer gates on the full schema.
+const LOG_LEVELS = [
+  "fatal",
+  "error",
+  "warn",
+  "info",
+  "debug",
+  "trace",
+  "silent",
+] as const;
+const rawLevel = process.env.LOG_LEVEL ?? "";
+const level: (typeof LOG_LEVELS)[number] = (
+  LOG_LEVELS as readonly string[]
+).includes(rawLevel)
+  ? (rawLevel as (typeof LOG_LEVELS)[number])
+  : "info";
+const nodeEnv = process.env.NODE_ENV ?? "development";
 
 export const logger = pino({
-  level: env.LOG_LEVEL,
+  level,
   base: {
     service: "shop-api",
-    env: env.NODE_ENV,
+    env: nodeEnv,
   },
   // Stamp the active trace/span id onto every line (no-op until tracing is on).
   mixin: traceContextMixin,

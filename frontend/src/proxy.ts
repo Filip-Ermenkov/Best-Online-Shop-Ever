@@ -97,6 +97,16 @@ const API_ORIGIN = isProd
   : "http://localhost:3001";
 const IMG_ORIGIN = "https://cdn.duda1.bg";
 
+// Asset-upload pipeline origins (roadmap item 46), env-configurable so the
+// bucket / distribution can change without a code edit — the values are the
+// terraform outputs `assets_bucket` (as its S3 endpoint) and `assets_cdn_url`.
+// The browser uploads straight to the S3 bucket (needs it in `connect-src`) and
+// then renders promoted images from the assets CDN (needs it in `img-src`).
+// Both default to empty → when unset the directives are exactly as before. Must
+// be NEXT_PUBLIC_ so they are inlined into the proxy (Edge runtime) bundle.
+const ASSET_S3_ORIGIN = process.env.NEXT_PUBLIC_ASSET_S3_ORIGIN ?? "";
+const ASSET_CDN_ORIGIN = process.env.NEXT_PUBLIC_ASSET_CDN_ORIGIN ?? "";
+
 /**
  * CSP violation report sink. Both the legacy `report-uri` directive and the
  * modern Reporting-Endpoints + `report-to` directive point at this URL — the
@@ -159,9 +169,9 @@ function buildStrictCsp(nonce: string): string {
     isProd
       ? `style-src 'self' 'nonce-${nonce}' 'report-sample'`
       : "style-src 'self' 'unsafe-inline'",
-    `img-src 'self' blob: data: ${IMG_ORIGIN}${DEV_IMG_ORIGINS}`,
+    `img-src 'self' blob: data: ${IMG_ORIGIN}${ASSET_CDN_ORIGIN ? ` ${ASSET_CDN_ORIGIN}` : ""}${DEV_IMG_ORIGINS}`,
     "font-src 'self' data:",
-    `connect-src 'self' ${API_ORIGIN}`,
+    `connect-src 'self' ${API_ORIGIN}${ASSET_S3_ORIGIN ? ` ${ASSET_S3_ORIGIN}` : ""}`,
     "object-src 'none'",
     "base-uri 'self'",
     "form-action 'self'",

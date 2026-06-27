@@ -62,6 +62,32 @@ resource "aws_kms_key" "main" {
         Action    = ["kms:Decrypt", "kms:GenerateDataKey*"]
         Resource  = "*"
       },
+      {
+        # CloudFront OAC serves the SSE-KMS-encrypted objects from the PRIVATE
+        # assets bucket (roadmap item 46). The OAC origin fetch is made by the
+        # CloudFront SERVICE principal — not an IAM role — so granting GetObject
+        # in the S3 bucket policy is NOT enough: S3 must call kms:Decrypt to hand
+        # CloudFront the plaintext, and a service principal can only be granted
+        # that HERE, in the key policy. Without this every asset 403s at the edge
+        # even though the upload + validation + promotion all succeeded.
+        #
+        # Scoped with the SourceArn confused-deputy guard to CloudFront
+        # distributions in THIS account. We use the account-wildcard rather than
+        # the exact distribution ARN on purpose: the assets bucket's SSE config
+        # already depends on this key, so referencing aws_cloudfront_distribution
+        # .assets here would create a Terraform dependency cycle. Tighten to the
+        # exact ARN later via a standalone aws_kms_key_policy resource if wanted.
+        Sid       = "AllowCloudFrontDecryptAssets"
+        Effect    = "Allow"
+        Principal = { Service = "cloudfront.amazonaws.com" }
+        Action    = ["kms:Decrypt"]
+        Resource  = "*"
+        Condition = {
+          StringLike = {
+            "AWS:SourceArn" = "arn:${data.aws_partition.current.partition}:cloudfront::${data.aws_caller_identity.current.account_id}:distribution/*"
+          }
+        }
+      },
     ]
   })
 }
