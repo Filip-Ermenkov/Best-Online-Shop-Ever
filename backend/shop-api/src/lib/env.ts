@@ -114,6 +114,45 @@ const EnvSchema = z.object({
     .default("catalog/")
     .transform((s) => (s.length === 0 || s.endsWith("/") ? s : `${s}/`)),
 
+  // ─── Image uploads (assets-fn pipeline, roadmap item 46) ─────────────────
+  /**
+   * S3 bucket the admin upload presign targets and the assets-fn validator
+   * promotes within (infra output `assets_bucket`). Empty = uploads disabled:
+   * POST /admin/uploads returns a clean 503 `/problems/uploads-not-configured`
+   * rather than minting a URL to a non-existent bucket. Set only on a deploy
+   * with `enable_asset_uploads = true`; the storefront and local dev leave it
+   * empty (the catalog still renders — images fall back to the placeholder).
+   * Deliberately NOT enforced via superRefine: this schema is shared with the
+   * validator Lambda, which sets the bucket but not, say, EMAIL_QUEUE_URL.
+   */
+  ASSET_UPLOAD_BUCKET: z.string().default(""),
+  /**
+   * Region of the asset bucket — used to construct the S3 client that signs the
+   * presigned POST. eu-central-1 (Frankfurt) by GDPR data-residency default,
+   * same as EMAIL_AWS_REGION.
+   */
+  ASSET_AWS_REGION: z.string().default("eu-central-1"),
+  /**
+   * Hard upper bound on an uploaded image, in bytes (default 10 MiB). Enforced
+   * twice: a clean field-level 400 in the route, AND the S3 POST policy's
+   * `content-length-range`, so an over-cap upload is refused by S3 itself.
+   */
+  ASSET_UPLOAD_MAX_BYTES: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(10 * 1024 * 1024),
+  /**
+   * Lifetime of a minted presigned POST, in seconds (default 5 min). Short by
+   * design — long enough for the admin to pick a file and upload, not long
+   * enough for a leaked URL to be useful later.
+   */
+  ASSET_UPLOAD_URL_TTL_SECONDS: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(300),
+
   // ─── Breached-password screening ─────────────────────────────────────────
   /**
    * Toggle the HIBP k-anonymity check on registration and password-reset.

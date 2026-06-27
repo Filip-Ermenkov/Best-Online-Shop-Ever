@@ -9,17 +9,26 @@ Hono on Lambda. Same handler runs locally on Node via `@hono/node-server`.
 > reporting, **admin auth (TOTP MFA)**, **admin order management**
 > (`/admin/orders/*`, 2026-06-10), **admin category management**
 > (`/admin/categories/*`, 2026-06-15), **admin product management**
-> (`/admin/products/*`, 2026-06-22), and the **scheduled jobs**
+> (`/admin/products/*`, 2026-06-22), the **image-upload pipeline**
+> (`/admin/uploads/*` + the `assets-fn` validator Lambda, 2026-06-22), and the
+> **scheduled jobs**
 > (`src/jobs/*` → the `scheduler-fn` Lambda bundle, 2026-06-12). The
 > authoritative, up-to-date route
 > inventory lives in the root `README.md` → "What's wired up"; the
-> machine-readable contract is `GET /openapi.json`. The newest slice is
-> **admin product management** (2026-06-22) — the third admin CRUD slice
-> (`/admin/products/*`): product CRUD + within-category reorder + soft-delete
-> writing a 301 redirect + archive/restore, optimistic-locked on `updatedAt` and
-> audit-logged, activating the dormant `products` write surface and the
-> `product_images` table (backend only — the `/admin/products` frontend page is
-> still mock); rationale in `docs/ARCHITECTURE.md` §13. Alongside it the same day,
+> machine-readable contract is `GET /openapi.json`. The newest slice is the
+> **image-upload pipeline** (2026-06-22, roadmap item 46): `POST /admin/uploads`
+> mints a **presigned POST** so the browser uploads an image straight to S3
+> (policy-pinned size + type), and the `assets-fn` Lambda magic-byte-validates
+> each upload and promotes only genuine images to the CloudFront-served prefix.
+> It activates every dormant image key the catalog already stored (no entity
+> could previously put bytes behind a key). Pure helpers in `lib/asset-upload.ts`;
+> behind `enable_asset_uploads`; rationale in `docs/ARCHITECTURE.md` §13. Just
+> before it, **admin product management** (2026-06-22) — the third admin CRUD
+> slice (`/admin/products/*`): product CRUD + within-category reorder +
+> soft-delete writing a 301 redirect + archive/restore, optimistic-locked on
+> `updatedAt` and audit-logged, activating the dormant `products` write surface
+> and the `product_images` table (backend only — the `/admin/products` frontend
+> page is still mock). And the same day,
 > the **framework-error mapping** — the global `onError` now returns a
 > framework throw's true HTTP status instead of a blanket 500, so a malformed JSON
 > request body is `400 /problems/malformed-json` (the pure `lib/error-response.ts`

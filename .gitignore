@@ -31,9 +31,20 @@ crash.log
 crash.*.log
 
 # Lambda build artifacts (when backend/ is added)
-backend/**/dist/
+# dist* covers the per-Lambda esbuild bundles: dist/ (shop-api + email-fn),
+# dist-scheduler/ (scheduler-fn), dist-assets/ (assets-fn). Terraform rebuilds
+# them from source before `apply`, so the minified output never belongs in git.
+backend/**/dist*/
 backend/**/build/
 backend/**/*.zip
+
+# Local smoke-test scratch files (the README curl recipes create these — JSON
+# request bodies and a saved session cookie; never commit a cookie/session token)
+cookies.txt
+body.json
+patch.json
+del.json
+f.json
 
 # Logs
 *.log

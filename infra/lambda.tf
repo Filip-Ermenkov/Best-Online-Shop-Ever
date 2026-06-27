@@ -80,6 +80,16 @@ resource "aws_lambda_function" "shop_api" {
         ENABLE_TRACING              = "true"
         OTEL_TRACES_EXPORTER        = var.adot_collector_layer_arn != "" ? "otlp" : "none"
         OTEL_EXPORTER_OTLP_ENDPOINT = "http://localhost:4318"
+      } : {},
+      # Image uploads (roadmap item 46). Present only when enable_asset_uploads.
+      # CDN_BASE_URL is overridden to the new assets distribution UNLESS an
+      # explicit cdn_base_url is set (e.g. a custom image domain / R2) — a later
+      # merge key wins, so this line supersedes the base CDN_BASE_URL above.
+      var.enable_asset_uploads ? {
+        ASSET_UPLOAD_BUCKET    = aws_s3_bucket.assets[0].id
+        ASSET_AWS_REGION       = var.aws_region
+        ASSET_UPLOAD_MAX_BYTES = tostring(var.asset_max_upload_mb * 1024 * 1024)
+        CDN_BASE_URL           = var.cdn_base_url != "" ? var.cdn_base_url : "https://${aws_cloudfront_distribution.assets[0].domain_name}"
       } : {}
     )
   }

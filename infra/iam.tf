@@ -63,15 +63,41 @@ data "aws_iam_policy_document" "lambda" {
     }
   }
 
+  # Image uploads (roadmap item 46). The browser uploads with shop-api's
+  # presigned-POST signature, so this role must be able to PutObject the
+  # server-chosen pending key — scoped to pending/* only, never the served
+  # prefix. Separately, the upload-status poll HEADs the promoted object, which
+  # needs s3:GetObject on uploads/*.
+  dynamic "statement" {
+    for_each = var.enable_asset_uploads ? [1] : []
+    content {
+      sid       = "SignAssetUploads"
+      effect    = "Allow"
+      actions   = ["s3:PutObject"]
+      resources = ["${aws_s3_bucket.assets[0].arn}/pending/*"]
+    }
+  }
+
+  dynamic "statement" {
+    for_each = var.enable_asset_uploads ? [1] : []
+    content {
+      sid       = "HeadServedAsset"
+      effect    = "Allow"
+      actions   = ["s3:GetObject"]
+      resources = ["${aws_s3_bucket.assets[0].arn}/uploads/*"]
+    }
+  }
+
   # Decrypt the SecureString + CMK-encrypted log/env data when a CMK is in use.
-  # Publishing to the CMK-encrypted email queue additionally needs
-  # kms:GenerateDataKey (SQS SSE-KMS encrypts with a data key per batch).
+  # Publishing to the CMK-encrypted email queue, OR writing the CMK-encrypted
+  # asset bucket via the presigned POST, additionally needs kms:GenerateDataKey
+  # (SSE-KMS encrypts with a per-object/per-batch data key).
   dynamic "statement" {
     for_each = var.enable_kms_cmk ? [1] : []
     content {
       sid       = "DecryptWithCmk"
       effect    = "Allow"
-      actions   = concat(["kms:Decrypt"], var.enable_email_queue ? ["kms:GenerateDataKey"] : [])
+      actions   = concat(["kms:Decrypt"], (var.enable_email_queue || var.enable_asset_uploads) ? ["kms:GenerateDataKey"] : [])
       resources = [aws_kms_key.main[0].arn]
     }
   }

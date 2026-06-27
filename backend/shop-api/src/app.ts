@@ -19,6 +19,7 @@ import { adminAuthRoutes } from "./routes/admin/auth.js";
 import { adminCategoriesRoutes } from "./routes/admin/categories.js";
 import { adminOrdersRoutes } from "./routes/admin/orders.js";
 import { adminProductsRoutes } from "./routes/admin/products.js";
+import { adminUploadsRoutes } from "./routes/admin/uploads.js";
 import { addressesRoutes } from "./routes/addresses.js";
 import { authRoutes } from "./routes/auth.js";
 import { cartRoutes } from "./routes/cart.js";
@@ -225,6 +226,9 @@ export function buildApp() {
   // Admin product management — every route requireAdmin-gated inside the router.
   app.use("/admin/products/*", currentUser);
   app.use("/admin/products", currentUser);
+  // Admin image uploads (presign) — every route requireAdmin-gated inside the router.
+  app.use("/admin/uploads/*", currentUser);
+  app.use("/admin/uploads", currentUser);
 
   app.get("/health", (c) => c.json({ ok: true }));
 
@@ -235,6 +239,7 @@ export function buildApp() {
   app.route("/admin/orders", adminOrdersRoutes);
   app.route("/admin/categories", adminCategoriesRoutes);
   app.route("/admin/products", adminProductsRoutes);
+  app.route("/admin/uploads", adminUploadsRoutes);
   app.route("/cart", cartRoutes);
   app.route("/orders", ordersRoutes);
   app.route("/addresses", addressesRoutes);

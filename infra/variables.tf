@@ -456,3 +456,51 @@ variable "catalog_backup_retention_days" {
     error_message = "catalog_backup_retention_days must be at least 7 (anything lower defeats the point of a daily backup history)."
   }
 }
+
+# ─── Image uploads (assets-fn pipeline, roadmap item 46) ─────────────────────
+
+variable "enable_asset_uploads" {
+  description = "Provision the catalog-image upload pipeline: a private assets S3 bucket (pending/ + uploads/ prefixes), a CloudFront+OAC distribution that serves only uploads/, and the assets-fn validator Lambda (magic-byte check → promote/delete). Wires shop-api to mint presigned POSTs and points CDN_BASE_URL at the new distribution. Requires the assets bundle (npm --workspace @shop/api run build:assets) and asset_cors_allowed_origins."
+  type        = bool
+  default     = false
+}
+
+variable "assets_fn_bundle_dir" {
+  description = "Path (relative to infra/) to the esbuild output dir produced by `npm run build:assets` in @shop/api. Zipped at plan time when enable_asset_uploads = true."
+  type        = string
+  default     = "../backend/shop-api/dist-assets"
+}
+
+variable "asset_cors_allowed_origins" {
+  description = "Origins allowed to POST a file to the assets bucket (the storefront/admin host[s], e.g. https://shop.example.com). Required when enable_asset_uploads = true — the browser presigned POST fails CORS without it."
+  type        = list(string)
+  default     = []
+}
+
+variable "asset_pending_retention_days" {
+  description = "Days an un-validated object may linger in pending/ before the bucket lifecycle expires it. The validator normally promotes/deletes within seconds; this only sweeps abandoned uploads. 1 is plenty."
+  type        = number
+  default     = 1
+
+  validation {
+    condition     = var.asset_pending_retention_days >= 1
+    error_message = "asset_pending_retention_days must be at least 1 (S3 lifecycle expiration is day-granular)."
+  }
+}
+
+variable "asset_max_upload_mb" {
+  description = "Hard cap on a single uploaded image, in MiB. Passed to shop-api as ASSET_UPLOAD_MAX_BYTES and enforced again in the S3 POST policy's content-length-range."
+  type        = number
+  default     = 10
+
+  validation {
+    condition     = var.asset_max_upload_mb >= 1 && var.asset_max_upload_mb <= 50
+    error_message = "asset_max_upload_mb must be between 1 and 50 (a product photo, not an archive)."
+  }
+}
+
+variable "assets_fn_reserved_concurrency" {
+  description = "Reserved concurrency for assets-fn. -1 = unreserved (the safe default on small accounts — see the CKV_AWS_115 note in assets.tf). Set a small positive cap after a Service-Quotas raise for defence-in-depth."
+  type        = number
+  default     = -1
+}

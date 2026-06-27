@@ -73,6 +73,20 @@ enable_slo_alarms = false
 # 2 alarms. See infra/README.md → "Scheduled jobs runbook".
 enable_scheduler = false
 
+# ─── Image uploads (assets-fn pipeline, roadmap item 46) ─────────────────────
+# Build the bundle BEFORE applying with this on:
+#   npm --workspace @shop/api run build:assets
+# Provisions: a private assets bucket (pending/ + uploads/), a CloudFront+OAC
+# distribution serving only uploads/, and the assets-fn validator (magic-byte
+# check → promote/delete). shop-api then mints presigned POSTs and CDN_BASE_URL
+# is auto-pointed at the new distribution (unless cdn_base_url above is set).
+# asset_cors_allowed_origins is REQUIRED (the browser uploads cross-origin).
+# See infra/README.md → "Image upload runbook".
+enable_asset_uploads       = false
+asset_cors_allowed_origins = [] # e.g. ["https://shop.example.com"]
+# asset_max_upload_mb          = 10
+# asset_pending_retention_days = 1
+
 # ─── Cost / security knobs ───────────────────────────────────────────────────
 enable_kms_cmk      = true # ~$1/mo; false = AWS-managed keys, €0 tier
 enable_xray_tracing = true

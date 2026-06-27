@@ -17,6 +17,7 @@
     "job": "tsx src/jobs/cli.ts",
     "build:lambda": "node build.mjs",
     "build:scheduler": "node build-scheduler.mjs",
+    "build:assets": "node build-assets.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
@@ -24,6 +25,7 @@
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1068.0",
+    "@aws-sdk/s3-presigned-post": "^3.1068.0",
     "@hono/otel": "^1.1.2",
     "@hono/zod-openapi": "^1.4.0",
     "@hono/node-server": "^2.0.4",

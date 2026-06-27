@@ -226,6 +226,80 @@ transactions, which cannot do pg-level channel binding — `createDb()` strips
 `channel_binding=require` from the URL, so the pooled SSM value works whether
 or not it carries that parameter.
 
+## Image upload runbook (roadmap item 46)
+
+The catalog-image upload pipeline: a private **assets bucket** (`pending/`
+upload target + `uploads/` served prefix), a **CloudFront + OAC** distribution
+that serves only `uploads/` (via `origin_path`), and the **assets-fn** validator
+Lambda that magic-byte-checks each upload and promotes only genuine images. The
+browser uploads straight to S3 with a presigned POST minted by shop-api
+(`POST /admin/uploads`); the bytes never pass through a Lambda.
+
+To enable on a stack:
+
+```hcl
+# terraform.tfvars
+enable_asset_uploads       = true
+asset_cors_allowed_origins = ["https://shop.example.com"]  # REQUIRED — the storefront/admin origin(s)
+# asset_max_upload_mb          = 10   # optional (default 10)
+# asset_pending_retention_days = 1    # optional (default 1)
+```
+
+```bash
+cd ../backend/shop-api && npm run build:assets && cd ../../infra  # bundle first
+terraform apply
+```
+
+On apply, Terraform wires shop-api automatically: `ASSET_UPLOAD_BUCKET` is set,
+and `CDN_BASE_URL` is pointed at the new assets distribution (unless
+`cdn_base_url` is set to a custom domain / R2 — that wins). The outputs
+`assets_bucket`, `assets_cdn_domain`, and `assets_cdn_url` report the created
+resources.
+
+**Manual drill (presign → upload → verify promotion):** with an admin session
+cookie saved to `cookies.txt` (see the root README → "Admin authentication"):
+
+```bash
+# 1. Mint a presigned POST for a small JPEG.
+#    body.json: {"kind":"products","contentType":"image/jpeg","contentLength":12345}
+curl.exe -s -X POST https://<api-host>/admin/uploads -b cookies.txt \
+  -H 'Content-Type: application/json' --data "@body.json"
+#    → { "url":"https://<bucket>.s3...", "fields":{...}, "storedKey":"products/<uuid>.jpg", ... }
+
+# 2. Upload the file straight to S3 with the returned fields (file LAST).
+curl.exe -s -X POST "<url>" \
+  -F key="<fields.key>" -F Content-Type=image/jpeg \
+  -F Policy="<fields.Policy>" -F X-Amz-Signature="<fields['X-Amz-Signature']>" \
+  ... (all fields) ... \
+  -F file=@photo.jpg
+#    → 204 (S3 accepted it into pending/)
+
+# 3. Poll until the validator has promoted it (usually < 1s).
+curl.exe -s "https://<api-host>/admin/uploads/status?key=products/<uuid>.jpg" -b cookies.txt
+#    → { "key":"products/<uuid>.jpg", "ready":true }
+
+# 4. The image is now served at CDN_BASE_URL/products/<uuid>.jpg.
+```
+
+To prove the security gate, repeat step 2 with a non-image renamed `.jpg`: the
+upload still returns 204 (S3 accepts the bytes), but step 3 stays `ready:false`
+forever — the `asset_rejected` log line in the `assets-fn` log group shows the
+object was deleted, never promoted.
+
+**Failure lane (one alarm):** `assets-fn-errors` — a validation invoke threw (an
+unexpected S3 fault or a bug). The bucket invokes the function asynchronously, so
+in-function failures surface only on the Lambda `Errors` metric. There is no DLQ
+by design: a rejected object is deleted (so it cannot re-trigger), and a transient
+fault is retried by the async invoke. Look for the `asset_rejected` / `asset_
+promoted` events in the function's log group.
+
+Notes: the bucket is private (public access blocked, OAC-only); `pending/` is
+unreachable through the CDN (the distribution's `origin_path` is `/uploads`), and
+its objects are lifecycle-expired after `asset_pending_retention_days`. The shop-
+api role can `PutObject` only under `pending/*` (it signs the presigned POST) and
+`GetObject` only under `uploads/*` (the status HEAD); the assets-fn role can read
+`pending/*`, write `uploads/*`, and delete `pending/*` — nothing else.
+
 ## Tracing runbook (roadmap item 18)
 
 App-level OpenTelemetry on `shop-api`: `@hono/otel` request spans + undici/fetch

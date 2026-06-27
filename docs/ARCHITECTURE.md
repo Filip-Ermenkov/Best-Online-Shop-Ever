@@ -250,11 +250,14 @@ runnable locally via `@hono/node-server`. Routes mounted in
   backup orchestration. **Not yet split out.** Admin *authentication*
   (`/admin/auth/*`, mandatory TOTP MFA — see below) and the CRUD slices
   shipped so far — **order management** (2026-06-10), **category management**
-  (2026-06-15), and **product management** (backend, 2026-06-22) at
-  `/admin/orders/*`, `/admin/categories/*`, `/admin/products/*` — live in
+  (2026-06-15), **product management** (backend, 2026-06-22), and the
+  **image-upload pipeline** (`/admin/uploads/*`, 2026-06-22) at
+  `/admin/orders/*`, `/admin/categories/*`, `/admin/products/*`,
+  `/admin/uploads/*` — live in
   `shop-api` today as self-contained, portable Hono modules (`routes/admin/*`)
   that will move here when the admin CRUD surface justifies a separate
-  Lambda + subdomain.
+  Lambda + subdomain. (The `assets-fn` validator Lambda is its own deployable,
+  like `scheduler-fn`/`email-fn`.)
 - **`scheduler-fn`** — three cron rules: daily catalog backup, hourly
   expired-pickup check, daily unverified-account cleanup (+ the
   login_attempts retention prune). **Shipped 2026-06-12** (roadmap
@@ -359,30 +362,48 @@ at Neon's pooled (`-pooler`, PgBouncer transaction-mode) endpoint,
 which is compatible with these short transactions; the node-pg dev
 driver still uses a real 3-connection pool.
 
-### 3.6 Object storage — Amazon S3 (planned)
+### 3.6 Object storage — Amazon S3
 
-**Today:** No S3 integration. The `images.ts` helper builds URLs
-against a configured base; locally that's a `cdn.duda1.bg`-style
-placeholder. There is no admin upload path (the admin Lambda doesn't
-exist yet).
+**Today:** Two S3 roles are live; a third (image transcoding) is a
+documented door.
 
-**Target:** S3 with three roles —
+1. **Daily catalog backups** — shipped 2026-06-12 (item 23). A
+   date-keyed JSON snapshot of the four catalog tables to a versioned,
+   90-day-lifecycle, SSE-KMS bucket, written by the scheduler-fn
+   catalog-backup job (`infra/scheduler.tf`). Zero personal data.
+2. **The image-upload pipeline** — shipped 2026-06-22 (item 46,
+   `infra/assets.tf`, flag `enable_asset_uploads`). The keystone the
+   catalog had been waiting on: products / categories / banners stored
+   S3 keys (`images.ts` derives the URL) but no entity could put bytes
+   behind a key. Now a **private assets bucket** carries two prefixes —
+   `pending/` (un-validated upload target) and `uploads/` (served) — a
+   **CloudFront + OAC** distribution serves ONLY `uploads/` (via
+   `origin_path`, so `pending/` is unreachable through the CDN), and the
+   **assets-fn** validator Lambda magic-byte-checks every upload and
+   promotes only genuine images. The browser uploads straight to S3 with
+   a short-lived **presigned POST** minted by shop-api
+   (`routes/admin/uploads.ts`) — never through Lambda (a 6 MB sync
+   payload cap and a pay-per-byte cost both sidestepped). The POST policy
+   pins the exact key, a `content-length-range`, and the `Content-Type`;
+   the validator re-derives the TRUE type from the bytes because a
+   declared MIME is not proof of content. Built once, it serves all three
+   image-bearing entities uniformly (the `kind` field selects the key
+   folder). Design rationale in §13.
 
-1. **Original product images** in a `temp/` prefix (deleted after
-   processing).
-2. **Three pre-optimised WebP variants** per image (1200×1200,
-   400×400, 150×150 — about 2 MB per product total).
-3. **Daily catalog backups** (full categories+products JSON snapshot
-   with 90-day retention; >90d moves to Glacier Instant Retrieval).
-
-CloudFront would sit in front of the image bucket. **Sharp.js
-processes at UPLOAD time, not at request time.** Admin would use an
-S3 presigned PUT URL (15-min TTL, 10 MB cap, JPG/PNG only) to bypass
-Lambda's 6 MB payload cap, then trigger
-`POST /admin/process-image` to run Sharp.
+**Future enhancement (a §16 door, not yet built):** **Sharp.js
+transcoding at upload time** — re-encode each promoted image into
+pre-optimised WebP/AVIF variants (e.g. 1200×1200 / 400×400 / 150×150)
+and strip EXIF metadata. The assets-fn validator is the natural home
+for it, but it adds a native (`sharp`) Lambda dependency and an
+arch-matched binary, so it is deferred until a real performance or
+metadata-privacy need (uploads are admin-only today — the shop owner's
+own product photos — so the third-party-PII-in-EXIF risk is low). The
+key layout already accommodates variants (a `<kind>/<uuid>/` folder per
+image) without a data migration.
 
 **Possible migration to Cloudflare R2** for free egress and to
-eliminate one AWS lock-in point. See §10.
+eliminate one AWS lock-in point — `CDN_BASE_URL` already abstracts the
+serving origin, so this is a config change, not a code change. See §10.
 
 ### 3.7 Email — Amazon SES
 
@@ -2064,6 +2085,72 @@ serving design (2026-06-16):
   isolation, ready for a future `admin-api` Lambda, same split as
   `lib/category-tree.ts` and `lib/order-status.ts`.
 
+### 13.x Image uploads — presigned POST, direct-to-S3, server-side magic-byte validation
+
+The keystone that activates every image key the catalog already stores
+(`product_images.s3_key`, `categories.image_s3_key`, `banner_slides.image_s3_key`).
+Built once (`routes/admin/uploads.ts` + `assets/handler.ts` + `lib/asset-upload.ts`
++ `infra/assets.tf`), it serves products, categories AND banners uniformly. All
+decisions below were researched against 2026 practice.
+
+- **Presigned POST, not presigned PUT (researched).** Only the POST policy can
+  pin BOTH a `content-length-range` and an exact `Content-Type` in the signature,
+  so S3 itself refuses an over-cap or wrong-type upload before a byte is stored. A
+  presigned PUT can sign a `Content-Type` header but cannot enforce a size bound
+  server-side. POST is the AWS-recommended browser-upload primitive for exactly
+  this reason.
+- **Direct browser→S3, never through Lambda.** The bytes go straight to the
+  bucket. Routing an image through the API Lambda would hit the 6 MB synchronous
+  payload cap and bill for every uploaded byte of compute time. shop-api only
+  *signs* the policy (a few milliseconds, no bytes), so the upload path costs the
+  function nothing.
+- **The declared Content-Type is never trusted as proof of content.** It scopes
+  the presign; it does not prove the file is an image. A `.jpg` can carry an
+  HTML/JS polyglot, an SVG (an XML/script vector — deliberately NOT on the
+  allowlist), or a renamed executable. So an **`s3:ObjectCreated` validator
+  Lambda** (`assets-fn`) reads the object's leading bytes and re-derives the TRUE
+  type from its magic number (`lib/asset-upload.ts` — the same allowlist the
+  presign uses). Magic numbers can't be forged without corrupting the pixels.
+  Client-side validation is convenience only.
+- **Two prefixes + promote-or-delete, so hostile content is never servable.**
+  Uploads land in `pending/`; the validator **copies** a genuine, allowlisted
+  image (whose bytes match its key's extension) to `uploads/` and **deletes**
+  everything else. The CloudFront distribution's `origin_path` is `/uploads`, so
+  `pending/` is unreachable through the CDN even by exact key — an attacker who
+  somehow obtains a presigned POST still cannot leave servable hostile content in
+  the bucket. A lifecycle rule expires anything left in `pending/` after a day.
+  This event-driven design (over a synchronous "finalize" endpoint that validates
+  on demand) was chosen because it guarantees EVERY landed object is validated,
+  not only the ones a finalize call happens to reference.
+- **Server-generated keys.** The object key is `pending/<kind>/<uuid>.<ext>` with
+  a random UUID the server picks — never a client-supplied name. No path
+  traversal, no overwrite of an existing image, no key-guessing. The validator
+  re-parses the key with a strict regex (kind ∈ the three folders, a real UUID,
+  an allowlisted extension) as defence in depth before promoting.
+- **CloudFront + OAC over a PRIVATE bucket (researched), not a public bucket and
+  not CloudFront signed URLs.** 2026 guidance is unambiguous: never make the
+  image bucket public; use Origin Access Control (sigv4, supersedes OAI) with
+  `BucketOwnerEnforced` ownership and a full public-access block, so objects are
+  reachable only through the distribution. Signed URLs are for *private* assets;
+  catalog images are public content, so OAC-alone (no per-object signing) is
+  correct — the bucket stays locked down, the images stay cacheable and CDN-fast.
+- **The stored key is origin-relative.** Entities store `<kind>/<uuid>.<ext>`
+  (no `uploads/` prefix); `CDN_BASE_URL` + the distribution's `origin_path`
+  supply the rest. Same reason `images.ts` never stored a fully-qualified URL: the
+  serving origin (CloudFront today, Cloudflare R2 tomorrow — §10) can change
+  without rewriting a single row.
+- **Rejected / deferred.** Presigned PUT (no size enforcement); a synchronous
+  finalize-endpoint validator (misses objects never finalized); a public bucket
+  (the classic S3 image-leak); **Sharp transcoding + EXIF stripping at upload**
+  (a real enhancement — §3.6 — but it adds a native arch-matched Lambda binary
+  and earns its keep only past a performance or third-party-PII-in-metadata need;
+  uploads are admin-only today, so that need is not yet present). Pure helpers
+  (allowlist, key layout, request validation, the magic-byte sniffer) live in
+  `lib/asset-upload.ts`, DB- and AWS-free, unit-tested in isolation — the same
+  split as `lib/category-tree.ts` / `lib/product-admin.ts`, and the single source
+  of truth both the presign route and the validator Lambda import so the contract
+  can never drift.
+
 ## 14. Honest assessment vs A+ target
 
 **Current state, scored against AWS Well-Architected:**
@@ -2672,6 +2759,34 @@ Ranked by `(impact ÷ effort)` — highest leverage first. Items marked
     never reflected back in `detail` (PII). Tests:
     `tests/lib/error-response.test.ts` (10) + `tests/routes/error-handling.test.ts`
     (3). No migration, no infra, no new dependency. Full rationale in §13.
+
+46. ✅ **Image-upload pipeline — presigned POST + server-side magic-byte
+    validation — shipped 2026-06-22.** The keystone that activates every image
+    key the catalog already stores: until now products / categories / banners
+    held S3 keys (`images.ts` builds the URL) but **no entity could put bytes
+    behind a key** — the catalog could only be seeded with keys pointing at
+    nothing. Closes the single largest cross-cutting functional gap, and unblocks
+    real product/category images AND the still-mock home banners in one build.
+    Scope: a private **assets bucket** (`pending/` upload target + `uploads/`
+    served prefix), a **CloudFront + OAC** distribution serving only `uploads/`
+    (via `origin_path`), the **assets-fn** validator Lambda (magic-byte check →
+    promote genuine images / delete everything else), and shop-api's presign
+    surface `POST /admin/uploads` + `GET /admin/uploads/status`
+    (`routes/admin/uploads.ts`). The browser uploads straight to S3 with a
+    short-lived presigned POST — never through Lambda — whose policy pins the
+    exact key, a `content-length-range`, and the `Content-Type`; the validator
+    re-derives the true type from the bytes (a declared MIME is not proof). Pure
+    helpers in `lib/asset-upload.ts` (allowlist, key layout, request validation,
+    the magic-byte sniffer) are the single source of truth the route AND the
+    validator import. Behind `enable_asset_uploads` (default off, `infra/assets.tf`);
+    one new first-party dependency (`@aws-sdk/s3-presigned-post`); no migration.
+    Tests: `tests/lib/asset-upload.test.ts` (pure helpers, real format heads),
+    `tests/routes/admin-uploads.test.ts` (the presign route, S3 adapters
+    injected), `tests/assets/validate-upload.test.ts` (the validator). Reusable
+    frontend client in `frontend/src/lib/uploads/`. **What remains:** wiring the
+    upload widget into the product / category / banner admin EDITORS (frontend),
+    and the optional Sharp transcode/EXIF-strip enhancement (§3.6, §13). Full
+    rationale in §13.
 
 **Doing items 15–27 closes every meaningful 2026 gap in ~4–6
 working days. Items 28–33 raise the quality bar further at ~3 more

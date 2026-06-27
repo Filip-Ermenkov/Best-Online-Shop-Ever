@@ -314,7 +314,7 @@ L3 (high-assurance / critical systems).
 | V9 Communications Security | ✅ | ✅ | TLS 1.3, HSTS preload (production builds), uniform strict CSP |
 | V10 Malicious Code | ✅ | ✅ | SAST via CodeQL `security-extended`; SCA via Dependabot |
 | V11 Business Logic | ✅ | ✅ | Idempotency, expand-contract, snapshots |
-| V12 Files and Resources | N/A | N/A | No file upload path exists today (no admin Lambda); covered when image upload ships |
+| V12 Files and Resources | ✅ | ✅ | Image upload shipped 2026-06-22 (item 46): presigned POST pins `Content-Type` + a `content-length-range`; a server-side **magic-byte validation Lambda** rejects spoofed content (client MIME never trusted); raster allowlist (no SVG/GIF); server-generated keys (no traversal/overwrite); private bucket + CloudFront OAC, `pending/` never CDN-reachable. ARCHITECTURE §13 |
 | V13 API and Web Service | ✅ | ✅ | Hono + zod-openapi + RFC 9457 |
 | V14 Configuration | ⚠️ | ⚠️ | `.env` for local dev; Parameter Store planned for production |
 
