@@ -550,7 +550,7 @@ WCAG 2.1 AA; the V4.x revision brings WCAG 2.2 AA. The shop targets
 | WCAG 2.2 Principle | Status | Notes |
 |---|---|---|
 | Perceivable | ✅ | Text contrast ≥ 4.5:1 (≥ 3:1 large/UI) — design tokens darkened (`--primary-strong` gold, `--muted-foreground`), verified computationally (OKLCH→WCAG luminance); meaningful `alt`, decorative images `alt=""`; info never by colour alone |
-| Operable | ✅ | Full keyboard nav; uniform `:focus-visible` indicator (2.4.13); skip-link to `#main-content` (2.4.1); targets ≥ 24 px (2.5.8); `prefers-reduced-motion` honoured (2.2.2 / 2.3.3); search is a WAI-ARIA APG combobox |
+| Operable | ✅ | Full keyboard nav; uniform `:focus-visible` indicator (2.4.13); skip-link to `#main-content` (2.4.1); targets ≥ 24 px (2.5.8); `prefers-reduced-motion` honoured + a visible pause control on the auto-rotating homepage hero (2.2.2 / 2.3.3); search is a WAI-ARIA APG combobox |
 | Understandable | ✅ | Associated `<label>` on every field; `autoComplete` purposes (1.3.5); errors via `role="alert"`; `lang="bg"`; predictable navigation |
 | Robust | ✅ | Semantic landmarks + ARIA (combobox/listbox/option, region, alert); base-ui dialogs trap focus + close on Esc |
 | **Continuous audit** | ✅ | Static `eslint-plugin-jsx-a11y` in CI (the `lint` job) + runtime `axe-core`/Playwright (`npm run test:a11y`) + manual keyboard/SR checklist (`docs/ACCESSIBILITY.md` §5). The ⚠️→✅ this row used to flag is now operationalised |

@@ -2,8 +2,9 @@
 > intentionally makes no claims about the shop. For what this frontend
 > actually implements (storefront, account flows, cart/checkout, guest
 > checkout + order tracking, SEO `sitemap.ts`/`robots.ts` + 301 redirect
-> serving, admin sign-in + admin orders + admin categories + admin products
-> with direct-to-S3 image upload)
+> serving, admin sign-in + admin orders + admin categories + admin products +
+> admin banners with direct-to-S3 image upload, and the live accessible
+> homepage hero carousel)
 > and how to run/test it, see the root `README.md`
 > and `docs/ARCHITECTURE.md` §5.
 

@@ -1,4 +1,5 @@
 import type {
+  BannerList,
   CategoryTree,
   ProductDetail,
   ProductsPage,
@@ -144,6 +145,30 @@ export async function fetchCategoryTree(): Promise<CategoryTree> {
     );
   }
   return (await res.json()) as CategoryTree;
+}
+
+/**
+ * Convenience: fetch the active homepage banner slides (the hero carousel).
+ * Returns `{ items: [] }` when no slides are active — the home page reads that
+ * as "render no hero" per the spec. Degrades gracefully: the caller catches
+ * `ApiClientError` and renders no hero rather than failing the whole page.
+ *
+ * Tagged `banners` so an admin edit (later: a `revalidateTag('banners')` server
+ * action) can purge this cache entry; same 5-minute window as the catalog.
+ */
+export async function fetchBanners(): Promise<BannerList> {
+  const res = await fetch(`${baseUrl}/banners`, {
+    headers: COMMON_HEADERS,
+    next: { revalidate: 300, tags: ["banners"] },
+  });
+  if (!res.ok) {
+    throw new ApiClientError(
+      `GET /banners failed (${res.status})`,
+      res.status,
+      await safeProblem(res),
+    );
+  }
+  return (await res.json()) as BannerList;
 }
 
 /** Convenience: fetch a single product by slug. Returns null on 404. */

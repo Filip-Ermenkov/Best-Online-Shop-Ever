@@ -47,6 +47,12 @@ export type {
 // check); `CategoryTree` is the envelope.
 export type { CategoryNode, CategoryTree } from "./routes/categories.js";
 
+// Public banner / hero-slider DTOs from routes/banners.ts. The storefront
+// annotates its lib/api.ts `fetchBanners` helper with `BannerList` so the home
+// page gets the exact slide shape regardless of how the workspace symlink
+// resolves AppType.
+export type { BannerSlide, BannerList } from "./routes/banners.js";
+
 // GDPR Art. 15 + Art. 20 self-service personal-data export envelope. The Zod
 // schema + builder live in lib/data-export.ts (the route in routes/auth.ts
 // references the schema for OpenAPI). Exported here as a concrete DTO for any
@@ -110,6 +116,14 @@ export type {
   AdminPresignedUpload,
   AdminUploadStatus,
 } from "./routes/admin/uploads.js";
+
+// Admin banner-management DTOs from routes/admin/banners.ts (the fourth admin
+// CRUD slice; un-mocks the homepage hero). The admin frontend
+// (frontend/src/lib/admin/banners/) annotates its typed client with these.
+export type {
+  AdminBannerSlide,
+  AdminBannerList,
+} from "./routes/admin/banners.js";
 
 // Guest checkout + order-tracking DTOs from routes/guest.ts (the spec's "Гост"
 // role). The storefront annotates its lib/track + guest-checkout clients with

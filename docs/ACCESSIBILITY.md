@@ -128,6 +128,14 @@ layer — proof the layering earns its keep):
   accordion trigger and other hover-underline affordances are untouched.
 - **Target size (2.5.8):** the banner-carousel dots were 6 px tall; each is now
   a ≥ 24 × 24 px button with the small visual indicator centred inside.
+- **Auto-rotating hero (2.2.2 Pause, Stop, Hide):** the homepage banner carousel
+  — now driven by the live `/banners` API (2026-06-29), not mock data — cycles
+  every 5 s, which is auto-updating content lasting > 5 s, a Level A trigger. It
+  ships a visible pause/play control, pauses on pointer hover and keyboard focus,
+  and never auto-rotates under `prefers-reduced-motion`; the live region is
+  `aria-live="off"` while rotating and `polite` once stopped. The decorative
+  slide image carries `alt=""` (the title/subtitle are the real text), and the
+  LCP hero image is `fetchPriority="high"` + eager for Core Web Vitals.
 
 ---
 
@@ -209,9 +217,10 @@ sensibly*. Walk these by hand.
   drag-and-drop** — the single-pointer / keyboard-operable alternative WCAG
   2.2 SC 2.5.7 (Dragging Movements) requires — and its destructive delete is
   gated behind an explicitly-labelled „Разбирам последствията" checkbox. The
-  remaining CRUD pages (products, customers, banners, settings, archive) are
-  still on mock data; the panel as a whole has not had a full screen-reader
-  audit.
+  **products** and **banners** admin pages are now real (the banners editor
+  reuses the same accessible up/down reorder + the WCAG-2.5.7 `ImageUploadField`);
+  the remaining CRUD pages (customers, settings, archive) are still on mock data,
+  and the panel as a whole has not had a full screen-reader audit.
 - **Third-party content** (courier-office maps) will be assessed when ingested.
 
 ---

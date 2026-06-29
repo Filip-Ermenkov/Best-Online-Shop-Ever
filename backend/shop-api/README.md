@@ -10,12 +10,19 @@ Hono on Lambda. Same handler runs locally on Node via `@hono/node-server`.
 > (`/admin/orders/*`, 2026-06-10), **admin category management**
 > (`/admin/categories/*`, 2026-06-15), **admin product management**
 > (`/admin/products/*`, 2026-06-22), the **image-upload pipeline**
-> (`/admin/uploads/*` + the `assets-fn` validator Lambda, 2026-06-22), and the
-> **scheduled jobs**
+> (`/admin/uploads/*` + the `assets-fn` validator Lambda, 2026-06-22),
+> **admin banner management** (`/admin/banners/*` + public `GET /banners`,
+> 2026-06-29), and the **scheduled jobs**
 > (`src/jobs/*` → the `scheduler-fn` Lambda bundle, 2026-06-12). The
 > authoritative, up-to-date route
 > inventory lives in the root `README.md` → "What's wired up"; the
-> machine-readable contract is `GET /openapi.json`. The newest slice is the
+> machine-readable contract is `GET /openapi.json`. The newest slice is
+> **admin banner management** (2026-06-29, roadmap item 47): the public
+> `GET /banners` feeds the homepage hero, and `/admin/banners/*` is the fourth
+> admin CRUD slice (list / create / edit + show-hide toggle / reorder / delete,
+> `linkUrl` validated to a same-origin path), activating the dormant
+> `banner_slides` table and reusing the image-upload pipeline's `banners` kind
+> via the shared `ImageUploadField`. Before it, the
 > **image-upload pipeline** (2026-06-22, roadmap item 46): `POST /admin/uploads`
 > mints a **presigned POST** so the browser uploads an image straight to S3
 > (policy-pinned size + type), and the `assets-fn` Lambda magic-byte-validates

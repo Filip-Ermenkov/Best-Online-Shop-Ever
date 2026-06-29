@@ -1,8 +1,7 @@
 import Link from "next/link";
 import { ArrowRight } from "lucide-react";
-import { banners } from "@/lib/mock-data/banners";
-import { fetchCategoryTree, fetchProducts } from "@/lib/api";
-import type { Product } from "@/lib/types";
+import { fetchBanners, fetchCategoryTree, fetchProducts } from "@/lib/api";
+import type { Banner, Product } from "@/lib/types";
 import ProductCard from "@/components/shop/ProductCard";
 import BannerSlider from "@/components/shop/BannerSlider";
 import AccountDeletedBanner from "@/components/shop/AccountDeletedBanner";
@@ -13,23 +12,31 @@ import { ButtonLink } from "@/components/ui/button-link";
  * fetch on the server, are cached by Next.js for 5 minutes (matching the API's
  * Cache-Control), and the rendered HTML ships fully populated.
  *
- * Banners are still mock data — no banner_slides API endpoint yet (next slice).
+ * Banners now come from the live `/banners` API (the admin manages them at
+ * /admin/banners). They're non-essential decoration, so a banner-fetch failure
+ * degrades to "no hero" rather than failing the whole page — unlike categories
+ * and products, whose failure surfaces the nearest error.tsx.
  *
  * Error / empty handling: if the API is reachable but returns nothing, the
  * grid renders empty (no error UI shown). If the API is unreachable, the
  * fetch helper throws ApiClientError; Next.js renders the nearest error.tsx.
  */
 export default async function HomePage() {
-  // Fetch in parallel — neither depends on the other.
-  const [categoryTree, productsPage] = await Promise.all([
+  // Fetch in parallel — none depends on the others. Banners degrade to an empty
+  // hero on failure (decoration, not core content).
+  const [categoryTree, productsPage, bannerData] = await Promise.all([
     fetchCategoryTree(),
     fetchProducts({ sort: "featured", limit: 8 }),
+    fetchBanners().catch(
+      () => ({ items: [] }) as Awaited<ReturnType<typeof fetchBanners>>,
+    ),
   ]);
 
   // Only show ROOT categories on the home grid. Subcategory navigation lives
   // in the header dropdown (later slice).
   const rootCategories = categoryTree.items;
   const featuredProducts = productsPage.items.map(adaptApiProductToFrontend);
+  const heroBanners = bannerData.items.map(adaptApiBannerToFrontend);
 
   return (
     <div>
@@ -38,8 +45,9 @@ export default async function HomePage() {
          of the page stays statically rendered. */}
       <AccountDeletedBanner />
 
-      {/* Banner Slider — mock data until we ship a banners API */}
-      <BannerSlider banners={banners} />
+      {/* Banner Slider — live data from /banners (admin-managed). Renders
+         nothing when there are no active slides. */}
+      <BannerSlider banners={heroBanners} />
 
       {/* Categories grid — image cards, same size as product cards */}
       <section className="max-w-7xl mx-auto px-4 py-10">
@@ -127,6 +135,28 @@ export default async function HomePage() {
  * with `InferResponseType<typeof api.products.$get>` and the existing
  * components refactored — that's a separate slice.
  */
+type ApiBannerSlide = Awaited<ReturnType<typeof fetchBanners>>["items"][number];
+
+/**
+ * Map the API banner shape (nullable text, S3-derived `imageUrl`,
+ * `displayOrder`) onto the slider's local `Banner` prop type. Every slide the
+ * `/banners` endpoint returns is active by construction, so `isActive` is true;
+ * the CTA label defaults to a generic „Разгледай" when a link is present (the
+ * schema carries no per-slide label — kept spec-minimal).
+ */
+function adaptApiBannerToFrontend(b: ApiBannerSlide): Banner {
+  return {
+    id: b.id,
+    title: b.title ?? "",
+    subtitle: b.subtitle ?? undefined,
+    imageUrl: b.imageUrl,
+    linkUrl: b.linkUrl ?? undefined,
+    linkLabel: b.linkUrl ? "Разгледай" : undefined,
+    isActive: true,
+    order: b.displayOrder,
+  };
+}
+
 type ApiProductSummary = Awaited<
   ReturnType<typeof fetchProducts>
 >["items"][number];

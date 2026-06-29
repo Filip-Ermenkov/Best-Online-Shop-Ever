@@ -204,14 +204,15 @@ without WAF.
   `/account/reset-password`, `/account/delete`), cart, and orders are
   all real and wired to `@shop/api`. Storefront browsing
   (`/products/[...path]`, `/search`, home product rails) moved to the
-  live catalog API 2026-05-28. The admin sign-in (2026-06-08), the
+  live catalog API 2026-05-28; the **home banner carousel** moved to the
+  live `/banners` API 2026-06-29. The admin sign-in (2026-06-08), the
   admin **orders** pages (list + detail + status transitions,
-  2026-06-10) and the admin **categories** page (2026-06-15) are real.
-- Pages still on mock data: home banner carousel, the checkout
-  courier-office picker, and the remaining `/admin/*` pages
-  (dashboard, products, customers, banners, archive, settings). The
-  `/admin/products` page is mock too, but its backend API shipped
-  2026-06-22 — only the frontend wiring is left.
+  2026-06-10), the admin **categories** page (2026-06-15), the admin
+  **products** pages (list + create/edit + image upload, 2026-06-27), and
+  the admin **banners** page (2026-06-29) are real.
+- Pages still on mock data: the checkout courier-office picker, and the
+  remaining `/admin/*` pages (dashboard tiles, customers, archive,
+  settings) — each awaiting its own backend slice.
 
 **Target (deployment):** AWS Amplify Hosting, two apps (shop + admin)
 on two CloudFront distributions.
@@ -250,10 +251,11 @@ runnable locally via `@hono/node-server`. Routes mounted in
   backup orchestration. **Not yet split out.** Admin *authentication*
   (`/admin/auth/*`, mandatory TOTP MFA — see below) and the CRUD slices
   shipped so far — **order management** (2026-06-10), **category management**
-  (2026-06-15), **product management** (backend, 2026-06-22), and the
-  **image-upload pipeline** (`/admin/uploads/*`, 2026-06-22) at
+  (2026-06-15), **product management** (backend, 2026-06-22), the
+  **image-upload pipeline** (`/admin/uploads/*`, 2026-06-22), and **banner
+  management** (`/admin/banners/*`, 2026-06-29) at
   `/admin/orders/*`, `/admin/categories/*`, `/admin/products/*`,
-  `/admin/uploads/*` — live in
+  `/admin/uploads/*`, `/admin/banners/*` — live in
   `shop-api` today as self-contained, portable Hono modules (`routes/admin/*`)
   that will move here when the admin CRUD surface justifies a separate
   Lambda + subdomain. (The `assets-fn` validator Lambda is its own deployable,
@@ -2181,6 +2183,47 @@ decisions below were researched against 2026 practice.
   JPEG — the validator deletes it) surfaces immediately instead of becoming a
   silent broken image on the entity.
 
+### 13.x Banners — internal-link-only, hard delete, accessible auto-rotation (item 47)
+
+The homepage hero (spec §"Управление на банер") activates the dormant
+`banner_slides` table. Decisions, each researched against 2026 practice:
+
+- **The click-through link is validated to a same-origin path, server-side.** A
+  banner's `linkUrl` is admin-entered and is rendered into an `<a href>`. The
+  pure `lib/banner.ts` accepts ONLY a path-absolute internal link (`/products/…`)
+  and rejects absolute, protocol-relative (`//evil`, the `/\evil` backslash
+  variant), and scheme (`javascript:`/`data:`) URLs. That keeps a promo pointing
+  at the shop's own catalogue (what the spec intends), and structurally
+  forecloses both the open-redirect and the href-injection XSS class — validated
+  once, at write time, so the frontend binds the value without a second
+  sanitiser. (Distinct from the image bytes, which still go through the
+  presigned-POST + magic-byte validator pipeline, item 46.)
+- **Hard delete, not soft.** Categories and products soft-delete because they own
+  order-history references and live URLs that must 301. A banner owns neither —
+  it is pure presentation — and the `isActive` toggle already provides
+  hide-without-delete (the spec's „Активиране / Деактивиране … без изтриване").
+  So DELETE removes the row; the `admin_audit_log` entry preserves what was
+  removed for the GDPR Art. 30 record. Same optimistic-lock (`updatedAt` +
+  `SELECT … FOR UPDATE`) and audit posture as the other admin slices.
+- **The widget proves its reuse claim.** `ImageUploadField` was built (item 46)
+  to serve products / categories / banners by a `kind` prop. The banner editor
+  consumes it unchanged with `kind="banners"` + `max=1` — the first confirmation
+  that the "build once" promise holds, and the template for the category editor.
+- **WCAG 2.2.2 (Pause, Stop, Hide) is non-negotiable for an auto-rotating hero.**
+  The carousel cycles every 5s, which is auto-updating content lasting >5s in
+  parallel with other content — a Level A requirement (binding under the EAA /
+  EN 301 549 conformance this project already claims, §15 item 40). The
+  `BannerSlider` therefore ships a visible pause/play control, pauses on
+  hover/focus, and never auto-rotates under `prefers-reduced-motion`; the live
+  region is `aria-live="off"` while rotating (no 5-second chatter) and `polite`
+  once stopped. Performance rides along: the hero is the page's LCP element, so
+  its image is `fetchPriority="high"` and eager (never lazy) per 2026
+  Core-Web-Vitals guidance, with the aspect-ratio box reserving space for CLS.
+- **Kept spec-minimal.** No scheduling windows, no per-slide CTA label column
+  (the schema models exactly the spec's fields: image, title, subtitle, link,
+  active) — a generic „Разгледай" CTA is defaulted when a link is present. The
+  key layout already accommodates richer banners without a migration if needed.
+
 ## 14. Honest assessment vs A+ target
 
 **Current state, scored against AWS Well-Architected:**
@@ -2822,8 +2865,39 @@ Ranked by `(impact ÷ effort)` — highest leverage first. Items marked
     product editor (2026-06-27 — drag-or-pick with a WCAG 2.5.7 single-pointer
     path, an ARIA live-region status, and client-side type/size pre-checks
     mirroring the server allowlist). **What remains:** reusing that same widget
-    in the category / banner editors when those slices land, and the optional
-    Sharp transcode/EXIF-strip enhancement (§3.6, §13). Full rationale in §13.
+    in the category editor when that slice lands (the **banner** editor already
+    reuses it — item 47), and the optional Sharp transcode/EXIF-strip
+    enhancement (§3.6, §13). Full rationale in §13.
+
+47. ✅ **Banner management + accessible homepage hero — shipped 2026-06-29.**
+    The most *visible* remaining mock: the homepage hero carousel rendered from
+    `frontend/src/lib/mock-data/banners.ts`, with no backend at all. This slice
+    activates the **dormant `banner_slides` table** (modelled since migration
+    0000, referenced by the upload pipeline's key layout, but never written —
+    the same "wire a table the schema already had" move as the address book and
+    cookie-consent receipts) and closes the spec's §"Управление на банер" end to
+    end. Backend: public `GET /banners` (active slides, ETag + 5-min edge cache,
+    like `/categories`) and `/admin/banners/*` (`requireAdmin`→404; list, create
+    with end-of-list append, edit/re-image/re-link/show-hide toggle under the
+    same `updatedAt` + `SELECT … FOR UPDATE` optimistic lock as
+    categories/products, reorder with the exact-set guard, **hard delete** — a
+    banner has no order history or URL to 301, and the `isActive` toggle already
+    covers hide-without-delete; every change appends an `admin_audit_log` row).
+    The click-through `linkUrl` is validated server-side to a **same-origin
+    path** (pure `lib/banner.ts`) so a promo can never become an open-redirect or
+    `javascript:`-href XSS vector. Frontend: the real `/admin/banners` screen
+    (`components/admin/BannersManager`) reuses the **`ImageUploadField`** widget
+    unchanged with `kind="banners"` + `max=1` — proving the pipeline's "build
+    once, serve products + categories + banners" promise (item 46) — and the
+    homepage hero now reads the live `/banners` API. The `BannerSlider` was
+    brought to **WCAG 2.2 SC 2.2.2 (Pause, Stop, Hide)** conformance: a visible
+    pause/play control for the >5s auto-rotation, rotation that pauses on
+    hover/focus and never starts under `prefers-reduced-motion`, an
+    `aria-live="off"`-while-rotating region, and the LCP hero image marked
+    `fetchPriority="high"` + eager (2026 Core-Web-Vitals guidance). Single-SKU of
+    banner work: no scheduling windows (the spec models only an active toggle).
+    No migration; one pure helper + 28 new test blocks (admin-banners 16,
+    banners 4, banner 8). Full rationale in §13.
 
 **Doing items 15–27 closes every meaningful 2026 gap in ~4–6
 working days. Items 28–33 raise the quality bar further at ~3 more
