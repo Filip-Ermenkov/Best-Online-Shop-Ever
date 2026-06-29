@@ -176,7 +176,8 @@ they aren't. The honest state:
 | Admin category management | **Shipped end-to-end (2026-06-15)** — `shop-api` `/admin/categories/*` (tree with counts, create, rename/move with cycle prevention + optimistic locking, sibling reorder, deletion-impact preview, cascade soft-delete writing 301 `redirects` + `admin_audit_log`) + the real `/admin/categories` UI |
 | Admin product management | **Shipped end-to-end (backend 2026-06-22, frontend wired 2026-06-27)** — `shop-api` `/admin/products/*` (offset list + filters + search, create with auto-slug + SKU/slug uniqueness spanning archived rows, detail with active-order count, edit/move/re-image with `updatedAt` optimistic locking, within-category reorder, soft-delete writing a 301 `redirect`, restore) + `admin_audit_log`, now driven by the real `/admin/products` list + create/edit UI (`components/admin/ProductsManager` + `ProductEditor`) with the **image-upload widget** wired in. Activates the dormant `products` write surface + `product_images` table |
 | Guest checkout + order tracking | **Shipped end-to-end (2026-06-16)** — the spec's "Гост" role (orders without an account). `shop-api` `/guest/orders` (anonymous checkout, 256-bit capability token) + `/track/:token` (view, cancel-while-processing, 14-day withdrawal) + `/track/find` (rate-limited lost-link resend) + the public `/track/[token]` & `/track/find` UI. Checkout no longer forces login (`POST /orders/:n/cancel` also added for account customers). No migration — activates the dormant `orders.guest_track_token` column |
-| Image-upload pipeline | **Backend + infra shipped (2026-06-22, roadmap item 46)** — `shop-api` `/admin/uploads` mints a **presigned POST** (browser → S3 directly, policy-pinned size + type) + `/admin/uploads/status`; the **assets-fn** validator Lambda magic-byte-checks each upload and promotes only genuine images to a CloudFront+OAC-served `uploads/` prefix (deletes spoofs). `infra/assets.tf` (private assets bucket, OAC distribution, S3→Lambda notification, least-priv IAM) behind `enable_asset_uploads`. Activates every dormant image key the catalog stores. **Frontend (2026-06-27):** the reusable client (`lib/uploads/`) is now consumed by the accessible `ImageUploadField` widget (drag-or-pick, WCAG 2.5.7 single-pointer path, magic-byte-validated server-side), wired into the product editor; the category/banner editors reuse it unchanged when those slices land. **Live-validated end-to-end 2026-06-27** (presign → direct-to-S3 → assets-fn promote → CDN render) — which required three latent-bug fixes from the 2026-06-22 ship: the validator is now DB-free (`logger.ts` no longer forces `DATABASE_URL` on a Lambda that has none), the KMS key policy grants CloudFront `kms:Decrypt` so OAC can serve the SSE-KMS objects, and the frontend CSP allows the S3 + assets-CDN origins (`docs/ARCHITECTURE.md` §13). No migration |
+| Image-upload pipeline | **Backend + infra shipped (2026-06-22, roadmap item 46)** — `shop-api` `/admin/uploads` mints a **presigned POST** (browser → S3 directly, policy-pinned size + type) + `/admin/uploads/status`; the **assets-fn** validator Lambda magic-byte-checks each upload and promotes only genuine images to a CloudFront+OAC-served `uploads/` prefix (deletes spoofs). `infra/assets.tf` (private assets bucket, OAC distribution, S3→Lambda notification, least-priv IAM) behind `enable_asset_uploads`. Activates every dormant image key the catalog stores. **Frontend (2026-06-27):** the reusable client (`lib/uploads/`) is now consumed by the accessible `ImageUploadField` widget (drag-or-pick, WCAG 2.5.7 single-pointer path, magic-byte-validated server-side), wired into the product editor; the banner editor reuses it unchanged (`kind="banners"`, 2026-06-29 — the category editor when that frontend lands). **Live-validated end-to-end 2026-06-27** (presign → direct-to-S3 → assets-fn promote → CDN render) — which required three latent-bug fixes from the 2026-06-22 ship: the validator is now DB-free (`logger.ts` no longer forces `DATABASE_URL` on a Lambda that has none), the KMS key policy grants CloudFront `kms:Decrypt` so OAC can serve the SSE-KMS objects, and the frontend CSP allows the S3 + assets-CDN origins (`docs/ARCHITECTURE.md` §13). No migration |
+| Admin banner management | **Shipped end-to-end (2026-06-29)** — `shop-api` `/admin/banners/*` (list, create with append ordering + internal-link validation, edit / re-image / show-hide toggle with `updatedAt` optimistic locking, reorder, hard delete) + `admin_audit_log`, driven by the real `/admin/banners` UI (`components/admin/BannersManager`) with the slide image uploaded through the presigned pipeline via the reusable `ImageUploadField` (`kind="banners"`, `max=1`). Public `GET /banners` feeds the homepage hero; the `BannerSlider` is now WCAG 2.2.2-conformant (pause control + reduced-motion + pause-on-interaction). **Activates the dormant `banner_slides` table** (modelled since migration 0000, never written) — no migration |
 | `admin-api` Lambda | Not built (admin auth + the orders slice currently live in `shop-api`; extract when the admin CRUD surface grows) |
 | `scheduler-fn` Lambda | **Shipped 2026-06-12, live-validated 2026-06-13** (roadmap item 23) — jobs in `@shop/api` `src/jobs/*` + own pure-JS bundle (`build:scheduler`) + `infra/scheduler.tf` (EventBridge Scheduler, 3 Sofia-time crons, delivery DLQ, backup bucket, 2 alarms) behind `enable_scheduler`. All three `aws lambda invoke` drills passed against the Neon test branch; the catalog-backup drill also caught a prod-only bug (the `neon-http` driver can't run `db.transaction(...)`) now fixed by the Neon serverless WebSocket driver — see [decisions](#architecture-decisions-in-force). Runbook in `infra/README.md` |
 | Distributed tracing (OpenTelemetry) | **Shipped 2026-06-13 (roadmap item 18)** — `shop-api` emits OTel traces behind `ENABLE_TRACING`: `@hono/otel` request spans + undici/fetch downstream spans + Pino `trace_id`/`span_id` log↔trace correlation. Exports OTLP to AWS X-Ray via the ADOT collector layer (`enable_tracing` + `adot_collector_layer_arn`), or any OTLP backend. Closes the last OWASP A09 / NIST CSF Detect gap. App-level instrumentation + correlation unit-tested and harness-verified against the real libraries (incl. a clean esbuild bundle); live X-Ray export validated on deploy. Runbook in `infra/README.md` → "Tracing runbook" |
@@ -193,6 +194,11 @@ what needs to happen to get from today's repo state to that posture.
 ### Backend (`@shop/api` Hono routes mounted in `backend/shop-api/src/app.ts`)
 
 - `/products`, `/categories` — read API, ETag, cursor pagination
+- **`/banners`** — **active homepage hero slides (2026-06-29)**, anonymous. The
+  active `banner_slides` rows in display order, S3 key resolved to a URL; an
+  empty list means the storefront renders no hero (the spec's „ако всички кадри
+  са деактивирани … банер секцията не се показва"). ETag + 5-min edge cache,
+  same as `/categories`.
 - `/auth/*` — register, login, logout, GET+PATCH `/me`, DELETE `/me`,
   POST `/me/export` (GDPR Art. 15 + 20 personal-data export),
   verify-email, resend-verification, forgot-password,
@@ -340,14 +346,30 @@ what needs to happen to get from today's repo state to that posture.
   final surviving target. The storefront catch-all calls it on the would-be-404
   path. Closes the half-open loop where deleted category/product URLs returned
   404 instead of 301 (SEO link-equity leak).
+- `/admin/banners/*` — **admin banner management (2026-06-29)**, the fourth
+  admin CRUD slice, `requireAdmin`-gated (uniform `404`): `GET /admin/banners`
+  (every slide, active + hidden, in display order), `POST /admin/banners`
+  (create, appended to the end; `linkUrl` validated to a same-origin internal
+  path so a promo can't become an open-redirect), `PATCH /admin/banners/:id`
+  (edit / re-image / re-link / show-hide toggle, `updatedAt` optimistic lock →
+  `409 /problems/banner-version-conflict`), `POST /admin/banners/reorder` (the
+  supplied id set must equal the current slides or `409`), `DELETE
+  /admin/banners/:id` (hard delete — a banner has no order history or URL to
+  preserve, and the toggle already covers hide-without-delete). Every change
+  appends an `admin_audit_log` row. **Activates the dormant `banner_slides`
+  table.** No migration.
 - `/health`, `/openapi.json`
 
-Test counts as of 2026-06-22, by `it`/`test` block: addresses 28,
+Test counts as of 2026-06-29, by `it`/`test` block: addresses 28,
 admin-auth 17, **admin-orders 26**, **admin-categories 39**, **admin-products 35**,
+**admin-banners 16** (the requireAdmin gate, list, create + append ordering +
+internal-link 400, update + toggle + optimistic-lock 409, reorder mismatch,
+hard delete, and the audit row; 2026-06-29),
 **admin-uploads 12** (the presigned-upload route — requireAdmin, allowlist + size
 + kind validation, the 503-when-unconfigured path, and the status poll, with the
 S3 adapters injected; 2026-06-22),
-auth 48, cart 30, categories 7,
+auth 48, **banners 4** (active-only public read + display ordering + ETag +
+OpenAPI registration, 2026-06-29), cart 30, categories 7,
 consent 10, csp-report 25, data-export 14, email-change 21,
 **error-handling 3** (the global `onError` framework-error contract — a
 malformed JSON body → 400 `/problems/malformed-json`, not 500; 2026-06-22),
@@ -380,9 +402,13 @@ the three-way `new_until` resolution, 2026-06-22;
 (no SVG/GIF), the pending/served/stored key layout + strict pending-key parse,
 request validation (size cap + kind), the presigned-POST policy params, and the
 magic-byte sniffer proving JPEG/PNG/WebP/AVIF pass while a spoofed/WAV/SVG/empty
-head is rejected, 2026-06-22) — **556 blocks**. The
+head is rejected, 2026-06-22;
+**banner 8** — the pure banner helpers: the internal-link validator (accepts
+path-absolute same-origin links, rejects protocol-relative / scheme / backslash
+/ whitespace / control-char hrefs) + the optional-text/link normalisers,
+2026-06-29) — **584 blocks**. The
 `csp-report` and `phone` suites are table-driven (`it.each`), so
-`vitest run` expands them and reports **~590 cases total** (run
+`vitest run` expands them and reports **~620 cases total** (run
 `vitest run` for the exact figure), all against a real `shop_test`
 Postgres in CI.
 
@@ -566,20 +592,21 @@ at runtime locally (`npm run test:a11y`, axe-core). See
 
 **Still on mock data:**
 
-- Home page banners (`frontend/src/lib/mock-data/banners.ts`) — no
-  banner-slides API endpoint yet.
 - Checkout courier-office picker
   (`frontend/src/lib/mock-data/courier-offices.ts`) — Bulgarian
   Econt/Speedy office lists are real-world data not yet ingested into
   the DB.
-- **Some admin pages** under `/admin/*` (dashboard tiles, banners,
-  customers, archive, settings) render mock data — no admin API behind those
-  screens yet. **The real admin screens:** **orders**
+- **Some admin pages** under `/admin/*` (dashboard tiles, customers, archive,
+  settings) render mock data — no admin API behind those screens yet. **The
+  real admin screens:** **orders**
   (`/admin/orders` + `/admin/orders/[orderNumber]`, since 2026-06-10),
-  **categories** (`/admin/categories`, since 2026-06-15), and **products**
-  (`/admin/products` list + `new` + `[id]` edit, since 2026-06-27 — backed by
-  `/admin/products/*`, with product images uploaded through the real
-  presigned-POST pipeline via the reusable `ImageUploadField` widget).
+  **categories** (`/admin/categories`, since 2026-06-15), **products**
+  (`/admin/products` list + `new` + `[id]` edit, since 2026-06-27), and
+  **banners** (`/admin/banners`, since 2026-06-29 — backed by
+  `/admin/banners/*`, with the slide image uploaded through the real
+  presigned-POST pipeline via the reusable `ImageUploadField` widget). The
+  homepage hero now renders from the live `/banners` API (no longer
+  `frontend/src/lib/mock-data/banners.ts`).
 
 Category-tree browsing (`/products/[...path]`) and search (`/search`)
 moved off mock data on 2026-05-28 — see [Storefront browsing](#storefront-browsing)

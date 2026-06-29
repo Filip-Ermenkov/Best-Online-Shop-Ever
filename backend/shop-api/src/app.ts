@@ -16,12 +16,14 @@ import { isTracingEnabled } from "./lib/tracing.js";
 import { validationHook } from "./lib/validation-hook.js";
 import { currentUser, type AuthVariables } from "./middleware/auth.js";
 import { adminAuthRoutes } from "./routes/admin/auth.js";
+import { adminBannersRoutes } from "./routes/admin/banners.js";
 import { adminCategoriesRoutes } from "./routes/admin/categories.js";
 import { adminOrdersRoutes } from "./routes/admin/orders.js";
 import { adminProductsRoutes } from "./routes/admin/products.js";
 import { adminUploadsRoutes } from "./routes/admin/uploads.js";
 import { addressesRoutes } from "./routes/addresses.js";
 import { authRoutes } from "./routes/auth.js";
+import { bannersRoutes } from "./routes/banners.js";
 import { cartRoutes } from "./routes/cart.js";
 import { categoriesRoutes } from "./routes/categories.js";
 import { consentRoutes } from "./routes/consent.js";
@@ -198,6 +200,8 @@ export function buildApp() {
   app.use("/products", etag());
   app.use("/categories/*", etag());
   app.use("/categories", etag());
+  // Banner slides — public, edge-cacheable hero source data (same as the catalog).
+  app.use("/banners", etag());
   // SEO surface — cacheable public GETs, same ETag treatment as the catalog.
   app.use("/sitemap", etag());
   app.use("/redirects/*", etag());
@@ -229,17 +233,23 @@ export function buildApp() {
   // Admin image uploads (presign) — every route requireAdmin-gated inside the router.
   app.use("/admin/uploads/*", currentUser);
   app.use("/admin/uploads", currentUser);
+  // Admin banner management — every route requireAdmin-gated inside the router.
+  app.use("/admin/banners/*", currentUser);
+  app.use("/admin/banners", currentUser);
 
   app.get("/health", (c) => c.json({ ok: true }));
 
   app.route("/products", productsRoutes);
   app.route("/categories", categoriesRoutes);
+  // Banner slides — anonymous public read for the homepage hero (like /categories).
+  app.route("/banners", bannersRoutes);
   app.route("/auth", authRoutes);
   app.route("/admin/auth", adminAuthRoutes);
   app.route("/admin/orders", adminOrdersRoutes);
   app.route("/admin/categories", adminCategoriesRoutes);
   app.route("/admin/products", adminProductsRoutes);
   app.route("/admin/uploads", adminUploadsRoutes);
+  app.route("/admin/banners", adminBannersRoutes);
   app.route("/cart", cartRoutes);
   app.route("/orders", ordersRoutes);
   app.route("/addresses", addressesRoutes);
