@@ -82,13 +82,14 @@ const EnvSchema = z.object({
     .default("http://localhost:3000")
     .transform((s) => s.replace(/\/+$/, "")),
   /**
-   * Optional public shop phone number, shown (alongside the support email
-   * derived from EMAIL_FROM) on the guest order-tracking page when an order is
-   * `shipped` or `ready_for_pickup` — the spec's "данни за контакт с магазина"
-   * block (`docs/README.md` §7). Empty string = omit the phone line; the email
-   * is always shown. A standalone env var rather than a settings-table lookup
-   * because the admin settings slice is not built yet; migrate this to the
-   * settings table when it lands.
+   * FALLBACK public shop phone number. Superseded by the `store_phone` row in
+   * the admin-editable settings table (the settings slice, roadmap item 48):
+   * the guest tracking contact block reads the setting first and only falls back
+   * to this env var when the setting is blank. Kept so a deploy that has not yet
+   * had its settings filled in still shows a phone, and so existing deploys keep
+   * working. Empty string = no phone unless the setting provides one. The email
+   * counterpart lives entirely in settings (`store_email`), falling back to the
+   * address derived from EMAIL_FROM.
    */
   SHOP_CONTACT_PHONE: z.string().default(""),
 

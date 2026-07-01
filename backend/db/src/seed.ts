@@ -174,14 +174,11 @@ async function main() {
       },
       {
         key: "store_hours",
-        value: {
-          mon_fri: "9:00-18:00",
-          sat: "10:00-14:00",
-          sun: "closed",
-        },
+        value: "Пон-Пет: 9:00-18:00, Сб: 10:00-14:00, Нд: почивен ден",
       },
       { key: "store_phone", value: "+359 2 900 1234" },
       { key: "store_email", value: "info@duda1.bg" },
+      { key: "admin_notification_email", value: "" },
     ])
     .onConflictDoNothing({ target: s.settings.key });
 

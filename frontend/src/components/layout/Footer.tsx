@@ -1,7 +1,26 @@
 import Link from "next/link";
 import { MapPin, Phone, Mail, ShieldCheck, Truck, RotateCcw, CreditCard, Wallet } from "lucide-react";
+import { fetchPublicSettings } from "@/lib/api";
 
-export default function Footer() {
+export default async function Footer() {
+  // Contact details come from the admin-editable settings (docs/README.md
+  // §"Настройки на магазина"); static fallbacks keep the footer populated if the
+  // API blips or a value is unset. Server-side fetch — no client flash.
+  const settings = await fetchPublicSettings();
+  const address =
+    settings?.storeAddress && settings.storeAddress.trim().length > 0
+      ? settings.storeAddress
+      : "ул. Витоша 15, София 1000";
+  const phone =
+    settings?.storePhone && settings.storePhone.trim().length > 0
+      ? settings.storePhone
+      : "+359 2 900 1234";
+  const phoneTel = phone.replace(/\s+/g, "");
+  const email =
+    settings?.storeEmail && settings.storeEmail.trim().length > 0
+      ? settings.storeEmail
+      : "info@duda1.bg";
+
   return (
     <footer className="mt-auto bg-[oklch(0.18_0.02_270)] text-[oklch(0.96_0.005_270)]">
       {/* Trust strip */}
@@ -86,15 +105,15 @@ export default function Footer() {
             <ul className="space-y-3 text-sm text-[oklch(0.60_0.02_270)] mb-5">
               <li className="flex items-start gap-2">
                 <MapPin className="w-4 h-4 mt-0.5 flex-shrink-0 text-[oklch(0.73_0.10_75)]" />
-                <span>ул. Витоша 15, София 1000</span>
+                <span>{address}</span>
               </li>
               <li className="flex items-center gap-2">
                 <Phone className="w-4 h-4 flex-shrink-0 text-[oklch(0.73_0.10_75)]" />
-                <a href="tel:+35929001234" className="hover:text-[oklch(0.73_0.10_75)] transition-colors">+359 2 900 1234</a>
+                <a href={`tel:${phoneTel}`} className="hover:text-[oklch(0.73_0.10_75)] transition-colors">{phone}</a>
               </li>
               <li className="flex items-center gap-2">
                 <Mail className="w-4 h-4 flex-shrink-0 text-[oklch(0.73_0.10_75)]" />
-                <a href="mailto:info@duda1.bg" className="hover:text-[oklch(0.73_0.10_75)] transition-colors">info@duda1.bg</a>
+                <a href={`mailto:${email}`} className="hover:text-[oklch(0.73_0.10_75)] transition-colors">{email}</a>
               </li>
             </ul>
 

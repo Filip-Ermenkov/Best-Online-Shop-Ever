@@ -79,7 +79,12 @@ export interface TrackedOrder {
   trackingNumber: string | null;
   pickupDeadline: string | null;
   statusHistory: TrackStatusHistoryEntry[];
-  shopContact: { email: string; phone: string | null };
+  shopContact: {
+    email: string;
+    phone: string | null;
+    address: string;
+    hours: string;
+  };
   canCancel: boolean;
 }
 

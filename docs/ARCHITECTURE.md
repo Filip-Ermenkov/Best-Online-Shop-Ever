@@ -14,19 +14,23 @@
 > specification. Read that to learn *what* the shop does; this doc
 > covers *how* it's built.
 >
-> Last updated: 2026-06-15. Reality-aligned: the `infra/` IaC is
+> Last updated: 2026-06-30. Reality-aligned: the `infra/` IaC is
 > live-apply-validated (a test deploy returned 200 end-to-end); the
 > **admin authentication backend** (mandatory TOTP MFA, `/admin/auth/*`)
 > shipped 2026-06-08; the **durable email queue** (item 21) and
 > **scheduler-fn** (item 23) shipped + live-validated 2026-06-12/13;
 > **distributed tracing** (OpenTelemetry, item 18) shipped 2026-06-13 —
-> closing the last OWASP A09 / NIST CSF Detect gap (§8.2); and **SLOs as
+> closing the last OWASP A09 / NIST CSF Detect gap (§8.2); **SLOs as
 > code + multi-window burn-rate alerting** (items 24/25) shipped 2026-06-14
-> (`infra/slos.yaml` + `infra/slo.tf`, §7.2/§8.5); and the **incident-response
+> (`infra/slos.yaml` + `infra/slo.tf`, §7.2/§8.5); the **incident-response
 > playbook** (item 31) shipped 2026-06-15 (`docs/INCIDENT-RESPONSE.md`),
-> closing the NIST CSF Respond + GDPR Art. 33/34 gaps (§5.4, §11, §14). No
-> maintained production environment is kept running yet; the admin frontend
-> UI is pending.
+> closing the NIST CSF Respond + GDPR Art. 33/34 gaps (§5.4, §11, §14); the
+> **image-upload pipeline** (item 46) shipped + live-validated 2026-06-27; and
+> the admin **frontend** is now substantially real — orders, categories,
+> products, **banners** (item 47, 2026-06-29), and **store settings** (item 48,
+> 2026-06-30, config-off-env) are wired end-to-end. No maintained production
+> environment is kept running yet; the remaining admin pages (customers,
+> archive, dashboard tiles) are still on mock data.
 
 ---
 
@@ -79,8 +83,11 @@ Three actors are present in the codebase:
   2026-06-10, backend and frontend, followed by **category management**
   (2026-06-15, backend + frontend) and **product management** end-to-end
   (`/admin/products/*` backend 2026-06-22; the `/admin/products` list + create/
-  edit frontend and the image-upload widget wired 2026-06-27). Still pending: the
-  remaining admin CRUD pages (customers, banners, archive, settings — mock data)
+  edit frontend and the image-upload widget wired 2026-06-27), **banner
+  management** (2026-06-29, backend + frontend), and **store settings**
+  (2026-06-30, backend + frontend — moving operator config off env onto the
+  runtime-editable `settings` table). Still pending: the
+  remaining admin CRUD pages (customers, archive — mock data)
   and the dedicated **`admin-api`** Lambda the admin panel will eventually live on.
 
 Functional scope is in `docs/README.md`. Deployment status is in
@@ -208,11 +215,12 @@ without WAF.
   live `/banners` API 2026-06-29. The admin sign-in (2026-06-08), the
   admin **orders** pages (list + detail + status transitions,
   2026-06-10), the admin **categories** page (2026-06-15), the admin
-  **products** pages (list + create/edit + image upload, 2026-06-27), and
-  the admin **banners** page (2026-06-29) are real.
+  **products** pages (list + create/edit + image upload, 2026-06-27), the
+  admin **banners** page (2026-06-29), and the admin **store settings** page
+  (2026-06-30) are real.
 - Pages still on mock data: the checkout courier-office picker, and the
-  remaining `/admin/*` pages (dashboard tiles, customers, archive,
-  settings) — each awaiting its own backend slice.
+  remaining `/admin/*` pages (dashboard tiles, customers, archive) — each
+  awaiting its own backend slice.
 
 **Target (deployment):** AWS Amplify Hosting, two apps (shop + admin)
 on two CloudFront distributions.
@@ -2224,6 +2232,48 @@ The homepage hero (spec §"Управление на банер") activates the 
   active) — a generic „Разгледай" CTA is defaulted when a link is present. The
   key layout already accommodates richer banners without a migration if needed.
 
+### 13.x Store settings — DB-backed config, typed registry, document-level lock (item 48)
+
+The admin "Настройки" screen (spec §"Настройки на магазина") activates the
+dormant key-value `settings` table. Decisions, each researched against 2026
+practice:
+
+- **Operator-editable business config lives in the DB, not environment
+  variables.** The Twelve-Factor "config in the environment" rule is scoped to
+  *what varies between deploys* plus *secrets*. The shop's phone, address,
+  opening hours, default pickup window, and admin-notification recipient are none
+  of those — they are *runtime application data* the single admin edits from the
+  panel, and changing an env var requires a redeploy/rebuild (an industry-wide
+  property, e.g. Azure App Service docs). So those values move into the `settings`
+  table; **secrets stay in env/SSM** (DATABASE_URL, the KMS/MFA keys, queue URLs).
+  `SHOP_CONTACT_PHONE` is demoted to a fallback the guest-tracking contact block
+  reads only when the `store_phone` setting is blank. This is the slice that
+  retires the "migrate this to the settings table when it lands" TODO the env
+  schema carried.
+- **A typed registry is the single source of truth.** `lib/settings.ts` (pure,
+  unit-tested) defines, per key, a Zod schema + default + a `public`/`private`
+  visibility flag. Writes are validated + normalised against it (trim, control-
+  character strip via a code-point scan, length cap, permissive phone, email-or-
+  empty); unknown keys are rejected by a strict allow-list. This is the *write*
+  half of OWASP "validate input, encode output" — the *read* half is React's
+  auto-escaping under the storefront's strict nonce CSP, so an operator-entered
+  value is never interpreted as HTML and the stored-XSS surface is closed without
+  ever treating settings as markup.
+- **Public read is partitioned and edge-cached.** `GET /settings` exposes ONLY
+  the four customer-facing keys (address, hours, phone, email) as a camelCase
+  DTO, with the same ETag + `s-maxage=300` policy as `/banners`/`/categories`
+  (the codebase's proven serverless-caching answer — no bespoke cache layer). The
+  two operational keys never reach an anonymous response.
+- **Document-level optimistic lock, no `version` column.** A key-value document
+  has no single `updatedAt`, so the lock token is `MAX(updated_at)` across the
+  rows (ISO). `PATCH` re-reads the rows `FOR UPDATE`, recomputes the max, and
+  compares in JS at millisecond precision (sidestepping the Postgres-microsecond
+  vs JS-millisecond equality pitfall, exactly as the banner slice) → `409
+  /problems/settings-version-conflict` on a stale second tab. Only the changed
+  keys are written; each save appends one `admin_audit_log` row (GDPR Art. 30).
+  Same requireAdmin→404 + audit posture as the other admin slices; no migration
+  (the table was modelled in migration 0000).
+
 ## 14. Honest assessment vs A+ target
 
 **Current state, scored against AWS Well-Architected:**
@@ -2536,8 +2586,9 @@ Ranked by `(impact ÷ effort)` — highest leverage first. Items marked
     the presigned pipeline via the reusable `ImageUploadField` widget (item 46).
     **What remains of the original item:** the dedicated `admin-api` Lambda
     extraction (structural, with item 35's module) and the remaining admin CRUD
-    slices — customers, banners, settings (each its own slice; the full
-    categories-AND-products interleaved „Наредба" ordering is a later enhancement).
+    slices — customers, archive (banners shipped as item 47, store settings as
+    item 48; the full categories-AND-products interleaved „Наредба" ordering is a
+    later enhancement).
 23. ✅ **Scheduler-fn Lambda + the three cron rules — shipped
     2026-06-12, live-validated 2026-06-13** (code + tests + Terraform;
     the manual `aws lambda invoke` drills for all three jobs passed on
@@ -2898,6 +2949,40 @@ Ranked by `(impact ÷ effort)` — highest leverage first. Items marked
     banner work: no scheduling windows (the spec models only an active toggle).
     No migration; one pure helper + 28 new test blocks (admin-banners 16,
     banners 4, banner 8). Full rationale in §13.
+48. ✅ **Admin store settings — shipped 2026-06-30.** The fifth admin CRUD
+    slice, and the one that retires a standing architectural smell: operator-
+    editable business config (shop phone, address, opening hours, default pickup
+    window, admin-notification recipient) lived in environment variables, so
+    changing the shop phone needed a redeploy. This slice moves it onto the
+    **dormant key-value `settings` table** (modelled since migration 0000, only
+    ever seeded — never written by a route), keeping it runtime-editable while
+    **secrets remain in env/SSM** (the config-vs-data line; see §13). A pure,
+    unit-tested **typed registry** (`lib/settings.ts`) is the single source of
+    truth — per-key Zod schema + default + public/private flag — and does the
+    write-side validation/normalisation (trim, control-char strip, length cap,
+    phone/email formats, strict unknown-key allow-list) that, paired with React's
+    output encoding under the strict CSP, closes the stored-XSS surface. Backend:
+    public `GET /settings` (the four customer-facing keys only, camelCase, ETag +
+    5-min edge cache like `/banners`) and `/admin/settings` (`requireAdmin`→404;
+    GET all values + a `MAX(updated_at)` document version; PATCH one-or-more keys
+    under a document-level optimistic lock → `409
+    /problems/settings-version-conflict`, with an `admin_audit_log` row).
+    **Every shop-contact surface now reads settings, not hardcoded copy**
+    (the follow-up fix after the first pass only wired the contact page): the
+    storefront **footer**, **contact page**, **delivery page**, and the checkout
+    **"От магазина" pickup** option read the public `GET /settings`; the guest
+    **order-tracking page** (now also showing address + hours, per spec) and the
+    **ready-for-pickup email** read the same settings server-side through a shared
+    `lib/shop-contact.ts` resolver (settings → env/derived fallback). Purpose-
+    specific legal addresses (`privacy@`, `security@`, `accessibility@`, the
+    withdrawal `contact@`) stay static by design — they are not the configurable
+    shop contact. Frontend: the real `/admin/settings` form
+    (`components/admin/SettingsManager`) replacing the mock. No migration; 31 new
+    test blocks (admin-settings 10, settings 4, settings 12, shop-contact 3 +
+    2 email-template cases). **Follow-ups** (noted, not done): wire
+    `admin_notification_email` into the actual admin notification sends, and
+    surface `default_pickup_deadline_days` as the prefill in the admin orders
+    "ready for pickup" action. Full rationale in §13.
 
 **Doing items 15–27 closes every meaningful 2026 gap in ~4–6
 working days. Items 28–33 raise the quality bar further at ~3 more

@@ -3,8 +3,9 @@
 > actually implements (storefront, account flows, cart/checkout, guest
 > checkout + order tracking, SEO `sitemap.ts`/`robots.ts` + 301 redirect
 > serving, admin sign-in + admin orders + admin categories + admin products +
-> admin banners with direct-to-S3 image upload, and the live accessible
-> homepage hero carousel)
+> admin banners with direct-to-S3 image upload + admin store settings, the live
+> accessible homepage hero carousel, and the settings-driven storefront contact
+> block)
 > and how to run/test it, see the root `README.md`
 > and `docs/ARCHITECTURE.md` §5.
 
