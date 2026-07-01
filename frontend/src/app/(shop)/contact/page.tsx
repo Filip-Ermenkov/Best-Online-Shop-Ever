@@ -1,16 +1,44 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { MapPin, Phone, Mail, Clock } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { fetchPublicSettings } from "@/lib/api";
+import type { PublicSettings } from "@shop/api";
+
+// Static fallbacks shown until the live settings load (and if the API blips).
+const FALLBACK = {
+  storeAddress: "ул. Витоша 15, София 1000, България",
+  storePhone: "+359 2 900 1234",
+  storeEmail: "info@duda1.bg",
+  storeHours: "Пн–Пт: 9:00–18:00\nСъб: 10:00–14:00",
+};
 
 export default function ContactPage() {
   const [form, setForm] = useState({ name: "", email: "", subject: "", message: "" });
   const [sent, setSent] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [settings, setSettings] = useState<PublicSettings | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const s = await fetchPublicSettings({ cache: "no-store" });
+      if (!cancelled && s) setSettings(s);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Live value if the admin configured one; otherwise the static fallback.
+  const pick = (k: keyof typeof FALLBACK): string => {
+    const v = settings?.[k];
+    return v && v.trim().length > 0 ? v : FALLBACK[k];
+  };
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -68,10 +96,10 @@ export default function ContactPage() {
           <div className="rounded-lg border border-border bg-card p-5 space-y-4">
             <h2 className="font-semibold">Информация за контакт</h2>
             {[
-              { icon: MapPin, label: "Адрес", value: "ул. Витоша 15, София 1000, България" },
-              { icon: Phone, label: "Телефон", value: "+359 2 900 1234" },
-              { icon: Mail, label: "Email", value: "info@duda1.bg" },
-              { icon: Clock, label: "Работно време", value: "Пн–Пт: 9:00–18:00\nСъб: 10:00–14:00" },
+              { icon: MapPin, label: "Адрес", value: pick("storeAddress") },
+              { icon: Phone, label: "Телефон", value: pick("storePhone") },
+              { icon: Mail, label: "Email", value: pick("storeEmail") },
+              { icon: Clock, label: "Работно време", value: pick("storeHours") },
             ].map(({ icon: Icon, label, value }) => (
               <div key={label} className="flex gap-3">
                 <div className="w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center flex-shrink-0 mt-0.5">

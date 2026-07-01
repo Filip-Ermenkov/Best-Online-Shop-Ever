@@ -14,6 +14,7 @@ import { logger as baseLogger } from "../lib/logger.js";
 import { validationHook } from "../lib/validation-hook.js";
 import { parseEnv } from "../lib/env.js";
 import { normalizeBulgarianPhone } from "../lib/phone.js";
+import { coerceShopContact } from "../lib/shop-contact.js";
 import {
   issueGuestTrackToken,
   isWellFormedTrackToken,
@@ -266,12 +267,17 @@ const TrackedOrderSchema = z
     ),
     /**
      * Shown on the page only when status is `shipped` / `ready_for_pickup`
-     * (spec §7 "данни за контакт с магазина"). The email is always derivable;
-     * the phone is optional (SHOP_CONTACT_PHONE).
+     * (spec §7 "данни за контакт с магазина"). Sourced from the admin-editable
+     * settings table (lib/shop-contact.ts): the email is always non-empty
+     * (settings → derived from EMAIL_FROM); phone/address/hours are "" when the
+     * admin hasn't configured them, and the page omits the blank lines. The spec
+     * lists address + hours among the values shown on the tracking page.
      */
     shopContact: z.object({
       email: z.string(),
       phone: z.string().nullable(),
+      address: z.string(),
+      hours: z.string(),
     }),
     /** Server-authoritative mirror of the cancel rule (status === processing). */
     canCancel: z.boolean(),
@@ -984,7 +990,7 @@ async function loadTrackedOrder(
   db: DbClient,
   order: typeof schema.orders.$inferSelect,
 ): Promise<z.infer<typeof TrackedOrderSchema>> {
-  const [items, [delivery], history] = await Promise.all([
+  const [items, [delivery], history, settingsRows] = await Promise.all([
     db
       .select()
       .from(schema.orderItems)
@@ -1002,9 +1008,16 @@ async function loadTrackedOrder(
       .from(schema.orderStatusHistory)
       .where(eq(schema.orderStatusHistory.orderId, order.id))
       .orderBy(asc(schema.orderStatusHistory.changedAt)),
+    db
+      .select({ key: schema.settings.key, value: schema.settings.value })
+      .from(schema.settings),
   ]);
 
-  const env = parseEnv();
+  // Shop contact comes from the admin-editable settings table (docs/README.md
+  // §"Настройки на магазина") via the shared resolver; env vars are the fallback
+  // when a setting is blank — so changing the shop phone no longer needs a
+  // redeploy. See lib/shop-contact.ts / lib/settings.ts for the rationale.
+  const contact = coerceShopContact(settingsRows);
   return {
     orderNumber: order.orderNumber,
     status: order.status,
@@ -1043,8 +1056,10 @@ async function loadTrackedOrder(
       changedAt: h.changedAt.toISOString(),
     })),
     shopContact: {
-      email: deriveSupportEmail(env.EMAIL_FROM),
-      phone: env.SHOP_CONTACT_PHONE.length > 0 ? env.SHOP_CONTACT_PHONE : null,
+      email: contact.email,
+      phone: contact.phone,
+      address: contact.address,
+      hours: contact.hours,
     },
     canCancel: order.status === "processing",
   };

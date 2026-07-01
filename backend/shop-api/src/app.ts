@@ -20,6 +20,7 @@ import { adminBannersRoutes } from "./routes/admin/banners.js";
 import { adminCategoriesRoutes } from "./routes/admin/categories.js";
 import { adminOrdersRoutes } from "./routes/admin/orders.js";
 import { adminProductsRoutes } from "./routes/admin/products.js";
+import { adminSettingsRoutes } from "./routes/admin/settings.js";
 import { adminUploadsRoutes } from "./routes/admin/uploads.js";
 import { addressesRoutes } from "./routes/addresses.js";
 import { authRoutes } from "./routes/auth.js";
@@ -32,6 +33,7 @@ import { guestRoutes, trackRoutes } from "./routes/guest.js";
 import { ordersRoutes } from "./routes/orders.js";
 import { productsRoutes } from "./routes/products.js";
 import { redirectsRoutes, sitemapRoutes } from "./routes/seo.js";
+import { settingsRoutes } from "./routes/settings.js";
 
 /**
  * Variables we attach to every Hono Context. Declared as a type parameter on
@@ -202,6 +204,8 @@ export function buildApp() {
   app.use("/categories", etag());
   // Banner slides — public, edge-cacheable hero source data (same as the catalog).
   app.use("/banners", etag());
+  // Public store settings — edge-cacheable contact/hours block (same as banners).
+  app.use("/settings", etag());
   // SEO surface — cacheable public GETs, same ETag treatment as the catalog.
   app.use("/sitemap", etag());
   app.use("/redirects/*", etag());
@@ -236,6 +240,9 @@ export function buildApp() {
   // Admin banner management — every route requireAdmin-gated inside the router.
   app.use("/admin/banners/*", currentUser);
   app.use("/admin/banners", currentUser);
+  // Admin store settings — every route requireAdmin-gated inside the router.
+  app.use("/admin/settings/*", currentUser);
+  app.use("/admin/settings", currentUser);
 
   app.get("/health", (c) => c.json({ ok: true }));
 
@@ -243,6 +250,8 @@ export function buildApp() {
   app.route("/categories", categoriesRoutes);
   // Banner slides — anonymous public read for the homepage hero (like /categories).
   app.route("/banners", bannersRoutes);
+  // Public store settings — anonymous read for the storefront contact block.
+  app.route("/settings", settingsRoutes);
   app.route("/auth", authRoutes);
   app.route("/admin/auth", adminAuthRoutes);
   app.route("/admin/orders", adminOrdersRoutes);
@@ -250,6 +259,7 @@ export function buildApp() {
   app.route("/admin/products", adminProductsRoutes);
   app.route("/admin/uploads", adminUploadsRoutes);
   app.route("/admin/banners", adminBannersRoutes);
+  app.route("/admin/settings", adminSettingsRoutes);
   app.route("/cart", cartRoutes);
   app.route("/orders", ordersRoutes);
   app.route("/addresses", addressesRoutes);

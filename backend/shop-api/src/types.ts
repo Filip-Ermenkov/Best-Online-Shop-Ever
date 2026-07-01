@@ -137,6 +137,19 @@ export type {
   TrackWithdrawalRecord,
 } from "./routes/guest.js";
 
+// Public store-settings DTO from routes/settings.ts (the customer-facing config
+// block — address, hours, contact phone + email). The storefront annotates its
+// lib/api.ts `fetchPublicSettings` helper with this, independent of how the
+// workspace symlink resolves AppType.
+export type { PublicSettingsDto as PublicSettings } from "./routes/settings.js";
+
+// Admin store-settings DTO from routes/admin/settings.ts (the fifth admin CRUD
+// slice; moves operator config off env onto the runtime-editable settings
+// table). `AdminSettings` carries every value keyed by registry key plus the
+// optimistic-lock `version` token. The admin frontend
+// (frontend/src/lib/admin/settings/) annotates its typed client with it.
+export type { AdminSettings } from "./routes/admin/settings.js";
+
 // SEO / crawlability DTOs from routes/seo.ts. The storefront's app/sitemap.ts
 // and the catch-all's redirect-serving client annotate their fetch helpers with
 // these concrete shapes, independent of how the workspace symlink resolves

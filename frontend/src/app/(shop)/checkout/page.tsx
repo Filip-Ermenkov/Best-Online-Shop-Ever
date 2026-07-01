@@ -1,9 +1,11 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useCart } from "@/contexts/CartContext";
 import { useAuth } from "@/contexts/AuthContext";
+import { fetchPublicSettings } from "@/lib/api";
+import type { PublicSettings } from "@shop/api";
 import { CheckoutFormData } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { ButtonLink } from "@/components/ui/button-link";
@@ -63,6 +65,21 @@ export default function CheckoutPage() {
 
   const [officeSearch, setOfficeSearch] = useState("");
   const [selectedOffice, setSelectedOffice] = useState<CourierOffice | null>(null);
+
+  // Store pickup location (address + hours) from the admin-editable settings,
+  // shown when the customer chooses "От магазина" (spec §"Настройки на магазина":
+  // the address shows on the order page for the pickup option). Best-effort.
+  const [storeSettings, setStoreSettings] = useState<PublicSettings | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const s = await fetchPublicSettings({ cache: "no-store" });
+      if (!cancelled && s) setStoreSettings(s);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // TODO(auth slice 2): the public /auth/me endpoint does not yet expose
   // the customer discount. Backend stores it on users.customer_discount_percent
@@ -160,6 +177,19 @@ export default function CheckoutPage() {
                 label="От магазина" description="Вземи лично" icon={Store}
               />
             </div>
+
+            {form.deliveryMethod === "pickup" &&
+              (storeSettings?.storeAddress || storeSettings?.storeHours) && (
+                <div className="mt-4 rounded-lg border border-border bg-muted/40 p-4 text-sm">
+                  <p className="font-medium mb-1 flex items-center gap-2">
+                    <Store className="w-4 h-4 text-primary-strong" /> Адрес за вземане
+                  </p>
+                  {storeSettings.storeAddress && <p>{storeSettings.storeAddress}</p>}
+                  {storeSettings.storeHours && (
+                    <p className="text-muted-foreground">{storeSettings.storeHours}</p>
+                  )}
+                </div>
+              )}
 
             {form.deliveryMethod === "courier" && (
               <div className="mt-4 space-y-4">

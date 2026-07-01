@@ -60,6 +60,18 @@ export interface OrderStatusUpdateTemplateInput {
   orderUrl?: string;
   shopName?: string;
   supportEmail?: string;
+  /**
+   * Store contact block — rendered only for `ready_for_pickup`, where the
+   * customer needs to know where and when to collect (spec §"Настройки на
+   * магазина": address + hours + phone + email show in the pickup email).
+   * Blank fields are omitted. Sourced from the admin-editable settings table.
+   */
+  shopContact?: {
+    email: string;
+    phone: string | null;
+    address: string;
+    hours: string;
+  };
 }
 
 export const ORDER_STATUS_UPDATE_TEMPLATE_ID = "orders.order-status-update";
@@ -104,6 +116,15 @@ export function renderOrderStatusUpdateEmail(
 
   if (input.status === "cancelled" && input.cancelledReason) {
     lines.push(`  • Причина: ${input.cancelledReason}`);
+  }
+
+  if (input.status === "ready_for_pickup" && input.shopContact) {
+    const c = input.shopContact;
+    lines.push("", "Контакти на магазина:");
+    if (c.address) lines.push(`  • Адрес: ${c.address}`);
+    if (c.hours) lines.push(`  • Работно време: ${c.hours}`);
+    if (c.phone) lines.push(`  • Телефон: ${c.phone}`);
+    lines.push(`  • Имейл: ${c.email}`);
   }
 
   if (hint) {
@@ -161,6 +182,42 @@ export function renderOrderStatusUpdateEmail(
                           <td style="padding:4px 0;white-space:pre-wrap;">${escapeHtml(input.cancelledReason)}</td>
                         </tr>`
       : "";
+
+  // Store contact block — only for ready_for_pickup (the customer collects in
+  // person, so address/hours/phone matter). Blank fields are omitted; email is
+  // always present.
+  const pickupContact =
+    input.status === "ready_for_pickup" ? input.shopContact ?? null : null;
+  const shopContactBlockHtml = pickupContact
+    ? `<tr>
+              <td style="padding:0 32px 24px 32px;">
+                <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#f4f4f5;border-radius:6px;">
+                  <tr>
+                    <td style="padding:16px 20px;">
+                      <p style="margin:0 0 8px 0;font-size:13px;font-weight:600;text-transform:uppercase;letter-spacing:0.04em;color:#52525b;">
+                        Контакти на магазина
+                      </p>
+                      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="font-size:14px;line-height:1.6;color:#27272a;">
+                        ${
+                          pickupContact.address
+                            ? `<tr><td style="padding:4px 0;color:#71717a;width:180px;">Адрес:</td><td style="padding:4px 0;">${escapeHtml(pickupContact.address)}</td></tr>`
+                            : ""
+                        }${
+                          pickupContact.hours
+                            ? `<tr><td style="padding:4px 0;color:#71717a;">Работно време:</td><td style="padding:4px 0;">${escapeHtml(pickupContact.hours)}</td></tr>`
+                            : ""
+                        }${
+                          pickupContact.phone
+                            ? `<tr><td style="padding:4px 0;color:#71717a;">Телефон:</td><td style="padding:4px 0;"><a href="tel:${escapeAttr(pickupContact.phone.replace(/\s+/g, ""))}" style="color:#3f3f46;text-decoration:underline;">${escapeHtml(pickupContact.phone)}</a></td></tr>`
+                            : ""
+                        }<tr><td style="padding:4px 0;color:#71717a;">Имейл:</td><td style="padding:4px 0;"><a href="mailto:${escapeAttr(pickupContact.email)}" style="color:#3f3f46;text-decoration:underline;">${escapeHtml(pickupContact.email)}</a></td></tr>
+                      </table>
+                    </td>
+                  </tr>
+                </table>
+              </td>
+            </tr>`
+    : "";
 
   const hintBlockHtml = hint
     ? `<tr>
@@ -238,6 +295,7 @@ export function renderOrderStatusUpdateEmail(
                 </table>
               </td>
             </tr>
+            ${shopContactBlockHtml}
             ${hintBlockHtml}
             ${orderUrlBlockHtml}
             ${

@@ -7,8 +7,10 @@ import {
   type OrderStatusUpdateStatus,
 } from "@shop/email";
 import type { Logger } from "pino";
+import { getDb } from "./db.js";
 import { getEmailTransport } from "./emails.js";
 import { parseEnv } from "./env.js";
+import { loadShopContact } from "./shop-contact.js";
 import { deriveSupportEmail } from "./withdrawal.js";
 
 /**
@@ -147,6 +149,15 @@ export async function sendOrderStatusUpdateEmail(
     const orderUrl =
       input.orderUrl ??
       `${env.PUBLIC_APP_BASE_URL}/account/orders/${encodeURIComponent(input.orderNumber)}`;
+    // The "ready for pickup" email must carry the store's address, hours, and
+    // phone so the customer knows where/when to collect (spec §"Настройки на
+    // магазина" — those values show in the pickup email). Sourced from the
+    // admin-editable settings; loaded only for that status, and defensively
+    // (a settings glitch must never block the status email itself).
+    const shopContact =
+      input.status === "ready_for_pickup"
+        ? await loadShopContact(getDb()).catch(() => undefined)
+        : undefined;
     const email = renderOrderStatusUpdateEmail({
       to: input.to,
       fullName: input.customerName,
@@ -159,6 +170,7 @@ export async function sendOrderStatusUpdateEmail(
       cancelledReason: input.cancelledReason ?? null,
       orderUrl,
       supportEmail: deriveSupportEmail(env.EMAIL_FROM),
+      shopContact,
     });
     await transport.send(email);
     return true;

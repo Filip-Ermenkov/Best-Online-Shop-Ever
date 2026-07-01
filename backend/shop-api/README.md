@@ -12,12 +12,21 @@ Hono on Lambda. Same handler runs locally on Node via `@hono/node-server`.
 > (`/admin/products/*`, 2026-06-22), the **image-upload pipeline**
 > (`/admin/uploads/*` + the `assets-fn` validator Lambda, 2026-06-22),
 > **admin banner management** (`/admin/banners/*` + public `GET /banners`,
-> 2026-06-29), and the **scheduled jobs**
+> 2026-06-29), **admin store settings** (`/admin/settings` + public
+> `GET /settings`, 2026-06-30), and the **scheduled jobs**
 > (`src/jobs/*` → the `scheduler-fn` Lambda bundle, 2026-06-12). The
 > authoritative, up-to-date route
 > inventory lives in the root `README.md` → "What's wired up"; the
 > machine-readable contract is `GET /openapi.json`. The newest slice is
-> **admin banner management** (2026-06-29, roadmap item 47): the public
+> **admin store settings** (2026-06-30, roadmap item 48): the fifth admin CRUD
+> slice moves operator-editable business config (shop phone, address, hours,
+> default pickup window, admin-notification recipient) off environment variables
+> onto the runtime-editable `settings` table — changing the shop phone no longer
+> needs a redeploy, while secrets stay in env/SSM. A pure typed registry
+> (`lib/settings.ts`) validates each value; `GET /settings` (public, edge-cached)
+> feeds the storefront contact block, `/admin/settings` (GET + PATCH under a
+> document-level optimistic lock + audit) backs the real settings screen. Before
+> it, **admin banner management** (2026-06-29, roadmap item 47): the public
 > `GET /banners` feeds the homepage hero, and `/admin/banners/*` is the fourth
 > admin CRUD slice (list / create / edit + show-hide toggle / reorder / delete,
 > `linkUrl` validated to a same-origin path), activating the dormant

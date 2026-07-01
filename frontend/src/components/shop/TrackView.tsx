@@ -203,6 +203,12 @@ function ContactBlock({ order }: { order: TrackedOrder }) {
       {show && (
         <div className="mt-3 rounded-md bg-muted/50 px-3 py-2 text-sm">
           <p className="font-medium">Връзка с магазина</p>
+          {order.shopContact.address && (
+            <p>Адрес: {order.shopContact.address}</p>
+          )}
+          {order.shopContact.hours && (
+            <p>Работно време: {order.shopContact.hours}</p>
+          )}
           <p>
             Имейл:{" "}
             <a className="underline" href={`mailto:${order.shopContact.email}`}>
@@ -212,7 +218,7 @@ function ContactBlock({ order }: { order: TrackedOrder }) {
           {order.shopContact.phone && (
             <p>
               Телефон:{" "}
-              <a className="underline" href={`tel:${order.shopContact.phone}`}>
+              <a className="underline" href={`tel:${order.shopContact.phone.replace(/\s+/g, "")}`}>
                 {order.shopContact.phone}
               </a>
             </p>

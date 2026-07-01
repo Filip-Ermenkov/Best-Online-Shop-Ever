@@ -1,7 +1,20 @@
 import Link from "next/link";
 import { Truck, Store, Clock, RotateCcw, Package } from "lucide-react";
+import { fetchPublicSettings } from "@/lib/api";
 
-export default function DeliveryPage() {
+export default async function DeliveryPage() {
+  // Pickup-location line comes from the admin-editable settings; static fallback
+  // keeps the section populated if the API blips or values are unset.
+  const settings = await fetchPublicSettings();
+  const address =
+    settings?.storeAddress && settings.storeAddress.trim().length > 0
+      ? settings.storeAddress
+      : "ул. Витоша 15, 1000 София";
+  const hours =
+    settings?.storeHours && settings.storeHours.trim().length > 0
+      ? settings.storeHours
+      : "Пн–Пт: 9:00–18:00 · Съб: 10:00–14:00";
+
   return (
     <div className="max-w-3xl mx-auto px-4 py-12">
       <h1 className="text-3xl font-bold mb-2">Доставка и връщане</h1>
@@ -77,7 +90,7 @@ export default function DeliveryPage() {
 
         <section>
           <h2 className="text-xl font-semibold mb-2 flex items-center gap-2"><Store className="w-5 h-5 text-primary-strong" /> Адрес на магазина</h2>
-          <p className="text-sm text-muted-foreground">ул. Витоша 15, 1000 София · Пн–Пт: 9:00–18:00 · Съб: 10:00–14:00</p>
+          <p className="text-sm text-muted-foreground">{address} · {hours}</p>
         </section>
       </div>
     </div>

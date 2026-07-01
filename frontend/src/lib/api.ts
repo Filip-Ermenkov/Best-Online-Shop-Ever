@@ -3,6 +3,7 @@ import type {
   CategoryTree,
   ProductDetail,
   ProductsPage,
+  PublicSettings,
 } from "@shop/api";
 
 /**
@@ -169,6 +170,29 @@ export async function fetchBanners(): Promise<BannerList> {
     );
   }
   return (await res.json()) as BannerList;
+}
+
+/**
+ * Public store settings — the customer-facing contact block + opening hours
+ * (docs/README.md §"Настройки на магазина"), sourced from the admin-editable
+ * `settings` table rather than hardcoded copy. Returns `null` on any failure so
+ * callers can fall back to static defaults — the contact page must never blank
+ * out just because the API blipped (same degrade-gracefully stance as the
+ * sitemap). Edge-cached 5 min, same as the banners read.
+ */
+export async function fetchPublicSettings(
+  init?: FetchInit,
+): Promise<PublicSettings | null> {
+  try {
+    const res = await fetch(`${baseUrl}/settings`, {
+      headers: COMMON_HEADERS,
+      ...(init ?? { next: { revalidate: 300, tags: ["settings"] } }),
+    });
+    if (!res.ok) return null;
+    return (await res.json()) as PublicSettings;
+  } catch {
+    return null;
+  }
 }
 
 /** Convenience: fetch a single product by slug. Returns null on 404. */

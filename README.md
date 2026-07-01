@@ -62,9 +62,10 @@ future work):
   **category management** (`/admin/categories/*`, 2026-06-15), and **product
   management** (`/admin/products/*`, backend 2026-06-22) — live in `shop-api`
   as portable `routes/admin/*` modules. The `/admin/products` **frontend** is
-  now wired to that API (2026-06-27), including the real image-upload widget;
-  the REMAINING admin CRUD flows (customers, banners, settings, archive) are
-  still stubbed on the frontend with mock data.
+  now wired to that API (2026-06-27), including the real image-upload widget,
+  as are **banner management** (`/admin/banners/*`, 2026-06-29) and **store
+  settings** (`/admin/settings`, 2026-06-30). The REMAINING admin CRUD flows
+  (customers, archive) are still stubbed on the frontend with mock data.
 - `scheduler-fn` — the scheduled-jobs Lambda (three cron rules: daily
   catalog backup, hourly pickup expiry, daily unverified-account
   cleanup + retention prune). **Shipped 2026-06-12** — there is no
@@ -127,7 +128,7 @@ visible at `/account/orders`.
 
 ```powershell
 npm --workspace @shop/auth  run test   # 70 unit tests (Argon2, sessions, HIBP, TOTP, recovery codes, AES-GCM, challenge)
-npm --workspace @shop/email run test   # 74 unit tests (14 templates + 4 transports + queue envelope/consumer)
+npm --workspace @shop/email run test   # 76 unit tests (14 templates + 4 transports + queue envelope/consumer)
 npm --workspace @shop/api   run test   # full integration suite (379 cases) vs shop_test DB
 ```
 
@@ -178,6 +179,7 @@ they aren't. The honest state:
 | Guest checkout + order tracking | **Shipped end-to-end (2026-06-16)** — the spec's "Гост" role (orders without an account). `shop-api` `/guest/orders` (anonymous checkout, 256-bit capability token) + `/track/:token` (view, cancel-while-processing, 14-day withdrawal) + `/track/find` (rate-limited lost-link resend) + the public `/track/[token]` & `/track/find` UI. Checkout no longer forces login (`POST /orders/:n/cancel` also added for account customers). No migration — activates the dormant `orders.guest_track_token` column |
 | Image-upload pipeline | **Backend + infra shipped (2026-06-22, roadmap item 46)** — `shop-api` `/admin/uploads` mints a **presigned POST** (browser → S3 directly, policy-pinned size + type) + `/admin/uploads/status`; the **assets-fn** validator Lambda magic-byte-checks each upload and promotes only genuine images to a CloudFront+OAC-served `uploads/` prefix (deletes spoofs). `infra/assets.tf` (private assets bucket, OAC distribution, S3→Lambda notification, least-priv IAM) behind `enable_asset_uploads`. Activates every dormant image key the catalog stores. **Frontend (2026-06-27):** the reusable client (`lib/uploads/`) is now consumed by the accessible `ImageUploadField` widget (drag-or-pick, WCAG 2.5.7 single-pointer path, magic-byte-validated server-side), wired into the product editor; the banner editor reuses it unchanged (`kind="banners"`, 2026-06-29 — the category editor when that frontend lands). **Live-validated end-to-end 2026-06-27** (presign → direct-to-S3 → assets-fn promote → CDN render) — which required three latent-bug fixes from the 2026-06-22 ship: the validator is now DB-free (`logger.ts` no longer forces `DATABASE_URL` on a Lambda that has none), the KMS key policy grants CloudFront `kms:Decrypt` so OAC can serve the SSE-KMS objects, and the frontend CSP allows the S3 + assets-CDN origins (`docs/ARCHITECTURE.md` §13). No migration |
 | Admin banner management | **Shipped end-to-end (2026-06-29)** — `shop-api` `/admin/banners/*` (list, create with append ordering + internal-link validation, edit / re-image / show-hide toggle with `updatedAt` optimistic locking, reorder, hard delete) + `admin_audit_log`, driven by the real `/admin/banners` UI (`components/admin/BannersManager`) with the slide image uploaded through the presigned pipeline via the reusable `ImageUploadField` (`kind="banners"`, `max=1`). Public `GET /banners` feeds the homepage hero; the `BannerSlider` is now WCAG 2.2.2-conformant (pause control + reduced-motion + pause-on-interaction). **Activates the dormant `banner_slides` table** (modelled since migration 0000, never written) — no migration |
+| Admin store settings | **Shipped end-to-end (2026-06-30)** — `shop-api` `/admin/settings` (GET all values + a document `version`; PATCH one-or-more keys with per-key registry validation, a document-level `updatedAt` optimistic lock → `409 /problems/settings-version-conflict`, and an `admin_audit_log` row) + the real `/admin/settings` UI (`components/admin/SettingsManager`). Public `GET /settings` (edge-cached like `/banners`) feeds the storefront contact block. **Moves operator-editable business config (shop phone, address, hours, default pickup window, admin-notification recipient) OFF environment variables onto the runtime-editable `settings` table** — changing the shop phone no longer needs a redeploy (`SHOP_CONTACT_PHONE` is now only a fallback). **Activates the dormant `settings` table.** No migration (roadmap item 48) |
 | `admin-api` Lambda | Not built (admin auth + the orders slice currently live in `shop-api`; extract when the admin CRUD surface grows) |
 | `scheduler-fn` Lambda | **Shipped 2026-06-12, live-validated 2026-06-13** (roadmap item 23) — jobs in `@shop/api` `src/jobs/*` + own pure-JS bundle (`build:scheduler`) + `infra/scheduler.tf` (EventBridge Scheduler, 3 Sofia-time crons, delivery DLQ, backup bucket, 2 alarms) behind `enable_scheduler`. All three `aws lambda invoke` drills passed against the Neon test branch; the catalog-backup drill also caught a prod-only bug (the `neon-http` driver can't run `db.transaction(...)`) now fixed by the Neon serverless WebSocket driver — see [decisions](#architecture-decisions-in-force). Runbook in `infra/README.md` |
 | Distributed tracing (OpenTelemetry) | **Shipped 2026-06-13 (roadmap item 18)** — `shop-api` emits OTel traces behind `ENABLE_TRACING`: `@hono/otel` request spans + undici/fetch downstream spans + Pino `trace_id`/`span_id` log↔trace correlation. Exports OTLP to AWS X-Ray via the ADOT collector layer (`enable_tracing` + `adot_collector_layer_arn`), or any OTLP backend. Closes the last OWASP A09 / NIST CSF Detect gap. App-level instrumentation + correlation unit-tested and harness-verified against the real libraries (incl. a clean esbuild bundle); live X-Ray export validated on deploy. Runbook in `infra/README.md` → "Tracing runbook" |
@@ -199,6 +201,14 @@ what needs to happen to get from today's repo state to that posture.
   empty list means the storefront renders no hero (the spec's „ако всички кадри
   са деактивирани … банер секцията не се показва"). ETag + 5-min edge cache,
   same as `/categories`.
+- **`/settings`** — **public store settings (2026-06-30)**, anonymous. The
+  customer-facing config keys only (address, hours, contact phone + email) as a
+  camelCase DTO; the operational keys (default pickup window, admin-notification
+  recipient) are admin-only and never appear here. Feeds the storefront footer,
+  contact page, delivery page, and the checkout "От магазина" pickup option; the
+  guest order-tracking page and the ready-for-pickup email read the same settings
+  server-side (via `lib/shop-contact.ts`). ETag + 5-min edge cache, same as
+  `/banners`.
 - `/auth/*` — register, login, logout, GET+PATCH `/me`, DELETE `/me`,
   POST `/me/export` (GDPR Art. 15 + 20 personal-data export),
   verify-email, resend-verification, forgot-password,
@@ -358,18 +368,35 @@ what needs to happen to get from today's repo state to that posture.
   preserve, and the toggle already covers hide-without-delete). Every change
   appends an `admin_audit_log` row. **Activates the dormant `banner_slides`
   table.** No migration.
+- `/admin/settings/*` — **admin store settings (2026-06-30)**, the fifth admin
+  CRUD slice, `requireAdmin`-gated (uniform `404`): `GET /admin/settings` (every
+  setting value keyed by registry key + a document `version` = `MAX(updated_at)`)
+  and `PATCH /admin/settings` (update one-or-more keys; each value validated +
+  normalised against the typed registry in `lib/settings.ts` — unknown key or bad
+  value gives `400`; a document-level optimistic lock re-reads the rows `FOR
+  UPDATE` and compares the version at millisecond precision → `409
+  /problems/settings-version-conflict`; one `admin_audit_log` row per save). The
+  registry separates **config** (operator-editable business data: phone, address,
+  hours, default pickup window, admin-notification recipient) from **secrets**
+  (which stay in env/SSM) — changing the shop phone is a runtime edit, not a
+  redeploy. **Activates the dormant `settings` table.** No migration.
 - `/health`, `/openapi.json`
 
-Test counts as of 2026-06-29, by `it`/`test` block: addresses 28,
+Test counts as of 2026-06-30, by `it`/`test` block: addresses 28,
 admin-auth 17, **admin-orders 26**, **admin-categories 39**, **admin-products 35**,
 **admin-banners 16** (the requireAdmin gate, list, create + append ordering +
 internal-link 400, update + toggle + optimistic-lock 409, reorder mismatch,
 hard delete, and the audit row; 2026-06-29),
+**admin-settings 10** (the requireAdmin gate, GET all values + version, PATCH
+single/multi-key, unknown-key + bad-value 400, empty-patch 400, optimistic-lock
+409, non-timestamp 400, and the audit row; 2026-06-30),
 **admin-uploads 12** (the presigned-upload route — requireAdmin, allowlist + size
 + kind validation, the 503-when-unconfigured path, and the status poll, with the
 S3 adapters injected; 2026-06-22),
 auth 48, **banners 4** (active-only public read + display ordering + ETag +
-OpenAPI registration, 2026-06-29), cart 30, categories 7,
+OpenAPI registration, 2026-06-29), **settings 4** (public read: public-only keys,
+camelCase DTO, private-key exclusion, ETag + OpenAPI registration, 2026-06-30),
+cart 30, categories 7,
 consent 10, csp-report 25, data-export 14, email-change 21,
 **error-handling 3** (the global `onError` framework-error contract — a
 malformed JSON body → 400 `/problems/malformed-json`, not 500; 2026-06-22),
@@ -406,9 +433,15 @@ head is rejected, 2026-06-22;
 **banner 8** — the pure banner helpers: the internal-link validator (accepts
 path-absolute same-origin links, rejects protocol-relative / scheme / backslash
 / whitespace / control-char hrefs) + the optional-text/link normalisers,
-2026-06-29) — **584 blocks**. The
+2026-06-29; **settings 12** — the pure settings registry: per-key validation
+(days range/int, free-text trim + control-char strip + length cap, permissive
+phone, email-or-empty), the unknown-key allow-list, defensive `coerceSettings`
+(merge over defaults, fall back on a bad-shape row, ignore unknown keys), and the
+public/private partition, 2026-06-30; **shop-contact 3** — the resolver that
+feeds the guest tracking page + the ready-for-pickup email from settings with
+env/derived fallbacks, 2026-06-30) — **613 blocks**. The
 `csp-report` and `phone` suites are table-driven (`it.each`), so
-`vitest run` expands them and reports **~620 cases total** (run
+`vitest run` expands them and reports **~649 cases total** (run
 `vitest run` for the exact figure), all against a real `shop_test`
 Postgres in CI.
 
@@ -596,17 +629,22 @@ at runtime locally (`npm run test:a11y`, axe-core). See
   (`frontend/src/lib/mock-data/courier-offices.ts`) — Bulgarian
   Econt/Speedy office lists are real-world data not yet ingested into
   the DB.
-- **Some admin pages** under `/admin/*` (dashboard tiles, customers, archive,
-  settings) render mock data — no admin API behind those screens yet. **The
+- **Some admin pages** under `/admin/*` (dashboard tiles, customers, archive)
+  render mock data — no admin API behind those screens yet. **The
   real admin screens:** **orders**
   (`/admin/orders` + `/admin/orders/[orderNumber]`, since 2026-06-10),
   **categories** (`/admin/categories`, since 2026-06-15), **products**
-  (`/admin/products` list + `new` + `[id]` edit, since 2026-06-27), and
+  (`/admin/products` list + `new` + `[id]` edit, since 2026-06-27),
   **banners** (`/admin/banners`, since 2026-06-29 — backed by
   `/admin/banners/*`, with the slide image uploaded through the real
-  presigned-POST pipeline via the reusable `ImageUploadField` widget). The
+  presigned-POST pipeline via the reusable `ImageUploadField` widget), and
+  **settings** (`/admin/settings`, since 2026-06-30 — backed by
+  `/admin/settings`, the operator-editable store config). The
   homepage hero now renders from the live `/banners` API (no longer
-  `frontend/src/lib/mock-data/banners.ts`).
+  `frontend/src/lib/mock-data/banners.ts`); the storefront footer, contact page,
+  delivery page, and checkout "От магазина" pickup option read the live
+  `/settings` API (with static fallbacks), and the guest order-tracking page +
+  the ready-for-pickup email show the same settings-driven shop contact.
 
 Category-tree browsing (`/products/[...path]`) and search (`/search`)
 moved off mock data on 2026-05-28 — see [Storefront browsing](#storefront-browsing)
@@ -1491,11 +1529,10 @@ reality, as of 2026-06-07:
   test deploy can be torn down with `terraform destroy`).
 - **`admin-api` Lambda** — referenced in `docs/ARCHITECTURE.md` §3.4;
   not created as a separate Lambda. The admin surface that exists
-  (auth + the orders, categories, and products slices) lives in `shop-api`
-  under `routes/admin/*`; the remaining `/admin/*` frontend pages (customers,
-  banners, settings, archive) render mock data — as does the products page,
-  though its backend `/admin/products/*` now exists (2026-06-22) and only
-  needs frontend wiring.
+  (auth + the orders, categories, products, banners, and settings slices — all
+  end-to-end) lives in `shop-api` under `routes/admin/*`; the remaining
+  `/admin/*` frontend pages (customers, archive, plus the dashboard tiles)
+  render mock data — each awaits its own backend slice.
 - ~~**`scheduler-fn` Lambda**~~ ✅ Shipped 2026-06-12 (roadmap item
   23): the three cron rules run as idempotent sweeps in `@shop/api`
   `src/jobs/*` behind EventBridge Scheduler (`infra/scheduler.tf`,
@@ -1606,9 +1643,10 @@ In priority order (also tracked in `docs/ARCHITECTURE.md` §15):
    The manual `status='accepted'` psql is retired. Since then the
    **categories** slice shipped (2026-06-15, backend + frontend) and the
    **products** slice shipped end-to-end (backend 2026-06-22; `/admin/products`
-   frontend + image-upload widget wired 2026-06-27). What remains: the
-   dedicated `admin-api` Lambda extraction and the customers / banners /
-   settings / archive slices.
+   frontend + image-upload widget wired 2026-06-27), then **banners**
+   (2026-06-29) and **store settings** (2026-06-30), both end-to-end. What
+   remains: the dedicated `admin-api` Lambda extraction and the customers /
+   archive slices (plus the real dashboard tiles).
 
 Items currently described in the architecture but not yet real
 (the remaining admin CRUD slices, the `admin-api` Lambda split, a
