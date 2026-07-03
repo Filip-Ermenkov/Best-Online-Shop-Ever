@@ -63,9 +63,10 @@ future work):
   management** (`/admin/products/*`, backend 2026-06-22) — live in `shop-api`
   as portable `routes/admin/*` modules. The `/admin/products` **frontend** is
   now wired to that API (2026-06-27), including the real image-upload widget,
-  as are **banner management** (`/admin/banners/*`, 2026-06-29) and **store
-  settings** (`/admin/settings`, 2026-06-30). The REMAINING admin CRUD flows
-  (customers, archive) are still stubbed on the frontend with mock data.
+  as are **banner management** (`/admin/banners/*`, 2026-06-29), **store
+  settings** (`/admin/settings`, 2026-06-30), and **account management**
+  (`/admin/customers`, 2026-07-03). The REMAINING admin CRUD flow (archive)
+  is still stubbed on the frontend with mock data.
 - `scheduler-fn` — the scheduled-jobs Lambda (three cron rules: daily
   catalog backup, hourly pickup expiry, daily unverified-account
   cleanup + retention prune). **Shipped 2026-06-12** — there is no
@@ -180,6 +181,7 @@ they aren't. The honest state:
 | Image-upload pipeline | **Backend + infra shipped (2026-06-22, roadmap item 46)** — `shop-api` `/admin/uploads` mints a **presigned POST** (browser → S3 directly, policy-pinned size + type) + `/admin/uploads/status`; the **assets-fn** validator Lambda magic-byte-checks each upload and promotes only genuine images to a CloudFront+OAC-served `uploads/` prefix (deletes spoofs). `infra/assets.tf` (private assets bucket, OAC distribution, S3→Lambda notification, least-priv IAM) behind `enable_asset_uploads`. Activates every dormant image key the catalog stores. **Frontend (2026-06-27):** the reusable client (`lib/uploads/`) is now consumed by the accessible `ImageUploadField` widget (drag-or-pick, WCAG 2.5.7 single-pointer path, magic-byte-validated server-side), wired into the product editor; the banner editor reuses it unchanged (`kind="banners"`, 2026-06-29 — the category editor when that frontend lands). **Live-validated end-to-end 2026-06-27** (presign → direct-to-S3 → assets-fn promote → CDN render) — which required three latent-bug fixes from the 2026-06-22 ship: the validator is now DB-free (`logger.ts` no longer forces `DATABASE_URL` on a Lambda that has none), the KMS key policy grants CloudFront `kms:Decrypt` so OAC can serve the SSE-KMS objects, and the frontend CSP allows the S3 + assets-CDN origins (`docs/ARCHITECTURE.md` §13). No migration |
 | Admin banner management | **Shipped end-to-end (2026-06-29)** — `shop-api` `/admin/banners/*` (list, create with append ordering + internal-link validation, edit / re-image / show-hide toggle with `updatedAt` optimistic locking, reorder, hard delete) + `admin_audit_log`, driven by the real `/admin/banners` UI (`components/admin/BannersManager`) with the slide image uploaded through the presigned pipeline via the reusable `ImageUploadField` (`kind="banners"`, `max=1`). Public `GET /banners` feeds the homepage hero; the `BannerSlider` is now WCAG 2.2.2-conformant (pause control + reduced-motion + pause-on-interaction). **Activates the dormant `banner_slides` table** (modelled since migration 0000, never written) — no migration |
 | Admin store settings | **Shipped end-to-end (2026-06-30)** — `shop-api` `/admin/settings` (GET all values + a document `version`; PATCH one-or-more keys with per-key registry validation, a document-level `updatedAt` optimistic lock → `409 /problems/settings-version-conflict`, and an `admin_audit_log` row) + the real `/admin/settings` UI (`components/admin/SettingsManager`). Public `GET /settings` (edge-cached like `/banners`) feeds the storefront contact block. **Moves operator-editable business config (shop phone, address, hours, default pickup window, admin-notification recipient) OFF environment variables onto the runtime-editable `settings` table** — changing the shop phone no longer needs a redeploy (`SHOP_CONTACT_PHONE` is now only a fallback). **Activates the dormant `settings` table.** No migration (roadmap item 48) |
+| Admin account management | **Shipped end-to-end (2026-07-03)** — `shop-api` `/admin/customers` (requireAdmin→404): offset-paginated + searchable + filterable list, full detail (profile + discount + order history), `PUT`/`DELETE` per-account percentage discount (optimistic-locked on `appliedAt`, `admin_audit_log`), and `DELETE` account (spec §10 active-order guard → 422, then the shared GDPR Art. 17 erasure) + the real `/admin/customers` UI (`components/admin/CustomersManager`). **Activates the WRITE side of the dormant `discounts` table** — a B2B corporate discount (spec §11) is now a runtime edit, not a raw `INSERT`; checkout has consumed `discounts.percent` since the orders slice. The server cart now also returns the customer's `discountPercent`, so the **cart drawer + both checkout steps show the „Отстъпка" line and the discounted „Общо"** (same integer-cent floor as the order; guests always see 0) — only the anonymous catalog strike-through remains a follow-up. Also logs admin PII **reads** (`admin_customer_viewed`), not just writes. No migration (roadmap item 49) |
 | `admin-api` Lambda | Not built (admin auth + the orders slice currently live in `shop-api`; extract when the admin CRUD surface grows) |
 | `scheduler-fn` Lambda | **Shipped 2026-06-12, live-validated 2026-06-13** (roadmap item 23) — jobs in `@shop/api` `src/jobs/*` + own pure-JS bundle (`build:scheduler`) + `infra/scheduler.tf` (EventBridge Scheduler, 3 Sofia-time crons, delivery DLQ, backup bucket, 2 alarms) behind `enable_scheduler`. All three `aws lambda invoke` drills passed against the Neon test branch; the catalog-backup drill also caught a prod-only bug (the `neon-http` driver can't run `db.transaction(...)`) now fixed by the Neon serverless WebSocket driver — see [decisions](#architecture-decisions-in-force). Runbook in `infra/README.md` |
 | Distributed tracing (OpenTelemetry) | **Shipped 2026-06-13 (roadmap item 18)** — `shop-api` emits OTel traces behind `ENABLE_TRACING`: `@hono/otel` request spans + undici/fetch downstream spans + Pino `trace_id`/`span_id` log↔trace correlation. Exports OTLP to AWS X-Ray via the ADOT collector layer (`enable_tracing` + `adot_collector_layer_arn`), or any OTLP backend. Closes the last OWASP A09 / NIST CSF Detect gap. App-level instrumentation + correlation unit-tested and harness-verified against the real libraries (incl. a clean esbuild bundle); live X-Ray export validated on deploy. Runbook in `infra/README.md` → "Tracing runbook" |
@@ -380,9 +382,28 @@ what needs to happen to get from today's repo state to that posture.
   hours, default pickup window, admin-notification recipient) from **secrets**
   (which stay in env/SSM) — changing the shop phone is a runtime edit, not a
   redeploy. **Activates the dormant `settings` table.** No migration.
+- `/admin/customers/*` — **admin account management (2026-07-03)**, the sixth admin
+  CRUD slice, `requireAdmin`-gated (uniform `404`): `GET /admin/customers`
+  (offset-paginated list, 25/page with total count; search across email / personal
+  name / company name / contact name; `accountType` + `hasDiscount` filters; each
+  row carries its active discount % and lifetime order count), `GET
+  /admin/customers/:id` (full account detail — personal or corporate profile, the
+  active discount with WHO applied it + WHEN, and the order history; secrets never
+  selected), `PUT /admin/customers/:id/discount` (set the per-account percentage
+  discount — validated 0<pct≤100, optimistic-locked on the discount's `appliedAt`
+  → `409 /problems/customer-discount-conflict`, `admin_audit_log` row), `DELETE
+  /admin/customers/:id/discount` (clear it, idempotent), and `DELETE
+  /admin/customers/:id` (delete the account — the spec §10 active-order guard →
+  `422 /problems/active-orders-block-deletion` with the blocking numbers, then the
+  SAME GDPR Art. 17 `executeAccountDeletion` the customer's own `DELETE /auth/me`
+  uses). **Activates the WRITE side of the dormant `discounts` table** — checkout
+  has read `discounts.percent` since the first orders slice, but a B2B corporate
+  discount (spec §11) could previously only be set by raw SQL. Also logs admin PII
+  **reads** (`admin_customer_viewed`), per 2026 insider-risk guidance — not only
+  writes. No migration. Full rationale in `docs/ARCHITECTURE.md` §13.
 - `/health`, `/openapi.json`
 
-Test counts as of 2026-06-30, by `it`/`test` block: addresses 28,
+Test counts as of 2026-07-03, by `it`/`test` block: addresses 28,
 admin-auth 17, **admin-orders 26**, **admin-categories 39**, **admin-products 35**,
 **admin-banners 16** (the requireAdmin gate, list, create + append ordering +
 internal-link 400, update + toggle + optimistic-lock 409, reorder mismatch,
@@ -390,13 +411,17 @@ hard delete, and the audit row; 2026-06-29),
 **admin-settings 10** (the requireAdmin gate, GET all values + version, PATCH
 single/multi-key, unknown-key + bad-value 400, empty-patch 400, optimistic-lock
 409, non-timestamp 400, and the audit row; 2026-06-30),
+**admin-customers 17** (the requireAdmin gate, list + search + accountType filter,
+detail for personal + corporate accounts, set-discount create/update + optimistic-
+lock 409 + range/precision 400, clear-discount idempotency, and delete-account with
+the active-order 422 guard + GDPR-erasure happy path; 2026-07-03),
 **admin-uploads 12** (the presigned-upload route — requireAdmin, allowlist + size
 + kind validation, the 503-when-unconfigured path, and the status poll, with the
 S3 adapters injected; 2026-06-22),
 auth 48, **banners 4** (active-only public read + display ordering + ETag +
 OpenAPI registration, 2026-06-29), **settings 4** (public read: public-only keys,
 camelCase DTO, private-key exclusion, ETag + OpenAPI registration, 2026-06-30),
-cart 30, categories 7,
+cart 31, categories 7,
 consent 10, csp-report 25, data-export 14, email-change 21,
 **error-handling 3** (the global `onError` framework-error contract — a
 malformed JSON body → 400 `/problems/malformed-json`, not 500; 2026-06-22),
@@ -439,9 +464,9 @@ phone, email-or-empty), the unknown-key allow-list, defensive `coerceSettings`
 (merge over defaults, fall back on a bad-shape row, ignore unknown keys), and the
 public/private partition, 2026-06-30; **shop-contact 3** — the resolver that
 feeds the guest tracking page + the ready-for-pickup email from settings with
-env/derived fallbacks, 2026-06-30) — **613 blocks**. The
+env/derived fallbacks, 2026-06-30) — **631 blocks**. The
 `csp-report` and `phone` suites are table-driven (`it.each`), so
-`vitest run` expands them and reports **~649 cases total** (run
+`vitest run` expands them and reports **~667 cases total** (run
 `vitest run` for the exact figure), all against a real `shop_test`
 Postgres in CI.
 
@@ -629,7 +654,7 @@ at runtime locally (`npm run test:a11y`, axe-core). See
   (`frontend/src/lib/mock-data/courier-offices.ts`) — Bulgarian
   Econt/Speedy office lists are real-world data not yet ingested into
   the DB.
-- **Some admin pages** under `/admin/*` (dashboard tiles, customers, archive)
+- **Some admin pages** under `/admin/*` (dashboard tiles, archive)
   render mock data — no admin API behind those screens yet. **The
   real admin screens:** **orders**
   (`/admin/orders` + `/admin/orders/[orderNumber]`, since 2026-06-10),
@@ -639,7 +664,9 @@ at runtime locally (`npm run test:a11y`, axe-core). See
   `/admin/banners/*`, with the slide image uploaded through the real
   presigned-POST pipeline via the reusable `ImageUploadField` widget), and
   **settings** (`/admin/settings`, since 2026-06-30 — backed by
-  `/admin/settings`, the operator-editable store config). The
+  `/admin/settings`, the operator-editable store config), and **customers**
+  (`/admin/customers`, since 2026-07-03 — backed by `/admin/customers`, the
+  account list + per-account B2B discounts + account deletion). The
   homepage hero now renders from the live `/banners` API (no longer
   `frontend/src/lib/mock-data/banners.ts`); the storefront footer, contact page,
   delivery page, and checkout "От магазина" pickup option read the live
@@ -1105,6 +1132,51 @@ behaviour is covered by
 `backend/shop-api/tests/routes/admin-products.test.ts` (35 cases) plus the pure
 helpers in `backend/shop-api/tests/lib/product-admin.test.ts` (17 cases).
 
+### Admin account management (customers + discounts)
+
+With the admin signed in, open http://localhost:3000/admin/customers. The list
+renders from `GET /admin/customers` — 25/page, newest first, searchable (name /
+email / company) and filterable (тип акаунт, с/без отстъпка). Register a couple of
+customer accounts first (storefront `/account/register`), then click **Виж** on one:
+
+- The detail shows the account data (personal or corporate), the order history,
+  and the **Персонална отстъпка** form. Enter e.g. `15` and **Запази** —
+  `PUT /admin/customers/:id/discount` applies it; the row's „Отстъпка" column now
+  shows `15%`. Log in as that customer, open the cart drawer and walk through
+  `/checkout` → `/checkout/review`: the summary now shows an „Отстъпка (15%)" line
+  and the discounted „Общо" (the server cart returns `discountPercent`; the amount
+  uses the same integer-cent floor the order does, so it equals what's charged).
+  Place the order and the confirmed total matches. (Guests always see 0; the
+  anonymous product-card/page strike-through is a documented follow-up. This admin
+  screen is the first thing that can WRITE the discount, retiring the raw
+  `INSERT INTO discounts`.)
+- **Премахни** clears it (`DELETE …/discount`, idempotent).
+- **Optimistic lock:** open the same customer in two tabs, save a discount in tab
+  A, then save in tab B → tab B gets „Отстъпката е променена другаде…" and
+  reloads (`409 /problems/customer-discount-conflict`).
+- **Изтрий акаунта:** with an order still „Обработва се" the delete is blocked with
+  the blocking order numbers (`422 /problems/active-orders-block-deletion`); once
+  every order is in a final status (Приета / Върната / Отказана) the delete runs
+  the same GDPR Art. 17 erasure as the customer's own account deletion (profile
+  hard-deleted, order history pseudonymised + retained). Every discount/delete
+  action appends an `admin_audit_log` row; opening a detail logs a PII-read
+  `admin_customer_viewed` event.
+
+Backend directly (admin cookie in `cookies.txt` — see
+[Admin authentication](#admin-authentication-totp-mfa)):
+
+```bash
+curl.exe -s "localhost:3001/admin/customers?q=иван&accountType=personal" -b cookies.txt
+curl.exe -s localhost:3001/admin/customers/<ID> -b cookies.txt
+#   set / clear a discount:
+curl.exe -s -X PUT localhost:3001/admin/customers/<ID>/discount -b cookies.txt \
+  -H 'Content-Type: application/json' --data "{\"percent\":15}"
+curl.exe -s -X DELETE localhost:3001/admin/customers/<ID>/discount -b cookies.txt
+```
+
+The full behaviour is covered by
+`backend/shop-api/tests/routes/admin-customers.test.ts` (17 cases).
+
 ### Image uploads (presigned POST + magic-byte validation)
 
 The pipeline that finally puts bytes behind the catalog's image keys (roadmap
@@ -1529,9 +1601,9 @@ reality, as of 2026-06-07:
   test deploy can be torn down with `terraform destroy`).
 - **`admin-api` Lambda** — referenced in `docs/ARCHITECTURE.md` §3.4;
   not created as a separate Lambda. The admin surface that exists
-  (auth + the orders, categories, products, banners, and settings slices — all
-  end-to-end) lives in `shop-api` under `routes/admin/*`; the remaining
-  `/admin/*` frontend pages (customers, archive, plus the dashboard tiles)
+  (auth + the orders, categories, products, banners, settings, and customers
+  slices — all end-to-end) lives in `shop-api` under `routes/admin/*`; the
+  remaining `/admin/*` frontend pages (archive, plus the dashboard tiles)
   render mock data — each awaits its own backend slice.
 - ~~**`scheduler-fn` Lambda**~~ ✅ Shipped 2026-06-12 (roadmap item
   23): the three cron rules run as idempotent sweeps in `@shop/api`
@@ -1644,9 +1716,9 @@ In priority order (also tracked in `docs/ARCHITECTURE.md` §15):
    **categories** slice shipped (2026-06-15, backend + frontend) and the
    **products** slice shipped end-to-end (backend 2026-06-22; `/admin/products`
    frontend + image-upload widget wired 2026-06-27), then **banners**
-   (2026-06-29) and **store settings** (2026-06-30), both end-to-end. What
-   remains: the dedicated `admin-api` Lambda extraction and the customers /
-   archive slices (plus the real dashboard tiles).
+   (2026-06-29), **store settings** (2026-06-30) and **account management**
+   (2026-07-03), all end-to-end. What remains: the dedicated `admin-api` Lambda
+   extraction and the archive slice (plus the real dashboard tiles).
 
 Items currently described in the architecture but not yet real
 (the remaining admin CRUD slices, the `admin-api` Lambda split, a

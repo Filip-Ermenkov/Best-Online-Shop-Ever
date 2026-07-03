@@ -122,6 +122,44 @@ describe("GET /cart", () => {
     expect(body.currency).toBe("EUR");
   });
 
+  it("returns the customer's active per-account discount (0 when none)", async () => {
+    const { p1 } = await seedSmallCatalog();
+    const { cookie, userId } = await loginCustomer();
+
+    // No discount yet → 0.
+    const before = await app.request("/cart", {
+      method: "GET",
+      headers: { Cookie: cookie },
+    });
+    expect(
+      ((await before.json()) as { discountPercent: number }).discountPercent,
+    ).toBe(0);
+
+    // Add a line, then grant a 15% account discount (spec §11).
+    await app.request("/cart/items", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Cookie: cookie },
+      body: JSON.stringify({ productId: p1.id, quantity: 1 }),
+    });
+    await getDb().insert(schema.discounts).values({
+      userId,
+      percent: "15.00",
+      appliedByUserId: null,
+      appliedAt: new Date(),
+    });
+
+    const after = await app.request("/cart", {
+      method: "GET",
+      headers: { Cookie: cookie },
+    });
+    const body = (await after.json()) as {
+      discountPercent: number;
+      subtotalCents: number;
+    };
+    expect(body.discountPercent).toBe(15);
+    expect(body.subtotalCents).toBe(9999); // p1 seeded at 9999
+  });
+
   it("hydrates each line with current price, stock status, and primary image", async () => {
     const { p1 } = await seedSmallCatalog();
     const { cookie } = await loginCustomer();

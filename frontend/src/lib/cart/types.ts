@@ -34,6 +34,12 @@ export interface CartView {
   items: CartLine[];
   /** EUR cents, in-stock lines only. */
   subtotalCents: number;
+  /**
+   * The authenticated customer's active per-account discount (0–100), or 0 when
+   * none. Server-provided so the checkout summary shows the discounted total the
+   * order will actually charge (spec §11). Guests always see 0.
+   */
+  discountPercent: number;
   /** Sum of all quantities, including out-of-stock lines. */
   itemCount: number;
   currency: string;

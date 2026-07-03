@@ -13,11 +13,20 @@ Hono on Lambda. Same handler runs locally on Node via `@hono/node-server`.
 > (`/admin/uploads/*` + the `assets-fn` validator Lambda, 2026-06-22),
 > **admin banner management** (`/admin/banners/*` + public `GET /banners`,
 > 2026-06-29), **admin store settings** (`/admin/settings` + public
-> `GET /settings`, 2026-06-30), and the **scheduled jobs**
+> `GET /settings`, 2026-06-30), **admin account management**
+> (`/admin/customers`, 2026-07-03), and the **scheduled jobs**
 > (`src/jobs/*` → the `scheduler-fn` Lambda bundle, 2026-06-12). The
 > authoritative, up-to-date route
 > inventory lives in the root `README.md` → "What's wired up"; the
 > machine-readable contract is `GET /openapi.json`. The newest slice is
+> **admin account management** (2026-07-03, roadmap item 49): the sixth admin CRUD
+> slice (`/admin/customers`) un-mocks the „Управление на акаунти" screen — a
+> searchable / paginated customer list, per-account percentage discounts (spec §11;
+> the first *writer* of the `discounts` table that checkout has read since the
+> orders slice), the order history, and account deletion (the spec §10 active-order
+> guard, then the same GDPR Art. 17 `executeAccountDeletion` the customer's own
+> `DELETE /auth/me` uses). It also logs admin PII *reads* (`admin_customer_viewed`),
+> not only writes. Rationale in `docs/ARCHITECTURE.md` §13. Before it,
 > **admin store settings** (2026-06-30, roadmap item 48): the fifth admin CRUD
 > slice moves operator-editable business config (shop phone, address, hours,
 > default pickup window, admin-notification recipient) off environment variables

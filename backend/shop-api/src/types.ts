@@ -150,6 +150,17 @@ export type { PublicSettingsDto as PublicSettings } from "./routes/settings.js";
 // (frontend/src/lib/admin/settings/) annotates its typed client with it.
 export type { AdminSettings } from "./routes/admin/settings.js";
 
+// Admin account-management DTOs from routes/admin/customers.ts (the sixth admin
+// CRUD slice; activates the write side of the dormant `discounts` table — the
+// spec §10 „Управление на акаунти" + §11 „Отстъпки"). The admin frontend
+// (frontend/src/lib/admin/customers/) annotates its typed client with these.
+export type {
+  AdminCustomerSummary,
+  AdminCustomerList,
+  AdminCustomerDetail,
+  AdminCustomerDiscount,
+} from "./routes/admin/customers.js";
+
 // SEO / crawlability DTOs from routes/seo.ts. The storefront's app/sitemap.ts
 // and the catch-all's redirect-serving client annotate their fetch helpers with
 // these concrete shapes, independent of how the workspace symlink resolves
