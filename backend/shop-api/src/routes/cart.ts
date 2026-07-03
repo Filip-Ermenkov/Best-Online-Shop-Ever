@@ -89,6 +89,15 @@ const CartViewSchema = z
     items: z.array(CartLineSchema),
     /** Sum of priceCents * quantity across in-stock items only. */
     subtotalCents: z.number().int().nonnegative(),
+    /**
+     * The authenticated customer's active per-account discount (0–100), or 0
+     * when none is set (spec §11 „Отстъпки"). The order endpoint applies the
+     * SAME percentage to this subtotal with an integer-cent floor, so the
+     * storefront cart + checkout summary can show the discounted total the
+     * customer will actually be charged — without a second pricing source.
+     * Guests never reach this endpoint, so they never receive a discount.
+     */
+    discountPercent: z.number().nonnegative(),
     /** Sum of quantities across ALL lines (in or out of stock). */
     itemCount: z.number().int().nonnegative(),
     currency: z.string(),
@@ -605,6 +614,7 @@ async function readCart(
     addedAt: string;
   }>;
   subtotalCents: number;
+  discountPercent: number;
   itemCount: number;
   currency: string;
   updatedAt: string;
@@ -678,6 +688,21 @@ async function readCart(
     .filter((i) => i.stockStatus === "in_stock")
     .reduce((sum, i) => sum + i.priceCents * i.quantity, 0);
 
+  // The authenticated customer's per-account percentage discount (spec §11),
+  // if any. Read here so the cart + checkout summary can show the discounted
+  // total; the order endpoint applies the identical percentage at placement.
+  // Clamp defensively to 0–100 (the DB CHECK already guarantees the range).
+  const [discountRow] = await db
+    .select({ percent: schema.discounts.percent })
+    .from(schema.discounts)
+    .where(eq(schema.discounts.userId, userId))
+    .limit(1);
+  const rawDiscount = discountRow ? Number(discountRow.percent) : 0;
+  const discountPercent =
+    Number.isFinite(rawDiscount) && rawDiscount > 0
+      ? Math.min(rawDiscount, 100)
+      : 0;
+
   const itemCount = items.reduce((sum, i) => sum + i.quantity, 0);
 
   // Prefer the carts row updatedAt; fall back to "now" for brand-new users
@@ -687,7 +712,7 @@ async function readCart(
   const updatedAt = (cartRow?.updatedAt ?? new Date()).toISOString();
   const currency = items[0]?.currency ?? "EUR";
 
-  return { items, subtotalCents, itemCount, currency, updatedAt };
+  return { items, subtotalCents, discountPercent, itemCount, currency, updatedAt };
 }
 
 /**

@@ -217,11 +217,12 @@ sensibly*. Walk these by hand.
   drag-and-drop** — the single-pointer / keyboard-operable alternative WCAG
   2.2 SC 2.5.7 (Dragging Movements) requires — and its destructive delete is
   gated behind an explicitly-labelled „Разбирам последствията" checkbox. The
-  **products**, **banners**, and **store settings** admin pages are now real (the
-  banners editor reuses the same accessible up/down reorder + the WCAG-2.5.7
-  `ImageUploadField`; the settings form uses labelled controls + live-region field
-  errors); the remaining CRUD pages (customers, archive) are still on mock data,
-  and the panel as a whole has not had a full screen-reader audit.
+  **products**, **banners**, **store settings**, and **account management** admin
+  pages are now real (the banners editor reuses the same accessible up/down reorder
+  + the WCAG-2.5.7 `ImageUploadField`; the settings and customer-discount forms use
+  labelled controls + live-region field errors); the remaining CRUD page (archive)
+  is still on mock data, and the panel as a whole has not had a full screen-reader
+  audit.
 - **Third-party content** (courier-office maps) will be assessed when ingested.
 
 ---

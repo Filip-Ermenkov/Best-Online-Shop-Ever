@@ -99,6 +99,12 @@ export interface CartContextValue {
   itemCount: number;
   /** EUR cents, in-stock lines only. Matches server semantics. */
   subtotalCents: number;
+  /**
+   * The authenticated customer's active per-account discount (0–100), or 0 for
+   * guests / no discount. Server-provided with the cart so the checkout summary
+   * shows the discounted total the order will charge (spec §11).
+   */
+  discountPercent: number;
   currency: string;
 
   addItem(productId: string, quantity?: number): Promise<void>;
@@ -206,6 +212,8 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
   const [items, setItems] = useState<CartLine[]>([]);
   const [status, setStatus] = useState<CartContextValue["status"]>("loading");
   const [lastError, setLastError] = useState<CartError | null>(null);
+  // The server cart carries the customer's per-account discount; guests get 0.
+  const [discountPercent, setDiscountPercent] = useState(0);
 
   // Track which auth status we last reacted to. When auth flips we trigger
   // the appropriate mode change (initial fetch, merge-on-login, drop-on-
@@ -217,6 +225,7 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
   const refreshGuestState = useCallback(() => {
     const guest = readGuestCart();
     setItems(guestCartToLines(guest));
+    setDiscountPercent(0); // guests never receive a per-account discount
     setStatus("ready");
     setLastError(null);
   }, []);
@@ -224,6 +233,7 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
   // ── Server mode helpers ───────────────────────────────────────────────────
   const applyServerView = useCallback((view: CartView) => {
     setItems(view.items);
+    setDiscountPercent(view.discountPercent);
   }, []);
 
   const reloadServerCart = useCallback(async () => {
@@ -510,6 +520,7 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
       isAuthenticated: isLoggedIn,
       itemCount: totals.itemCount,
       subtotalCents: totals.subtotalCents,
+      discountPercent,
       currency: totals.currency,
       addItem,
       addGuestItem,
@@ -523,6 +534,7 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
       lastError,
       isLoggedIn,
       totals,
+      discountPercent,
       addItem,
       addGuestItem,
       setQuantity,

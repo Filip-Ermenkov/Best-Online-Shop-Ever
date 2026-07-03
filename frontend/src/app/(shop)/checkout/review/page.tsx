@@ -62,7 +62,8 @@ function getCheckoutDraftServerSnapshot(): string | null {
 
 export default function CheckoutReviewPage() {
   const router = useRouter();
-  const { items, subtotalCents, isAuthenticated, clearCart } = useCart();
+  const { items, subtotalCents, discountPercent, isAuthenticated, clearCart } =
+    useCart();
   const { user, status: authStatus } = useAuth();
 
   const savedRaw = useSyncExternalStore(
@@ -119,12 +120,11 @@ export default function CheckoutReviewPage() {
     }
   }, [savedRaw, router]);
 
-  // TODO(auth slice 2): the public /auth/me endpoint does not yet expose
-  // the customer discount. Backend stores it on users.customer_discount_percent
-  // and applies it at order creation. Setting to 0 here keeps the UI numbers
-  // consistent with what the backend will price the order at.
-  const discountPercent = 0;
-  const discountAmountCents = Math.round(subtotalCents * (discountPercent / 100));
+  // The per-account discount (spec §11) rides along with the server cart
+  // (routes/cart.ts → lib/cart). Compute the amount with the SAME integer-cent
+  // floor the order endpoint uses, so this summary matches exactly what the
+  // order will charge. Guests always have discountPercent 0.
+  const discountAmountCents = Math.floor(subtotalCents * (discountPercent / 100));
   const totalCents = subtotalCents - discountAmountCents;
 
   if (!formData) return null;

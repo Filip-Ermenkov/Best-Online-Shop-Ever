@@ -42,7 +42,7 @@ function RadioOption({
 
 export default function CheckoutPage() {
   const router = useRouter();
-  const { items, subtotalCents, itemCount } = useCart();
+  const { items, subtotalCents, itemCount, discountPercent } = useCart();
   const { user } = useAuth();
 
   // The new AuthUser shape has fullName (single field) — split on first space
@@ -81,12 +81,11 @@ export default function CheckoutPage() {
     };
   }, []);
 
-  // TODO(auth slice 2): the public /auth/me endpoint does not yet expose
-  // the customer discount. Backend stores it on users.customer_discount_percent
-  // and applies it at order creation. Setting to 0 here keeps the UI numbers
-  // consistent with what the backend will price the order at.
-  const discountPercent = 0;
-  const discountAmountCents = Math.round(subtotalCents * (discountPercent / 100));
+  // The per-account discount (spec §11) rides along with the server cart
+  // (routes/cart.ts → lib/cart). Compute the amount with the SAME integer-cent
+  // floor the order endpoint uses, so this summary matches exactly what the
+  // order will charge. Guests always have discountPercent 0.
+  const discountAmountCents = Math.floor(subtotalCents * (discountPercent / 100));
   const totalCents = subtotalCents - discountAmountCents;
 
   const offices = form.courierCompany

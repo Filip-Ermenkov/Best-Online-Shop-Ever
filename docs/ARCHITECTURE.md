@@ -14,7 +14,7 @@
 > specification. Read that to learn *what* the shop does; this doc
 > covers *how* it's built.
 >
-> Last updated: 2026-06-30. Reality-aligned: the `infra/` IaC is
+> Last updated: 2026-07-03. Reality-aligned: the `infra/` IaC is
 > live-apply-validated (a test deploy returned 200 end-to-end); the
 > **admin authentication backend** (mandatory TOTP MFA, `/admin/auth/*`)
 > shipped 2026-06-08; the **durable email queue** (item 21) and
@@ -27,10 +27,11 @@
 > closing the NIST CSF Respond + GDPR Art. 33/34 gaps (§5.4, §11, §14); the
 > **image-upload pipeline** (item 46) shipped + live-validated 2026-06-27; and
 > the admin **frontend** is now substantially real — orders, categories,
-> products, **banners** (item 47, 2026-06-29), and **store settings** (item 48,
-> 2026-06-30, config-off-env) are wired end-to-end. No maintained production
-> environment is kept running yet; the remaining admin pages (customers,
-> archive, dashboard tiles) are still on mock data.
+> products, **banners** (item 47, 2026-06-29), **store settings** (item 48,
+> 2026-06-30, config-off-env), and **account management** (item 49, 2026-07-03 —
+> per-account B2B discounts + spec §10 account deletion) are wired end-to-end. No
+> maintained production environment is kept running yet; the remaining admin pages
+> (archive, dashboard tiles) are still on mock data.
 
 ---
 
@@ -84,10 +85,12 @@ Three actors are present in the codebase:
   (2026-06-15, backend + frontend) and **product management** end-to-end
   (`/admin/products/*` backend 2026-06-22; the `/admin/products` list + create/
   edit frontend and the image-upload widget wired 2026-06-27), **banner
-  management** (2026-06-29, backend + frontend), and **store settings**
+  management** (2026-06-29, backend + frontend), **store settings**
   (2026-06-30, backend + frontend — moving operator config off env onto the
-  runtime-editable `settings` table). Still pending: the
-  remaining admin CRUD pages (customers, archive — mock data)
+  runtime-editable `settings` table), and **account management** (2026-07-03,
+  backend + frontend — per-account B2B discounts + account deletion, activating
+  the write side of the `discounts` table). Still pending: the
+  remaining admin CRUD page (archive — mock data)
   and the dedicated **`admin-api`** Lambda the admin panel will eventually live on.
 
 Functional scope is in `docs/README.md`. Deployment status is in
@@ -216,10 +219,11 @@ without WAF.
   admin **orders** pages (list + detail + status transitions,
   2026-06-10), the admin **categories** page (2026-06-15), the admin
   **products** pages (list + create/edit + image upload, 2026-06-27), the
-  admin **banners** page (2026-06-29), and the admin **store settings** page
-  (2026-06-30) are real.
+  admin **banners** page (2026-06-29), the admin **store settings** page
+  (2026-06-30), and the admin **account management** page (customers +
+  per-account discounts + deletion, 2026-07-03) are real.
 - Pages still on mock data: the checkout courier-office picker, and the
-  remaining `/admin/*` pages (dashboard tiles, customers, archive) — each
+  remaining `/admin/*` pages (dashboard tiles, archive) — each
   awaiting its own backend slice.
 
 **Target (deployment):** AWS Amplify Hosting, two apps (shop + admin)
@@ -2274,6 +2278,70 @@ practice:
   Same requireAdmin→404 + audit posture as the other admin slices; no migration
   (the table was modelled in migration 0000).
 
+### 13.x Account management — per-account discount, PII read-logging, erasure reuse (item 49)
+
+The admin "Управление на акаунти" screen (spec §10 + §11 „Отстъпки") activates the
+**write** side of the `discounts` table. Decisions, each researched against 2026
+practice:
+
+- **The discount book is a governed, auditable artefact, not a free field.**
+  Checkout has read `discounts.percent` (a per-account percentage applied to the
+  whole basket, integer-cent floor) since the first orders slice — but no route
+  could ever *write* it: a B2B customer's contracted rate could only be granted by
+  a raw `INSERT INTO discounts` in psql. This slice is that table's first writer,
+  the same "retire the manual SQL" driver behind every prior admin slice. The
+  model is deliberately the simplest correct one for the tier: a single percentage
+  per account (the `discounts` PK is `user_id` → the spec's „само една активна
+  отстъпка"), `applied_by`/`applied_at` recorded and surfaced. This is the standard
+  B2B *account-level / customer-group* pricing shape; **product-level** discounts
+  (a cut visible to everyone) are a documented door (spec §11 „Бъдещо развитие",
+  §16), opened only on demand — the `order_items.discount_amount_cents` column
+  already exists for a future per-line coupon.
+- **Optimistic lock on `applied_at`, no `version`/`updatedAt` column.** Same
+  discipline as banners/products, but the token is the discount row's `applied_at`
+  (the only timestamp it has). SET locks the customer row `FOR UPDATE`, re-reads
+  the discount row, and compares at millisecond precision → `409
+  /problems/customer-discount-conflict`. A fresh grant sends `expectedAppliedAt =
+  null` and conflicts if a discount appeared meanwhile. Because `applied_at`
+  defaults to the DB `now()` (µs), it is set explicitly to a JS `Date` (ms) on
+  every write so the token round-trips cleanly — the same µs-vs-ms pitfall the
+  other slices dodge.
+- **Admin PII *reads* are logged, not only writes.** 2026 insider-risk / GDPR
+  data-minimisation guidance is to record administrative *access* to customer PII,
+  not just state changes. The detail view (which exposes name, phone, company data
+  and order history) emits a structured `admin_customer_viewed` Pino event
+  (actor + subject id, **no PII in the line**). It deliberately does NOT write to
+  `admin_audit_log`, whose documented contract is state-*changing* actions — a read
+  is not one. Secrets (password hash, MFA secret, tokens, raw login telemetry) are
+  never selected into the DTO in the first place (data minimisation at the query).
+- **Deletion reuses the GDPR Art. 17 erasure library, not a parallel path.**
+  `DELETE /admin/customers/:id` runs the spec §10 active-order guard
+  (`findActiveOrdersForUser` → `422` with the blocking order numbers, byte-identical
+  to the customer's own `DELETE /auth/me`) then the SAME `executeAccountDeletion`
+  transaction (pseudonymise the users row + order PII under the Bulgarian 10-year
+  accounting-retention exemption, hard-delete profile/cart/addresses/discount/
+  tokens). One erasure implementation, two entry points — the admin's AAL2 authority
+  stands in for the customer's password re-auth (the operator acts on an
+  out-of-band erasure request or removes a defunct account). Best-effort
+  `account-deleted` notice to the original address; a `customer.delete`
+  `admin_audit_log` row for the Art. 30 trail.
+- **Storefront discount visualisation: cart + checkout done; anonymous catalog
+  deferred.** The spec §11 wants the discounted customer to see the reduced price
+  wherever a price appears. The *authenticated, dynamic* surfaces now show it: the
+  server cart view (`routes/cart.ts` `readCart`) returns the customer's
+  `discountPercent` alongside the subtotal, and the cart drawer + both checkout
+  steps render the „Отстъпка (N%)" line and the discounted „Общо" — computed with
+  the **same integer-cent `Math.floor`** the order endpoint uses, so the summary
+  equals what will be charged (no second pricing source; the discount travels with
+  the cart, so it is auth-scoped and refreshed on every cart read — guests always
+  get 0). What remains deferred is only the **anonymous catalog** strike-through
+  (product card, product page): those endpoints (`/products`, `/categories`) are
+  anonymous and edge-cached (`s-maxage=300`), so per-user pricing cannot ride the
+  cached response without either a personalised (uncacheable) catalog tier or a
+  client-side price-adjust pass keyed on the logged-in discount — a scoped
+  follow-up, noted so the remaining gap is explicit, not accidental. Same
+  requireAdmin→404 posture on the write side; no migration.
+
 ## 14. Honest assessment vs A+ target
 
 **Current state, scored against AWS Well-Architected:**
@@ -2585,9 +2653,10 @@ Ranked by `(impact ÷ effort)` — highest leverage first. Items marked
     typed client in `lib/admin/products/`, with product images uploaded through
     the presigned pipeline via the reusable `ImageUploadField` widget (item 46).
     **What remains of the original item:** the dedicated `admin-api` Lambda
-    extraction (structural, with item 35's module) and the remaining admin CRUD
-    slices — customers, archive (banners shipped as item 47, store settings as
-    item 48; the full categories-AND-products interleaved „Наредба" ordering is a
+    extraction (structural, with item 35's module) and the last admin CRUD slice —
+    archive (banners shipped as item 47, store settings as item 48, account
+    management — customers + per-account discounts + spec §10 deletion — as item 49,
+    2026-07-03; the full categories-AND-products interleaved „Наредба" ordering is a
     later enhancement).
 23. ✅ **Scheduler-fn Lambda + the three cron rules — shipped
     2026-06-12, live-validated 2026-06-13** (code + tests + Terraform;
