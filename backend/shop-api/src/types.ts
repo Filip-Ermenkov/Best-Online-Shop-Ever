@@ -161,6 +161,13 @@ export type {
   AdminCustomerDiscount,
 } from "./routes/admin/customers.js";
 
+// Admin dashboard DTO from routes/admin/dashboard.ts (un-mocks the /admin
+// landing screen). `DashboardSummary` is the whole read-only overview — sales
+// KPIs, the operational action queue, the catalog snapshot, recent orders, and
+// the 14-day realised-sales trend. The admin frontend
+// (frontend/src/lib/admin/dashboard/) annotates its typed client with it.
+export type { DashboardSummary } from "./routes/admin/dashboard.js";
+
 // SEO / crawlability DTOs from routes/seo.ts. The storefront's app/sitemap.ts
 // and the catch-all's redirect-serving client annotate their fetch helpers with
 // these concrete shapes, independent of how the workspace symlink resolves

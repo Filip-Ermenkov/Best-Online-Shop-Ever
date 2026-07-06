@@ -14,7 +14,7 @@
 > specification. Read that to learn *what* the shop does; this doc
 > covers *how* it's built.
 >
-> Last updated: 2026-07-03. Reality-aligned: the `infra/` IaC is
+> Last updated: 2026-07-06. Reality-aligned: the `infra/` IaC is
 > live-apply-validated (a test deploy returned 200 end-to-end); the
 > **admin authentication backend** (mandatory TOTP MFA, `/admin/auth/*`)
 > shipped 2026-06-08; the **durable email queue** (item 21) and
@@ -28,10 +28,11 @@
 > **image-upload pipeline** (item 46) shipped + live-validated 2026-06-27; and
 > the admin **frontend** is now substantially real — orders, categories,
 > products, **banners** (item 47, 2026-06-29), **store settings** (item 48,
-> 2026-06-30, config-off-env), and **account management** (item 49, 2026-07-03 —
-> per-account B2B discounts + spec §10 account deletion) are wired end-to-end. No
-> maintained production environment is kept running yet; the remaining admin pages
-> (archive, dashboard tiles) are still on mock data.
+> 2026-06-30, config-off-env), **account management** (item 49, 2026-07-03 —
+> per-account B2B discounts + spec §10 account deletion), and the read-only
+> **dashboard** (item 50, 2026-07-06 — real operational metrics + a 14-day trend)
+> are wired end-to-end. No maintained production environment is kept running yet;
+> the one remaining admin page (archive) is still on mock data.
 
 ---
 
@@ -87,11 +88,13 @@ Three actors are present in the codebase:
   edit frontend and the image-upload widget wired 2026-06-27), **banner
   management** (2026-06-29, backend + frontend), **store settings**
   (2026-06-30, backend + frontend — moving operator config off env onto the
-  runtime-editable `settings` table), and **account management** (2026-07-03,
+  runtime-editable `settings` table), **account management** (2026-07-03,
   backend + frontend — per-account B2B discounts + account deletion, activating
-  the write side of the `discounts` table). Still pending: the
-  remaining admin CRUD page (archive — mock data)
-  and the dedicated **`admin-api`** Lambda the admin panel will eventually live on.
+  the write side of the `discounts` table), and the read-only **dashboard**
+  (2026-07-06 — real operational metrics + a 14-day realised-sales trend, un-mocking
+  the `/admin` landing page). Still pending: the remaining admin page (archive —
+  mock data) and the dedicated **`admin-api`** Lambda the admin panel will eventually
+  live on.
 
 Functional scope is in `docs/README.md`. Deployment status is in
 `README.md` ("Deployment status" section).
@@ -220,11 +223,11 @@ without WAF.
   2026-06-10), the admin **categories** page (2026-06-15), the admin
   **products** pages (list + create/edit + image upload, 2026-06-27), the
   admin **banners** page (2026-06-29), the admin **store settings** page
-  (2026-06-30), and the admin **account management** page (customers +
-  per-account discounts + deletion, 2026-07-03) are real.
+  (2026-06-30), the admin **account management** page (customers +
+  per-account discounts + deletion, 2026-07-03), and the read-only admin
+  **dashboard** (real operational metrics + a 14-day trend, 2026-07-06) are real.
 - Pages still on mock data: the checkout courier-office picker, and the
-  remaining `/admin/*` pages (dashboard tiles, archive) — each
-  awaiting its own backend slice.
+  one remaining `/admin/*` page (archive) — awaiting its own backend slice.
 
 **Target (deployment):** AWS Amplify Hosting, two apps (shop + admin)
 on two CloudFront distributions.
@@ -682,8 +685,8 @@ A customer named Иван places an order:
 2. The thin proxy at `frontend/src/proxy.ts` attaches a fresh nonce
    to the CSP and emits the Reporting-Endpoints header.
 3. `getServerUser()` ran on the SSR pass, embedded "anonymous" into
-   the response — no auth flicker. Home banners render from
-   `frontend/src/lib/mock-data/banners.ts` (still mock).
+   the response — no auth flicker. Home banners render from the live
+   public `GET /banners` (roadmap item 47, 2026-06-29).
 4. Иван clicks a product. `/products/[...path]` renders from
    mock-data today; in target state it calls `/products` and
    `/categories` on `shop-api`. The "Add to cart" button is a client
@@ -716,8 +719,8 @@ A customer named Иван places an order:
 10. He sees the success page. Order number formatted
     `2026-05-00042` from a Postgres sequence + Sofia-month prefix.
 11. Admin sees the new order at `/admin/orders` (real since
-    2026-06-10 — list, filters, search; the dashboard TILES are still
-    mock).
+    2026-06-10 — list, filters, search) and on the `/admin` dashboard's
+    recent-orders feed + realised-sales KPIs (real since 2026-07-06).
 12. Days later, admin walks the order through the §7 state machine
     from the `/admin/orders/:n` detail page (`POST
     /admin/orders/:n/status` — optimistic-locked, audit-logged,
@@ -2342,6 +2345,84 @@ practice:
   follow-up, noted so the remaining gap is explicit, not accidental. Same
   requireAdmin→404 posture on the write side; no migration.
 
+### 13.x Admin dashboard — on-the-fly aggregates, realised-sales definition, accessible trend (item 50)
+
+The `/admin` landing screen (spec §"Табло") was the last high-traffic admin page
+still rendering fabricated numbers off `frontend/src/lib/mock-data/*`. It is now a
+single read-only endpoint, `GET /admin/dashboard`. Decisions, each researched
+against 2026 practice:
+
+- **On-the-fly aggregation, not a materialised view — with a documented trigger.**
+  The 2026 guidance on dashboard query patterns is to compute aggregates at read
+  time while the query is cheap and the data must be live, and to promote to a
+  scheduled materialised view / summary table only when the query becomes expensive
+  *and* the operator will tolerate refresh-interval staleness. At this shop's tier
+  (0–500 orders/mo, §16.1) every figure is an indexed single-digit-ms scan
+  (`count(*) FILTER (…)` / `sum(…) FILTER (…)` over `orders_created_at_idx`,
+  `orders_status_idx`, `products_stock_status_idx`, `users_role_idx`), the seven
+  aggregates run concurrently, and an operator who just accepted an order expects
+  the count to move *now* — so read-time aggregation is correct. The migration
+  trigger is recorded like the §16.3 search threshold: **when dashboard p95 latency
+  becomes material (roughly Tier 3+), move the daily-trend + monthly rollups to a
+  summary table refreshed by the existing scheduler-fn, or a `REFRESH MATERIALIZED
+  VIEW CONCURRENTLY` cron.** The schema even anticipated this slice — the composite
+  `orders_status_created_at_idx` is annotated "for the admin dashboard query".
+- **Honest metric selection.** The mainstream ecommerce-KPI canon leads with
+  conversion rate, sessions/traffic, LTV and CAC — all of which need web-analytics
+  this cash-on-delivery / pay-at-store shop deliberately does not collect. Rather
+  than fabricate them, the dashboard reports only what the database actually knows:
+  realised sales (orders + revenue), **average order value** (the one "Big Five" KPI
+  that *is* computable here, = revenue ÷ orders), new registrations, the operational
+  action queue, and the trend. Traffic-derived KPIs are a deliberate future door
+  (they arrive with a RUM/analytics pipeline, §15 item 29), not a blank tile.
+- **Realised-sales definition, kept coherent.** The sales trio — orders, revenue,
+  AOV, for the month, for today, and per day on the trend — counts only orders whose
+  status is **NOT `cancelled` and NOT `returned`**: a cancelled order is not a sale
+  and a returned one was reversed. Because the revenue sum and the order count are
+  taken over the *same* population, AOV = revenue ÷ orders is a true per-order
+  average, not a ratio of two different sets (the classic dashboard bug). The
+  `recentOrders` feed is the deliberate exception — it shows every status because it
+  is an activity log, not a sales figure. Money is integer cents throughout;
+  `numeric` sums arrive as strings and are `Number()`-cast once.
+- **Europe/Sofia period bounds, in SQL.** "This month" and "today" are Bulgarian
+  calendar boundaries — a 01:00 EET order belongs to the day it was placed. The
+  bounds are `date_trunc('month', now() AT TIME ZONE 'Europe/Sofia') AT TIME ZONE
+  'Europe/Sofia'` (and the `::date` equivalent for today / the 14-day window start),
+  which land as `timestamptz` instants the planner range-scans on `created_at`, and
+  are DST-correct — the same idiom the admin-orders date filter and the order-number
+  sequence already use. The 14-day trend groups on `(created_at AT TIME ZONE
+  'Europe/Sofia')::date`; the sparse per-day rows are zero-filled into a dense
+  14-point axis by a pure, unit-tested helper (`lib/dashboard-metrics.ts`) whose
+  calendar arithmetic runs on a noon-UTC anchor so day subtraction can never roll a
+  boundary.
+- **The trend is accessible by construction.** Per WCAG 1.1.1 / 1.4.1, the 14-day
+  chart is an SVG `role="img"` with a descriptive label AND a visually-hidden data
+  table carrying the identical numbers — the recommended "chart + tabular
+  alternative" pattern — so the trend is fully available to screen readers and never
+  conveyed by colour alone (bar colour is the accessible `--primary-strong` token via
+  `currentColor`; per-bar `<title>` gives sighted-hover detail). The component lives
+  under `components/admin/**`, so it clears the full jsx-a11y bar, not the relaxed
+  `app/admin/**` subset.
+- **A read is logged as a read.** The recent-orders feed surfaces customer names, so
+  — consistent with item 49 — viewing the dashboard emits an `admin_dashboard_viewed`
+  Pino event (actor id only, no PII in the line). It writes no `admin_audit_log` row:
+  that table's contract is state-*changing* actions, and a dashboard read changes
+  nothing. requireAdmin→404 like the rest of the surface; no migration.
+- **Relationship to spec §"Начален екран" — a documented, partly-forced superset.**
+  The spec sketches four *activity-count* cards (нови поръчки, активни поръчки,
+  изтекли срокове, изчерпани продукти) plus three „Бързи действия" buttons. The
+  shipped dashboard keeps the spec's operational signals — **нови поръчки, изтекли
+  срокове, and изчерпани продукти live in the action queue** — and deliberately adds
+  the money view the spec omits but an operator actually runs the business on
+  (realised revenue, AOV, the 14-day trend, recent orders, new customers). Two
+  alignment gaps are recorded, not accidental: the **„Активни поръчки"** count
+  (shipped + ready_for_pickup) is not yet its own tile (cheap to add), and the
+  **„Бързи действия"** buttons are deferred because two of the three — „Наредба на
+  съдържанието" (the combined category+product ordering view) and „Ръчно архивиране"
+  (manual catalog backup) — depend on features not yet built, so only „Нов продукт"
+  could ship today. Tightening this alignment is a scoped follow-up, not a blocker:
+  the page is real, tested, and strictly better than the mock it replaced.
+
 ## 14. Honest assessment vs A+ target
 
 **Current state, scored against AWS Well-Architected:**
@@ -2653,11 +2734,12 @@ Ranked by `(impact ÷ effort)` — highest leverage first. Items marked
     typed client in `lib/admin/products/`, with product images uploaded through
     the presigned pipeline via the reusable `ImageUploadField` widget (item 46).
     **What remains of the original item:** the dedicated `admin-api` Lambda
-    extraction (structural, with item 35's module) and the last admin CRUD slice —
+    extraction (structural, with item 35's module) and the last mock admin screen —
     archive (banners shipped as item 47, store settings as item 48, account
     management — customers + per-account discounts + spec §10 deletion — as item 49,
-    2026-07-03; the full categories-AND-products interleaved „Наредба" ordering is a
-    later enhancement).
+    2026-07-03; the read-only **dashboard** as item 50, 2026-07-06 — so `archive` is
+    now the only admin page still on mock data; the full categories-AND-products
+    interleaved „Наредба" ordering is a later enhancement).
 23. ✅ **Scheduler-fn Lambda + the three cron rules — shipped
     2026-06-12, live-validated 2026-06-13** (code + tests + Terraform;
     the manual `aws lambda invoke` drills for all three jobs passed on
@@ -3052,6 +3134,31 @@ Ranked by `(impact ÷ effort)` — highest leverage first. Items marked
     `admin_notification_email` into the actual admin notification sends, and
     surface `default_pickup_deadline_days` as the prefill in the admin orders
     "ready for pickup" action. Full rationale in §13.
+49. ✅ **Admin account management — shipped 2026-07-03.** The sixth admin CRUD
+    slice: `/admin/customers` (list + detail) + the **write side of the dormant
+    `discounts` table** (per-account B2B percentage, `applied_at` optimistic lock,
+    `admin_audit_log`) + GDPR Art. 17 account deletion behind the spec §10
+    active-order guard, reusing the shared `executeAccountDeletion`. Surfaces the
+    per-account discount through the server cart so the cart drawer + both checkout
+    steps show the discounted „Общо" (integer-cent floor matching the order; guests
+    get 0). Logs admin PII **reads** (`admin_customer_viewed`), not only writes. No
+    migration. Full rationale in §13.
+50. ✅ **Admin dashboard — shipped 2026-07-06.** The real `/admin` landing screen,
+    un-mocking the last high-traffic admin page (retires `mock-data/{orders,
+    customers,banners}.ts`). `GET /admin/dashboard` (`requireAdmin`→404) returns
+    realised-sales KPIs (orders / revenue / average order value for the Europe/Sofia
+    month + today, `cancelled`/`returned` excluded so the three share one population
+    and AOV is a true per-order average), new-customer counts, the operational action
+    queue (new orders awaiting acceptance, expired pickups, out-of-stock), a catalog
+    snapshot, the recent-orders feed, and a 14-day realised-sales trend — all
+    **on-the-fly indexed aggregates** over the existing tables (no migration;
+    materialised-view / summary-table promotion documented for Tier 3+). No
+    web-analytics KPIs are fabricated — only what the DB knows is shown (traffic /
+    conversion / LTV arrive with the RUM pipeline, item 29). The trend UI is an
+    **accessible SVG** (`role="img"` + a visually-hidden data table, WCAG 1.1.1).
+    Emits `admin_dashboard_viewed` (a PII read log; no `admin_audit_log` row — a read
+    is not a state change). 19 new test blocks (admin-dashboard 10, dashboard-metrics
+    9). `archive` is now the only admin page still on mock data. Full rationale in §13.
 
 **Doing items 15–27 closes every meaningful 2026 gap in ~4–6
 working days. Items 28–33 raise the quality bar further at ~3 more

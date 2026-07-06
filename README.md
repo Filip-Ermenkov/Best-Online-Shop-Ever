@@ -182,6 +182,7 @@ they aren't. The honest state:
 | Admin banner management | **Shipped end-to-end (2026-06-29)** — `shop-api` `/admin/banners/*` (list, create with append ordering + internal-link validation, edit / re-image / show-hide toggle with `updatedAt` optimistic locking, reorder, hard delete) + `admin_audit_log`, driven by the real `/admin/banners` UI (`components/admin/BannersManager`) with the slide image uploaded through the presigned pipeline via the reusable `ImageUploadField` (`kind="banners"`, `max=1`). Public `GET /banners` feeds the homepage hero; the `BannerSlider` is now WCAG 2.2.2-conformant (pause control + reduced-motion + pause-on-interaction). **Activates the dormant `banner_slides` table** (modelled since migration 0000, never written) — no migration |
 | Admin store settings | **Shipped end-to-end (2026-06-30)** — `shop-api` `/admin/settings` (GET all values + a document `version`; PATCH one-or-more keys with per-key registry validation, a document-level `updatedAt` optimistic lock → `409 /problems/settings-version-conflict`, and an `admin_audit_log` row) + the real `/admin/settings` UI (`components/admin/SettingsManager`). Public `GET /settings` (edge-cached like `/banners`) feeds the storefront contact block. **Moves operator-editable business config (shop phone, address, hours, default pickup window, admin-notification recipient) OFF environment variables onto the runtime-editable `settings` table** — changing the shop phone no longer needs a redeploy (`SHOP_CONTACT_PHONE` is now only a fallback). **Activates the dormant `settings` table.** No migration (roadmap item 48) |
 | Admin account management | **Shipped end-to-end (2026-07-03)** — `shop-api` `/admin/customers` (requireAdmin→404): offset-paginated + searchable + filterable list, full detail (profile + discount + order history), `PUT`/`DELETE` per-account percentage discount (optimistic-locked on `appliedAt`, `admin_audit_log`), and `DELETE` account (spec §10 active-order guard → 422, then the shared GDPR Art. 17 erasure) + the real `/admin/customers` UI (`components/admin/CustomersManager`). **Activates the WRITE side of the dormant `discounts` table** — a B2B corporate discount (spec §11) is now a runtime edit, not a raw `INSERT`; checkout has consumed `discounts.percent` since the orders slice. The server cart now also returns the customer's `discountPercent`, so the **cart drawer + both checkout steps show the „Отстъпка" line and the discounted „Общо"** (same integer-cent floor as the order; guests always see 0) — only the anonymous catalog strike-through remains a follow-up. Also logs admin PII **reads** (`admin_customer_viewed`), not just writes. No migration (roadmap item 49) |
+| Admin dashboard | **Shipped end-to-end (2026-07-06)** — the real `/admin` landing screen. `shop-api` `GET /admin/dashboard` (requireAdmin→404): realised-sales KPIs (orders / revenue / average order value for the Europe/Sofia month + today, with `cancelled`/`returned` excluded so revenue, order count, and AOV share one population), new-customer counts, the operational action queue (new orders awaiting acceptance, expired pickups, out-of-stock), a catalog snapshot, the recent-orders feed, and a 14-day realised-sales trend — computed as **on-the-fly indexed aggregates** over the existing tables (no migration; a materialised view / summary table is the documented Tier-3+ upgrade, not warranted now) + the real `/admin` UI (`components/admin/DashboardManager`) whose 14-day trend is an **accessible SVG** (`role="img"` + a visually-hidden data table, per WCAG 1.1.1). Un-mocks the last high-traffic admin page and retires `mock-data/{orders,customers,banners}.ts`. Logs admin PII **reads** (`admin_dashboard_viewed`), consistent with the account-management slice. No migration (roadmap item 50) |
 | `admin-api` Lambda | Not built (admin auth + the orders slice currently live in `shop-api`; extract when the admin CRUD surface grows) |
 | `scheduler-fn` Lambda | **Shipped 2026-06-12, live-validated 2026-06-13** (roadmap item 23) — jobs in `@shop/api` `src/jobs/*` + own pure-JS bundle (`build:scheduler`) + `infra/scheduler.tf` (EventBridge Scheduler, 3 Sofia-time crons, delivery DLQ, backup bucket, 2 alarms) behind `enable_scheduler`. All three `aws lambda invoke` drills passed against the Neon test branch; the catalog-backup drill also caught a prod-only bug (the `neon-http` driver can't run `db.transaction(...)`) now fixed by the Neon serverless WebSocket driver — see [decisions](#architecture-decisions-in-force). Runbook in `infra/README.md` |
 | Distributed tracing (OpenTelemetry) | **Shipped 2026-06-13 (roadmap item 18)** — `shop-api` emits OTel traces behind `ENABLE_TRACING`: `@hono/otel` request spans + undici/fetch downstream spans + Pino `trace_id`/`span_id` log↔trace correlation. Exports OTLP to AWS X-Ray via the ADOT collector layer (`enable_tracing` + `adot_collector_layer_arn`), or any OTLP backend. Closes the last OWASP A09 / NIST CSF Detect gap. App-level instrumentation + correlation unit-tested and harness-verified against the real libraries (incl. a clean esbuild bundle); live X-Ray export validated on deploy. Runbook in `infra/README.md` → "Tracing runbook" |
@@ -401,9 +402,25 @@ what needs to happen to get from today's repo state to that posture.
   discount (spec §11) could previously only be set by raw SQL. Also logs admin PII
   **reads** (`admin_customer_viewed`), per 2026 insider-risk guidance — not only
   writes. No migration. Full rationale in `docs/ARCHITECTURE.md` §13.
+- `/admin/dashboard` — **admin dashboard (2026-07-06)**, the read-only `/admin`
+  landing overview, `requireAdmin`-gated (uniform `404`): `GET /admin/dashboard`
+  returns the whole payload in one shot — realised-sales KPIs (orders / revenue /
+  average order value for the Europe/Sofia month + today; `cancelled` and
+  `returned` are excluded so the three figures share one population and AOV is a
+  true per-order average), new-customer counts, the operational action queue (new
+  orders awaiting acceptance, `ready_for_pickup` past their deadline, out-of-stock
+  products), a catalog snapshot (active products / categories / customers), the
+  newest-8 recent-orders feed, and a 14-day realised-sales trend. Every figure is
+  an **on-the-fly indexed aggregate** (`count(*) FILTER (…)` / `sum(…) FILTER (…)`
+  over `orders_created_at_idx` / `products_stock_status_idx` etc.) with Europe/Sofia
+  period bounds built in SQL — no migration, and no materialised view at this tier
+  (documented threshold: Tier 3+). Emits `admin_dashboard_viewed` (a PII **read**
+  log, like `admin_customer_viewed`); no `admin_audit_log` row (reads aren't state
+  changes). Un-mocks the last high-traffic admin screen. Full rationale in
+  `docs/ARCHITECTURE.md` §13.
 - `/health`, `/openapi.json`
 
-Test counts as of 2026-07-03, by `it`/`test` block: addresses 28,
+Test counts as of 2026-07-06, by `it`/`test` block: addresses 28,
 admin-auth 17, **admin-orders 26**, **admin-categories 39**, **admin-products 35**,
 **admin-banners 16** (the requireAdmin gate, list, create + append ordering +
 internal-link 400, update + toggle + optimistic-lock 409, reorder mismatch,
@@ -415,6 +432,10 @@ single/multi-key, unknown-key + bad-value 400, empty-patch 400, optimistic-lock
 detail for personal + corporate accounts, set-discount create/update + optimistic-
 lock 409 + range/precision 400, clear-discount idempotency, and delete-account with
 the active-order 422 guard + GDPR-erasure happy path; 2026-07-03),
+**admin-dashboard 10** (the requireAdmin gate, empty-state zeros, realised-sales
+KPIs with cancelled/returned excluded + coherent AOV, Europe/Sofia month/today
+bounds, the action queue, the catalog snapshot + out-of-stock list, new-customer
+counts, the recent-orders feed, and the 14-day trend; 2026-07-06),
 **admin-uploads 12** (the presigned-upload route — requireAdmin, allowlist + size
 + kind validation, the 503-when-unconfigured path, and the status poll, with the
 S3 adapters injected; 2026-06-22),
@@ -464,9 +485,13 @@ phone, email-or-empty), the unknown-key allow-list, defensive `coerceSettings`
 (merge over defaults, fall back on a bad-shape row, ignore unknown keys), and the
 public/private partition, 2026-06-30; **shop-contact 3** — the resolver that
 feeds the guest tracking page + the ready-for-pickup email from settings with
-env/derived fallbacks, 2026-06-30) — **631 blocks**. The
+env/derived fallbacks, 2026-06-30; **dashboard-metrics 9** — the pure dashboard
+helpers: the zero-filled 14-day series builder (dense, oldest→newest, off-axis
+rows ignored, correct month-boundary calendar math), the coherent average-order-
+value rounding + divide-by-zero guard, and the Europe/Sofia date formatter,
+2026-07-06) — **650 blocks**. The
 `csp-report` and `phone` suites are table-driven (`it.each`), so
-`vitest run` expands them and reports **~667 cases total** (run
+`vitest run` expands them and reports **~686 cases total** (run
 `vitest run` for the exact figure), all against a real `shop_test`
 Postgres in CI.
 
@@ -654,9 +679,11 @@ at runtime locally (`npm run test:a11y`, axe-core). See
   (`frontend/src/lib/mock-data/courier-offices.ts`) — Bulgarian
   Econt/Speedy office lists are real-world data not yet ingested into
   the DB.
-- **Some admin pages** under `/admin/*` (dashboard tiles, archive)
-  render mock data — no admin API behind those screens yet. **The
-  real admin screens:** **orders**
+- **One admin page** under `/admin/*` (only the **archive** page)
+  still renders mock data — no admin API behind that screen yet. **The
+  real admin screens:** **dashboard** (`/admin`, since 2026-07-06 — backed by
+  `/admin/dashboard`, real operational metrics + a 14-day trend),
+  **orders**
   (`/admin/orders` + `/admin/orders/[orderNumber]`, since 2026-06-10),
   **categories** (`/admin/categories`, since 2026-06-15), **products**
   (`/admin/products` list + `new` + `[id]` edit, since 2026-06-27),
@@ -666,9 +693,12 @@ at runtime locally (`npm run test:a11y`, axe-core). See
   **settings** (`/admin/settings`, since 2026-06-30 — backed by
   `/admin/settings`, the operator-editable store config), and **customers**
   (`/admin/customers`, since 2026-07-03 — backed by `/admin/customers`, the
-  account list + per-account B2B discounts + account deletion). The
-  homepage hero now renders from the live `/banners` API (no longer
-  `frontend/src/lib/mock-data/banners.ts`); the storefront footer, contact page,
+  account list + per-account B2B discounts + account deletion), and
+  **dashboard** (`/admin`, since 2026-07-06 — backed by `/admin/dashboard`).
+  The homepage hero now renders from the live `/banners` API (the mock
+  `mock-data/{banners,orders,customers}.ts` were deleted in the dashboard slice —
+  only `courier-offices.ts` + the archive page's `products.ts`/`categories.ts`
+  remain); the storefront footer, contact page,
   delivery page, and checkout "От магазина" pickup option read the live
   `/settings` API (with static fallbacks), and the guest order-tracking page +
   the ready-for-pickup email show the same settings-driven shop contact.
@@ -1602,9 +1632,9 @@ reality, as of 2026-06-07:
 - **`admin-api` Lambda** — referenced in `docs/ARCHITECTURE.md` §3.4;
   not created as a separate Lambda. The admin surface that exists
   (auth + the orders, categories, products, banners, settings, and customers
-  slices — all end-to-end) lives in `shop-api` under `routes/admin/*`; the
-  remaining `/admin/*` frontend pages (archive, plus the dashboard tiles)
-  render mock data — each awaits its own backend slice.
+  slices, plus the read-only dashboard — all end-to-end) lives in `shop-api`
+  under `routes/admin/*`; the one remaining `/admin/*` frontend page (archive)
+  renders mock data — it awaits its own backend slice.
 - ~~**`scheduler-fn` Lambda**~~ ✅ Shipped 2026-06-12 (roadmap item
   23): the three cron rules run as idempotent sweeps in `@shop/api`
   `src/jobs/*` behind EventBridge Scheduler (`infra/scheduler.tf`,
@@ -1635,13 +1665,13 @@ reality, as of 2026-06-07:
   lives in `frontend/src/app/admin/layout.tsx`. What remains is purely
   structural: extracting the module onto a dedicated `admin-api` Lambda +
   subdomain once the admin CRUD surface grows. Roadmap item 35 is done.
-- **Banner slides API** — the home-page carousel still imports from
-  `frontend/src/lib/mock-data/banners.ts`. A real `banner_slides`
-  endpoint + admin CRUD is its own slice — now **unblocked** by the
-  image-upload pipeline (2026-06-22, item 46): banner images can use
-  the same `/admin/uploads` presign + `assets-fn` validator as products
-  and categories (`kind: "banners"`), so the banners slice no longer
-  waits on an upload path.
+- ~~**Banner slides API**~~ ✅ Shipped 2026-06-29 (roadmap item 47): the
+  home-page carousel renders from the live public `GET /banners`, and
+  `/admin/banners/*` (+ the `components/admin/BannersManager` UI) is the
+  real admin CRUD, with slide images uploaded through the same
+  `/admin/uploads` presign + `assets-fn` validator as products and
+  categories (`kind: "banners"`). The old `mock-data/banners.ts` was
+  deleted in the dashboard slice (2026-07-06).
 - **Courier-office picker** — the checkout step renders Bulgarian
   Econt/Speedy offices from `mock-data/courier-offices.ts`. Real
   ingestion (either a one-off seed from the carrier APIs or a
@@ -1716,9 +1746,10 @@ In priority order (also tracked in `docs/ARCHITECTURE.md` §15):
    **categories** slice shipped (2026-06-15, backend + frontend) and the
    **products** slice shipped end-to-end (backend 2026-06-22; `/admin/products`
    frontend + image-upload widget wired 2026-06-27), then **banners**
-   (2026-06-29), **store settings** (2026-06-30) and **account management**
-   (2026-07-03), all end-to-end. What remains: the dedicated `admin-api` Lambda
-   extraction and the archive slice (plus the real dashboard tiles).
+   (2026-06-29), **store settings** (2026-06-30), **account management**
+   (2026-07-03), and the read-only **dashboard** (2026-07-06), all end-to-end.
+   What remains: the dedicated `admin-api` Lambda extraction and the **archive**
+   slice — now the only admin page still on mock data.
 
 Items currently described in the architecture but not yet real
 (the remaining admin CRUD slices, the `admin-api` Lambda split, a
