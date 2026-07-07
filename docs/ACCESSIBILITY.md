@@ -225,8 +225,14 @@ sensibly*. Walk these by hand.
   `role="img"` with a descriptive label **and a visually-hidden data table carrying
   the identical numbers** — the WCAG 1.1.1 "chart + tabular alternative" pattern, so
   the trend is never conveyed by colour alone and is fully available to screen
-  readers); the remaining page (archive) is still on mock data, and the panel as a
-  whole has not had a full screen-reader audit.
+  readers); and the **archive & restore** page (`ArchiveManager`, 2026-07-07) uses
+  semantic `<table>`s with `<th scope="col">` headers, restore buttons carrying an
+  item-specific `aria-label` (e.g. „Възстанови продукт …", so the accessible name
+  stays distinct per row and contains the visible label), an `aria-live="polite"`
+  status region for restore/backup feedback, and a manual-backup button that is
+  `disabled` with a visible text explanation when no backup bucket is configured
+  (state not conveyed by colour alone). **Every admin page is now real**; the panel
+  as a whole has not yet had a full screen-reader audit.
 - **Third-party content** (courier-office maps) will be assessed when ingested.
 
 ---

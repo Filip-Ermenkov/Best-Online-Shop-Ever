@@ -14,7 +14,7 @@
 > specification. Read that to learn *what* the shop does; this doc
 > covers *how* it's built.
 >
-> Last updated: 2026-07-06. Reality-aligned: the `infra/` IaC is
+> Last updated: 2026-07-07. Reality-aligned: the `infra/` IaC is
 > live-apply-validated (a test deploy returned 200 end-to-end); the
 > **admin authentication backend** (mandatory TOTP MFA, `/admin/auth/*`)
 > shipped 2026-06-08; the **durable email queue** (item 21) and
@@ -29,10 +29,13 @@
 > the admin **frontend** is now substantially real — orders, categories,
 > products, **banners** (item 47, 2026-06-29), **store settings** (item 48,
 > 2026-06-30, config-off-env), **account management** (item 49, 2026-07-03 —
-> per-account B2B discounts + spec §10 account deletion), and the read-only
-> **dashboard** (item 50, 2026-07-06 — real operational metrics + a 14-day trend)
-> are wired end-to-end. No maintained production environment is kept running yet;
-> the one remaining admin page (archive) is still on mock data.
+> per-account B2B discounts + spec §10 account deletion), the read-only
+> **dashboard** (item 50, 2026-07-06 — real operational metrics + a 14-day trend),
+> and **archive & restore** (item 51, 2026-07-07 — soft-deleted restore lists, the
+> spec §12 one-button manual backup, and the new category-restore route) are wired
+> end-to-end. **The admin panel is now fully real** (archive was the last mock
+> page). No maintained production environment is kept running yet; destructive
+> restore-from-snapshot is the one archive capability deferred (item 52).
 
 ---
 
@@ -92,9 +95,11 @@ Three actors are present in the codebase:
   backend + frontend — per-account B2B discounts + account deletion, activating
   the write side of the `discounts` table), and the read-only **dashboard**
   (2026-07-06 — real operational metrics + a 14-day realised-sales trend, un-mocking
-  the `/admin` landing page). Still pending: the remaining admin page (archive —
-  mock data) and the dedicated **`admin-api`** Lambda the admin panel will eventually
-  live on.
+  the `/admin` landing page), and **archive & restore** (2026-07-07 — soft-deleted
+  restore lists, the spec §12 one-button manual backup, and the new category-restore
+  route). **Every admin page is now real.** Still pending: the dedicated
+  **`admin-api`** Lambda the admin panel will eventually live on, and the destructive
+  restore-from-snapshot (item 52).
 
 Functional scope is in `docs/README.md`. Deployment status is in
 `README.md` ("Deployment status" section).
@@ -226,8 +231,10 @@ without WAF.
   (2026-06-30), the admin **account management** page (customers +
   per-account discounts + deletion, 2026-07-03), and the read-only admin
   **dashboard** (real operational metrics + a 14-day trend, 2026-07-06) are real.
-- Pages still on mock data: the checkout courier-office picker, and the
-  one remaining `/admin/*` page (archive) — awaiting its own backend slice.
+- Pages still on mock data: only the checkout courier-office picker
+  (Bulgarian Econt/Speedy office lists, not yet ingested into the DB).
+  Every `/admin/*` screen is now backed by the API — archive, the last
+  mock admin page, went real 2026-07-07 (item 51).
 
 **Target (deployment):** AWS Amplify Hosting, two apps (shop + admin)
 on two CloudFront distributions.
@@ -341,11 +348,15 @@ PII redaction**, structured JSON, per-request child logger keyed on
 applied via `npm run db:migrate` and a deterministic seed at
 `npm run db:seed`. Migrations: `0000_initial.sql`,
 `0001_orders_sequence.sql`, `0002_complaints_withdrawal.sql`,
-`0003_admin_mfa_replay_guard.sql`, `0004_scheduler_jobs.sql`. The
-running test stack now also has these five applied to a Neon branch
-(2026-06-13) — the scheduler-fn drills ran against it.
+`0003_admin_mfa_replay_guard.sql`, `0004_scheduler_jobs.sql`,
+`0005_rate_limit_counters.sql`. The running test stack also has the
+earlier five applied to a Neon branch (2026-06-13) — the scheduler-fn
+drills ran against it.
 
-**Schema scope:** 30 tables, 32 FKs, 46 indexes, 10 enums.
+**Schema scope:** 31 tables, 32 FKs, 47 indexes, 10 enums, 6 migrations
+(`0000`–`0005`). No migration since `0005_rate_limit_counters` — the recent
+admin slices (settings, customers, dashboard, archive) all activate
+already-modelled tables.
 
 **Target:** Neon Postgres. `createDb()` picks the Neon serverless
 driver in prod and the node-pg driver in dev. The serverless driver
@@ -1600,11 +1611,14 @@ Drill quarterly. Document each run. **Never been drilled today.**
 
 **Today:** the BACKUP half is real (2026-06-12, live-validated
 2026-06-13): scheduler-fn writes the daily snapshot and indexes it in
-`catalog_backups`
-(kind='scheduled', one row per key — the table the restore page will
-list from). The RESTORE half (admin Archive page + replay) is still
-the admin-api slice; until it ships, restore = read the S3 object and
-replay it manually (psql / a one-off script).
+`catalog_backups` (kind='scheduled', one row per key), and since the
+archive slice (item 51, 2026-07-07) the admin can also take an on-demand
+`kind='manual'` snapshot from `/admin/archive` (`POST /admin/archive/backup`).
+The RESTORE half is now PARTLY real: the admin Archive page lists the
+snapshots and restores **individual** soft-deleted products/categories
+(per-item un-archive). Replaying a **whole** snapshot back over the live
+catalog is still deferred (item 52); until it ships, a full restore = read
+the S3 object and replay it manually (psql / a one-off script).
 
 ### 12.4 Procedure (admin MFA seed lost)
 
@@ -2416,12 +2430,50 @@ against 2026 practice:
   the money view the spec omits but an operator actually runs the business on
   (realised revenue, AOV, the 14-day trend, recent orders, new customers). Two
   alignment gaps are recorded, not accidental: the **„Активни поръчки"** count
-  (shipped + ready_for_pickup) is not yet its own tile (cheap to add), and the
-  **„Бързи действия"** buttons are deferred because two of the three — „Наредба на
-  съдържанието" (the combined category+product ordering view) and „Ръчно архивиране"
-  (manual catalog backup) — depend on features not yet built, so only „Нов продукт"
-  could ship today. Tightening this alignment is a scoped follow-up, not a blocker:
-  the page is real, tested, and strictly better than the mock it replaced.
+  (shipped + ready_for_pickup) is not yet its own tile (cheap to add), and of the
+  three **„Бързи действия"** buttons „Ръчно архивиране" (manual catalog backup)
+  shipped with the archive slice (item 51, 2026-07-07) and „Нов продукт" is a link
+  away — only „Наредба на съдържанието" (the combined category+product ordering view)
+  still depends on an unbuilt feature. Tightening this alignment is a scoped
+  follow-up, not a blocker: the page is real, tested, and strictly better than the
+  mock it replaced.
+
+### 13.x Admin archive — trash-restore + on-demand backup, destructive restore deferred (item 51)
+
+The archive screen (spec §12) is the last admin page to go real (2026-07-07). Two
+decisions shaped the slice.
+
+- **Two recovery mechanisms, honestly separated.** 2026 "trash + backups" guidance
+  treats *soft-delete restore* and *point-in-time snapshot restore* as distinct
+  tools. This page shows both — the `deleted_at` products/categories awaiting an
+  explicit per-item restore, and the `catalog_backups` snapshots the scheduler
+  writes — but implements only the safe, reversible per-item restore now. **Restore
+  a whole snapshot over the live catalog is deferred (item 52)**: overwriting live
+  rows is high-blast-radius and wants a diff/preview + confirm + a single
+  transactional replay, which is its own slice. Shipping the 80% (recover an
+  accidentally-deleted item) and documenting the risky 20% is the same disciplined
+  scoping the dashboard slice used for its quick-actions.
+- **Restore lives with its entity; the missing half was categories.** Per-item
+  restore is served by each entity's own route (`POST /admin/products/:id/restore`
+  already existed), so the archive UI just calls them — no second writer of those
+  tables. This exposed a real gap: there was **no** category restore, so a
+  cascade-soft-deleted category was unrecoverable via the API (its slug may have been
+  reused by a new live category, since category slug-uniqueness is scoped to live
+  rows — "recreate" is not a restore). The new `POST /admin/categories/:id/restore`
+  mirrors product-restore exactly: FOR-UPDATE lock, un-archive, clear the 301 at the
+  restored canonical path, re-home an orphan to root when its parent is still gone,
+  and a clean `409 /problems/category-restore-conflict` when a live sibling now holds
+  the slug (rather than a broken tree or a DB-constraint 500).
+- **On-demand backup reuses the scheduled job.** `POST /admin/archive/backup` (the
+  spec's one-button „Ръчно архивиране") is the daily catalog-backup job in a `manual`
+  mode: a timestamped key under `catalog/manual/` (so each click is a distinct
+  restore point that never clobbers the day's scheduled snapshot) and an always-INSERT
+  `kind='manual'` row (vs the scheduled replace-by-key). It is gated behind the backup
+  bucket — a clean `503 /problems/backups-not-configured` until set, and shop-api's
+  exec role is granted `s3:PutObject` on that bucket behind `enable_scheduler` (the
+  flag that provisions it). The S3 write is injectable, so the route is fully tested
+  without AWS; a manual backup is a state change, so it writes an `admin_audit_log`
+  `backup.create` row (the overview read, carrying no PII, is a plain info log).
 
 ## 14. Honest assessment vs A+ target
 
@@ -2737,9 +2789,9 @@ Ranked by `(impact ÷ effort)` — highest leverage first. Items marked
     extraction (structural, with item 35's module) and the last mock admin screen —
     archive (banners shipped as item 47, store settings as item 48, account
     management — customers + per-account discounts + spec §10 deletion — as item 49,
-    2026-07-03; the read-only **dashboard** as item 50, 2026-07-06 — so `archive` is
-    now the only admin page still on mock data; the full categories-AND-products
-    interleaved „Наредба" ordering is a later enhancement).
+    2026-07-03; the read-only **dashboard** as item 50, 2026-07-06; and **archive as
+    item 51, 2026-07-07 — so every admin page is now real**; the full
+    categories-AND-products interleaved „Наредба" ordering is a later enhancement).
 23. ✅ **Scheduler-fn Lambda + the three cron rules — shipped
     2026-06-12, live-validated 2026-06-13** (code + tests + Terraform;
     the manual `aws lambda invoke` drills for all three jobs passed on
@@ -3158,7 +3210,36 @@ Ranked by `(impact ÷ effort)` — highest leverage first. Items marked
     **accessible SVG** (`role="img"` + a visually-hidden data table, WCAG 1.1.1).
     Emits `admin_dashboard_viewed` (a PII read log; no `admin_audit_log` row — a read
     is not a state change). 19 new test blocks (admin-dashboard 10, dashboard-metrics
-    9). `archive` is now the only admin page still on mock data. Full rationale in §13.
+    9). At ship time `archive` was the last admin page still on mock data — closed
+    the next day by item 51. Full rationale in §13.
+51. ✅ **Admin archive & restore — shipped 2026-07-07.** The seventh admin CRUD
+    slice, and the one that makes the admin panel **fully real** — archive was the
+    last screen on mock data (`mock-data/{products,categories}.ts`, now deleted).
+    `GET /admin/archive` (`requireAdmin`→404) lists the soft-deleted products +
+    categories awaiting restore and the point-in-time `catalog_backups` snapshots,
+    with a `backupsAvailable` flag. Two recovery mechanisms, honestly separated (2026
+    "trash + backups" practice): per-item **restore** of a soft-deleted entity —
+    served by each entity's own route, so this slice adds the **missing** `POST
+    /admin/categories/:id/restore` (mirrors product-restore: un-archive, clear the
+    301, re-home an orphan to root, `409 /problems/category-restore-conflict` on a
+    live slug collision — closing a real gap, since a cascade-soft-deleted category
+    previously could not be restored via any API) — and an on-demand **backup**
+    (`POST /admin/archive/backup`, the spec §12 one-button „Ръчно архивиране"): the
+    catalog-backup job gained a `manual` mode (timestamped key + its own
+    `kind='manual'` row, never clobbering the daily scheduled snapshot), gated behind
+    the backup bucket (`503 /problems/backups-not-configured` until set; shop-api's
+    exec role granted `s3:PutObject` on that bucket behind `enable_scheduler`), and
+    audited (`backup.create`). Frontend `components/admin/ArchiveManager`. No
+    migration. 17 new test blocks (admin-archive 16 + the catalog-backup manual
+    case). Full rationale in §13.
+52. ❌ **Restore a catalog snapshot over the live catalog.** The one archive
+    capability deliberately deferred from item 51: replaying a chosen
+    `catalog_backups` snapshot back into the catalog tables (spec §12
+    „възстановяване до избрана версия"). High blast radius — it overwrites live rows,
+    so it wants a dry-run **diff/preview** + an explicit „Разбирам последствията"
+    confirm + a single transactional replay, and must reconcile products created
+    since the snapshot. Order history is unaffected (orders snapshot their line
+    items — spec §12). Its own slice; ~half a day.
 
 **Doing items 15–27 closes every meaningful 2026 gap in ~4–6
 working days. Items 28–33 raise the quality bar further at ~3 more

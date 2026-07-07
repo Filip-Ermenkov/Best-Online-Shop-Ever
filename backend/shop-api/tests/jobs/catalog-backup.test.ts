@@ -135,6 +135,46 @@ describe("runCatalogBackupJob", () => {
     const rows = await db.select().from(schema.catalogBackups);
     expect(rows).toHaveLength(1); // replace-by-key, not append
   });
+
+  it("writes a MANUAL snapshot to a timestamped key without clobbering the scheduled row", async () => {
+    await seedCategory({ slug: "rachni", name: "Ръчни" });
+    const db = getDb();
+    // A manual backup is attributed to the admin who triggered it (FK to users).
+    const [admin] = await db
+      .insert(schema.users)
+      .values({
+        email: `manual-backup-${Date.now()}@shop.bg`,
+        passwordHash: "x",
+        role: "admin",
+        accountType: null,
+        emailVerifiedAt: new Date(),
+      })
+      .returning({ id: schema.users.id });
+
+    const { puts, putObject } = makeRecorder();
+    // A scheduled run (date-keyed) then a manual run (timestamped) on the SAME day.
+    await runCatalogBackupJob({ now: NOW, putObject });
+    const manual = await runCatalogBackupJob({
+      now: NOW,
+      putObject,
+      kind: "manual",
+      triggeredByUserId: admin!.id,
+    });
+
+    expect(manual.kind).toBe("manual");
+    // Sofia wall-clock of 22:30Z on 12 Jun is 01:30 on 13 Jun (EEST).
+    expect(manual.key).toBe("catalog/manual/2026-06-13_01-30-00.json");
+    expect(manual.key).not.toBe("catalog/2026-06-13.json");
+    expect(puts).toHaveLength(2);
+
+    // Two distinct restore points — the manual insert does NOT replace the
+    // scheduled row (replace-by-key is scheduled-only).
+    const rows = await db.select().from(schema.catalogBackups);
+    expect(rows).toHaveLength(2);
+    const manualRow = rows.find((r) => r.kind === "manual");
+    expect(manualRow?.s3Key).toBe("catalog/manual/2026-06-13_01-30-00.json");
+    expect(manualRow?.triggeredByUserId).toBe(admin!.id);
+  });
 });
 
 describe("jobs dispatch (runner + Lambda handler)", () => {

@@ -20,11 +20,14 @@ import { parseEnv } from "../lib/env.js";
  * on the bucket (infra/scheduler.tf): versioned, 90-day expiry, SSE-KMS.
  *
  * Each successful upload is recorded in the dormant-since-0000
- * `catalog_backups` table ("one row per snapshot" — the future admin
- * Archive/restore page lists from it, ARCHITECTURE §12.3). The job keeps
- * that invariant under re-runs by replacing the key's row in one
- * transaction. kind='scheduled', triggered_by_user_id=NULL — the manual
- * admin-triggered path will write kind='manual' when that slice ships.
+ * `catalog_backups` table ("one row per snapshot" — the admin Archive page
+ * lists from it, ARCHITECTURE §12.3). A SCHEDULED run keeps the "one row per
+ * Sofia day" invariant under re-runs by replacing the key's row in one
+ * transaction (kind='scheduled', triggered_by_user_id=NULL). A MANUAL run
+ * (admin-triggered from `POST /admin/archive/backup`, roadmap item 51) is
+ * timestamped instead of date-keyed, so each click is its own distinct restore
+ * point that never clobbers the day's scheduled snapshot — it always INSERTs a
+ * fresh row (kind='manual', triggered_by_user_id=<admin>).
  *
  * Soft-deleted rows are INCLUDED (full fidelity — a restore must be able to
  * resurrect the deleted_at state and the redirects that point at it).
@@ -37,6 +40,7 @@ export interface CatalogBackupResult {
   bucket: string;
   key: string;
   bytes: number;
+  kind: "scheduled" | "manual";
   counts: {
     categories: number;
     products: number;
@@ -74,10 +78,23 @@ function sofiaDateStamp(d: Date): string {
   return d.toLocaleDateString("en-CA", { timeZone: "Europe/Sofia" });
 }
 
+/** Sofia wall-clock stamp (YYYY-MM-DD_HH-mm-ss) for unique manual-backup keys. */
+function sofiaDateTimeStamp(d: Date): string {
+  // sv-SE renders ISO-like "YYYY-MM-DD HH:mm:ss"; make it S3-key-safe.
+  return d
+    .toLocaleString("sv-SE", { timeZone: "Europe/Sofia", hour12: false })
+    .replace(" ", "_")
+    .replaceAll(":", "-");
+}
+
 export async function runCatalogBackupJob(opts?: {
   now?: Date;
   logger?: Logger;
   putObject?: PutObjectFn;
+  /** "scheduled" (daily cron, default) or "manual" (admin-triggered). */
+  kind?: "scheduled" | "manual";
+  /** For manual runs: the admin who triggered it (audit provenance). */
+  triggeredByUserId?: string | null;
 }): Promise<CatalogBackupResult> {
   const env = parseEnv();
   if (env.CATALOG_BACKUP_BUCKET.length === 0) {
@@ -92,6 +109,8 @@ export async function runCatalogBackupJob(opts?: {
   const db = getDb();
   const now = opts?.now ?? new Date();
   const putObject = opts?.putObject ?? s3PutObject;
+  const kind = opts?.kind ?? "scheduled";
+  const triggeredByUserId = opts?.triggeredByUserId ?? null;
 
   // Deterministic ordering keeps same-day re-runs byte-identical, which
   // makes bucket versioning meaningful (a new version ⇒ the catalog really
@@ -117,7 +136,13 @@ export async function runCatalogBackupJob(opts?: {
   };
 
   const body = JSON.stringify(envelope);
-  const key = `${env.CATALOG_BACKUP_PREFIX}${sofiaDateStamp(now)}.json`;
+  // Scheduled: one idempotent date-keyed snapshot per Sofia day. Manual: a
+  // timestamped key under `manual/` so each admin click is a distinct restore
+  // point that never overwrites the day's scheduled backup.
+  const key =
+    kind === "manual"
+      ? `${env.CATALOG_BACKUP_PREFIX}manual/${sofiaDateTimeStamp(now)}.json`
+      : `${env.CATALOG_BACKUP_PREFIX}${sofiaDateStamp(now)}.json`;
 
   await putObject({
     bucket: env.CATALOG_BACKUP_BUCKET,
@@ -133,13 +158,17 @@ export async function runCatalogBackupJob(opts?: {
   // re-rowed by the next run). Replace-by-key keeps the "one row per
   // snapshot" invariant across same-day re-runs.
   await db.transaction(async (tx) => {
-    await tx
-      .delete(schema.catalogBackups)
-      .where(eq(schema.catalogBackups.s3Key, key));
+    // Scheduled runs replace the day's row (idempotent re-run); manual runs are
+    // distinct restore points, so they always insert a fresh row.
+    if (kind === "scheduled") {
+      await tx
+        .delete(schema.catalogBackups)
+        .where(eq(schema.catalogBackups.s3Key, key));
+    }
     await tx.insert(schema.catalogBackups).values({
       s3Key: key,
-      kind: "scheduled",
-      triggeredByUserId: null,
+      kind,
+      triggeredByUserId,
       sizeBytes: String(bytes),
     });
   });
@@ -148,6 +177,7 @@ export async function runCatalogBackupJob(opts?: {
     bucket: env.CATALOG_BACKUP_BUCKET,
     key,
     bytes,
+    kind,
     counts: envelope.counts,
   };
   opts?.logger?.info(result, "catalog_backup_written");

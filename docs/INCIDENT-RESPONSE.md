@@ -396,11 +396,17 @@ before that, they are dry-run reading.
 
 - **Signal:** wrong prices/categories live; a bad import.
 - **Immediate:** Order **line items are snapshotted at checkout**
-  (`ARCHITECTURE.md` §13), so historical orders are safe regardless.
-  Restore the catalog from the daily S3 backup.
-- **Runbook:** `ARCHITECTURE.md` §12.3. Until the admin Archive page
-  ships, restore = read the dated S3 object and replay it (psql / one-off
-  script) — the `catalog_backups` table indexes the keys.
+  (`ARCHITECTURE.md` §13), so historical orders are safe regardless. For an
+  accidental single delete, **restore the product/category from the admin Archive
+  page** (`/admin/archive`, item 51). Before a risky bulk edit, take an on-demand
+  snapshot from the same page („Направи архив сега"). For wholesale corruption,
+  restore from the daily (or that manual) S3 backup.
+- **Runbook:** `ARCHITECTURE.md` §12.3. The admin Archive page (item 51) lists the
+  `catalog_backups` snapshots, takes on-demand backups, and restores individual
+  soft-deleted products/categories. **Restoring a WHOLE snapshot over the live
+  catalog is not yet one-click** (roadmap item 52): until it ships, a full restore
+  = read the dated S3 object and replay it (psql / one-off script), keyed by the
+  `catalog_backups` rows.
 - **Severity:** SEV2/SEV3 (no order-history risk).
 
 ---
