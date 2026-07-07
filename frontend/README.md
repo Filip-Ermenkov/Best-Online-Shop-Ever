@@ -5,9 +5,11 @@
 > serving, admin sign-in + admin orders + admin categories + admin products +
 > admin banners with direct-to-S3 image upload + admin store settings + admin
 > account management (customer list, per-account B2B discounts, account deletion) +
-> the admin dashboard (real operational metrics with an accessible 14-day trend),
-> the live accessible homepage hero carousel, and the settings-driven storefront
-> contact block)
+> the admin dashboard (real operational metrics with an accessible 14-day trend) +
+> admin archive & restore (soft-deleted product/category restore + point-in-time
+> catalog backups with a one-button manual backup — the last admin page off mock
+> data), the live accessible homepage hero carousel, and the settings-driven
+> storefront contact block)
 > and how to run/test it, see the root `README.md`
 > and `docs/ARCHITECTURE.md` §5.
 

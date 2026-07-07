@@ -33,6 +33,7 @@ import type { AuthVariables } from "../../middleware/auth.js";
  *   POST   /admin/categories/reorder              reorder one layer of siblings
  *   GET    /admin/categories/:id/deletion-impact  counts for the confirm dialog
  *   DELETE /admin/categories/:id                  cascade soft-delete + redirects
+ *   POST   /admin/categories/:id/restore          un-archive (clears the redirect)
  *
  * Design notes (researched against 2026 practice — see ARCHITECTURE §13):
  *
@@ -1010,6 +1011,163 @@ adminCategoriesRoutes.openapi(deleteRouteDef, async (c) => {
       deletedCategories: result.deletedCategories,
       deletedProducts: result.deletedProducts,
       redirectsWritten: result.redirectsWritten,
+    },
+    200,
+  );
+});
+
+// ─── POST /admin/categories/:id/restore ──────────────────────────────────────
+//
+// The counterpart to the cascade delete (docs/README.md §12 — the admin Archive
+// page's per-item recovery). Category slug uniqueness is scoped to LIVE rows, so
+// a deleted category can NEVER be restored by "recreate" (its slug may have been
+// reused) — restore is the only correct un-archive path, and until now it did not
+// exist (products had `POST /:id/restore`; categories did not). Mirrors the
+// product-restore contract exactly: a single-target un-archive (NOT a cascade —
+// descendants and products that were soft-deleted alongside it are restored
+// individually), re-homing an orphan whose parent is still deleted to root, and
+// clearing the 301 the delete wrote so the URL serves the category again.
+
+function restoreConflict(slug: string, parentId: string | null): ApiError {
+  return new ApiError({
+    type: "/problems/category-restore-conflict",
+    title: "Slug Occupied by a Live Category",
+    status: 409,
+    detail:
+      parentId === null
+        ? `A live top-level category now uses slug "${slug}". Rename it (or the archived category) before restoring.`
+        : `A live category under that parent now uses slug "${slug}". Rename it before restoring.`,
+  });
+}
+
+const RestoredCategorySchema = z
+  .object({
+    id: z.string().uuid(),
+    name: z.string(),
+    slug: z.string(),
+    parentId: z.string().uuid().nullable(),
+    /** True when the original parent was gone, so it was re-homed to the root. */
+    rehomed: z.boolean(),
+  })
+  .openapi("AdminCategoryRestoreResult");
+
+const restoreRouteDef = createRoute({
+  method: "post",
+  path: "/{id}/restore",
+  tags: ["admin-categories"],
+  summary: "Un-archive a soft-deleted category (clears its redirect, re-homes an orphan)",
+  request: { params: ParamId },
+  responses: {
+    200: {
+      description: "The restored category and its resolved position.",
+      content: { "application/json": { schema: RestoredCategorySchema } },
+    },
+    404: {
+      description: "`/problems/category-not-found` (no archived category with that id).",
+      content: { "application/problem+json": { schema: ProblemSchema } },
+    },
+    409: {
+      description: "`/problems/category-restore-conflict` — a live sibling now holds that slug.",
+      content: { "application/problem+json": { schema: ProblemSchema } },
+    },
+  },
+});
+
+adminCategoriesRoutes.openapi(restoreRouteDef, async (c) => {
+  const db = getDb();
+  const admin = c.get("user")!;
+  const log = c.get("logger") ?? baseLogger;
+  const { id } = c.req.valid("param");
+
+  const outcome = await db.transaction(async (tx) => {
+    const [locked] = await tx
+      .select()
+      .from(schema.categories)
+      .where(eq(schema.categories.id, id))
+      .limit(1)
+      .for("update");
+    if (!locked || locked.deletedAt === null) return { kind: "not_found" as const };
+
+    // Live categories (read after the lock) drive the parent-liveness check, the
+    // slug-collision guard, and the redirect-path reconstruction.
+    const liveRows: CatRow[] = await tx
+      .select({
+        id: schema.categories.id,
+        slug: schema.categories.slug,
+        name: schema.categories.name,
+        parentId: schema.categories.parentId,
+      })
+      .from(schema.categories)
+      .where(isNull(schema.categories.deletedAt));
+
+    // Re-home to root when the original parent is no longer live (deleted in the
+    // same cascade, or since) — never resurrect a live category under a dead one.
+    const parentLive =
+      locked.parentId === null || liveRows.some((r) => r.id === locked.parentId);
+    const restoredParentId = parentLive ? locked.parentId : null;
+
+    // A deleted category's slug is reusable, so a new live sibling may already
+    // occupy (parent, slug). Restoring would create a duplicate live node with an
+    // ambiguous URL — refuse with a clean 409 rather than corrupt the tree.
+    const collision = liveRows.some(
+      (r) => r.id !== id && r.parentId === restoredParentId && r.slug === locked.slug,
+    );
+    if (collision) {
+      return { kind: "conflict" as const, slug: locked.slug, parentId: restoredParentId };
+    }
+
+    // Clear the 301 written at delete time so the URL serves the category again.
+    // Rebuild the canonical path from the RESTORED position (live parent chain +
+    // this slug): for the common case — restoring the delete-root whose parent is
+    // still live — this reproduces exactly the path the delete redirected. A
+    // re-homed orphan clears its new root path (a harmless no-op if none exists).
+    const parentChain =
+      restoredParentId === null
+        ? []
+        : (ancestorSlugChain(liveRows, restoredParentId) ?? []);
+    const sourcePath = categoryUrlFromChain([...parentChain, locked.slug]);
+    await tx.delete(schema.redirects).where(eq(schema.redirects.sourcePath, sourcePath));
+
+    await tx
+      .update(schema.categories)
+      .set({ deletedAt: null, parentId: restoredParentId })
+      .where(eq(schema.categories.id, id));
+
+    await tx.insert(schema.adminAuditLog).values({
+      actorUserId: admin.id,
+      action: "category.restore",
+      entityTable: "categories",
+      entityId: id,
+      changes: {
+        after: { slug: locked.slug, parentId: restoredParentId },
+        rehomed: !parentLive,
+      },
+      userAgent: clientMeta(c).userAgent,
+    });
+
+    return {
+      kind: "ok" as const,
+      name: locked.name,
+      slug: locked.slug,
+      parentId: restoredParentId,
+      rehomed: !parentLive,
+    };
+  });
+
+  if (outcome.kind === "not_found") throw categoryNotFound(id);
+  if (outcome.kind === "conflict") throw restoreConflict(outcome.slug, outcome.parentId);
+
+  log.info(
+    { categoryId: id, adminId: admin.id, rehomed: outcome.rehomed },
+    "category_restored",
+  );
+  return c.json(
+    {
+      id,
+      name: outcome.name,
+      slug: outcome.slug,
+      parentId: outcome.parentId,
+      rehomed: outcome.rehomed,
     },
     200,
   );

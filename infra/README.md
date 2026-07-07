@@ -178,6 +178,14 @@ Three EventBridge Scheduler crons (group `<prefix>-jobs`, all
 | `<prefix>-catalog-backup` | `0 3 * * ? *` | Catalog JSON → `s3://<catalog_backup_bucket>/catalog/<YYYY-MM-DD>.json` + a `catalog_backups` row |
 | `<prefix>-unverified-cleanup` | `0 4 * * ? *` | Day-6 warning email, day-7 hard delete of unverified customers, 180-day `login_attempts` prune |
 
+`enable_scheduler` also lets the **admin panel trigger an on-demand ("manual")
+catalog backup** (`POST /admin/archive/backup`, roadmap item 51): shop-api's exec
+role is granted `s3:PutObject` on the same catalog-backup bucket and the function
+gets `CATALOG_BACKUP_BUCKET` + `CATALOG_BACKUP_PREFIX`, so a manual snapshot lands
+at `.../catalog/manual/<YYYY-MM-DD_HH-MM-SS>.json` (a distinct restore point, never
+clobbering the day's scheduled one). Without `enable_scheduler` the route returns a
+clean `503 /problems/backups-not-configured`.
+
 To enable on a stack:
 
 ```hcl

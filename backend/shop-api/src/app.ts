@@ -15,6 +15,7 @@ import { logger as baseLogger, requestLogger } from "./lib/logger.js";
 import { isTracingEnabled } from "./lib/tracing.js";
 import { validationHook } from "./lib/validation-hook.js";
 import { currentUser, type AuthVariables } from "./middleware/auth.js";
+import { adminArchiveRoutes } from "./routes/admin/archive.js";
 import { adminAuthRoutes } from "./routes/admin/auth.js";
 import { adminBannersRoutes } from "./routes/admin/banners.js";
 import { adminCategoriesRoutes } from "./routes/admin/categories.js";
@@ -251,6 +252,9 @@ export function buildApp() {
   // Admin dashboard — read-only overview; requireAdmin-gated inside the router.
   app.use("/admin/dashboard/*", currentUser);
   app.use("/admin/dashboard", currentUser);
+  // Admin archive — recovery surface (restore lists + manual backup); requireAdmin inside.
+  app.use("/admin/archive/*", currentUser);
+  app.use("/admin/archive", currentUser);
 
   app.get("/health", (c) => c.json({ ok: true }));
 
@@ -270,6 +274,7 @@ export function buildApp() {
   app.route("/admin/settings", adminSettingsRoutes);
   app.route("/admin/customers", adminCustomersRoutes);
   app.route("/admin/dashboard", adminDashboardRoutes);
+  app.route("/admin/archive", adminArchiveRoutes);
   app.route("/cart", cartRoutes);
   app.route("/orders", ordersRoutes);
   app.route("/addresses", addressesRoutes);
