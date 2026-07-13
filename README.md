@@ -1782,16 +1782,17 @@ In priority order (also tracked in `docs/ARCHITECTURE.md` §15):
    (2026-07-03), the read-only **dashboard** (2026-07-06), and **archive**
    (2026-07-07 — restore lists + the spec §12 one-button manual backup + the new
    `POST /admin/categories/:id/restore`), all end-to-end. **The admin panel is now
-   fully real.** What remains of this item is only the structural `admin-api`
-   Lambda extraction; the destructive restore-from-snapshot is a new scoped
-   follow-up (§15 item 52).
+   fully real, and every spec §12 archive capability is shipped** (the
+   destructive restore-from-snapshot landed as §15 item 52 on 2026-07-08).
+   What remains of this item is only the structural `admin-api` Lambda
+   extraction.
 
 Items currently described in the architecture but not yet real
-(the `admin-api` Lambda split, restore-from-snapshot, a maintained
-production deploy — `scheduler-fn` came off this list 2026-06-12, the
-admin CRUD surface completed 2026-07-07) should be brought into reality
-before any further "growth-stage" items (customer MFA, multi-region,
-SLSA L3, Cloudflare proxy swap).
+(the `admin-api` Lambda split, a maintained production deploy —
+`scheduler-fn` came off this list 2026-06-12, the admin CRUD surface
+completed 2026-07-07, and restore-from-snapshot 2026-07-08) should be
+brought into reality before any further "growth-stage" items (customer
+MFA, multi-region, SLSA L3, Cloudflare proxy swap).
 
 ## Browsing the API
 
