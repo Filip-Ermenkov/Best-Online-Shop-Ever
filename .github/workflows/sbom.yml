@@ -312,7 +312,7 @@ jobs:
         #   - Signing un-mergeable code would clutter the public Rekor
         #     log with attestations that never make it to main.
         if: github.event_name != 'pull_request'
-        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373
         with:
           subject-path: './sbom-output/sbom-${{ matrix.workspace.slug }}.cdx.json'
 
