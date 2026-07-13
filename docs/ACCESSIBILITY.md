@@ -231,8 +231,15 @@ sensibly*. Walk these by hand.
   stays distinct per row and contains the visible label), an `aria-live="polite"`
   status region for restore/backup feedback, and a manual-backup button that is
   `disabled` with a visible text explanation when no backup bucket is configured
-  (state not conveyed by colour alone). **Every admin page is now real**; the panel
-  as a whole has not yet had a full screen-reader audit.
+  (state not conveyed by colour alone). The **snapshot-restore dialog**
+  (`SnapshotRestoreDialog`, 2026-07-08) is a base-ui `Dialog` — a focus-trapped
+  `aria-modal` popup labelled by its `DialogTitle` and described by its
+  `DialogDescription`, dismissible with Escape and with the default focus off the
+  destructive control — that requires a typed „ВЪЗСТАНОВИ" confirmation (a labelled
+  `<Input>`) before the danger button enables, with its own `role="alert"` error
+  region and the same disabled-with-explanation pattern when unavailable. **Every
+  admin page is now real**; the panel as a whole has not yet had a full
+  screen-reader audit.
 - **Third-party content** (courier-office maps) will be assessed when ingested.
 
 ---

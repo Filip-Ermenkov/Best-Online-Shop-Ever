@@ -32,10 +32,11 @@
 > per-account B2B discounts + spec §10 account deletion), the read-only
 > **dashboard** (item 50, 2026-07-06 — real operational metrics + a 14-day trend),
 > and **archive & restore** (item 51, 2026-07-07 — soft-deleted restore lists, the
-> spec §12 one-button manual backup, and the new category-restore route) are wired
-> end-to-end. **The admin panel is now fully real** (archive was the last mock
-> page). No maintained production environment is kept running yet; destructive
-> restore-from-snapshot is the one archive capability deferred (item 52).
+> spec §12 one-button manual backup, and the new category-restore route; and item
+> 52, 2026-07-08 — the destructive **restore-from-snapshot** with a dry-run preview,
+> a typed confirm, and an automatic pre-restore safety backup) are wired end-to-end.
+> **The admin panel is now fully real, and every archive capability the spec §12
+> asks for is shipped.** No maintained production environment is kept running yet.
 
 ---
 
@@ -97,9 +98,10 @@ Three actors are present in the codebase:
   (2026-07-06 — real operational metrics + a 14-day realised-sales trend, un-mocking
   the `/admin` landing page), and **archive & restore** (2026-07-07 — soft-deleted
   restore lists, the spec §12 one-button manual backup, and the new category-restore
-  route). **Every admin page is now real.** Still pending: the dedicated
-  **`admin-api`** Lambda the admin panel will eventually live on, and the destructive
-  restore-from-snapshot (item 52).
+  route), and the destructive **restore-from-snapshot** (2026-07-08 — dry-run preview
+  + typed confirm + pre-restore safety backup + transactional replay). **Every admin
+  page is now real, and every spec §12 archive capability is shipped.** Still pending:
+  the dedicated **`admin-api`** Lambda the admin panel will eventually live on.
 
 Functional scope is in `docs/README.md`. Deployment status is in
 `README.md` ("Deployment status" section).
@@ -1614,11 +1616,20 @@ Drill quarterly. Document each run. **Never been drilled today.**
 `catalog_backups` (kind='scheduled', one row per key), and since the
 archive slice (item 51, 2026-07-07) the admin can also take an on-demand
 `kind='manual'` snapshot from `/admin/archive` (`POST /admin/archive/backup`).
-The RESTORE half is now PARTLY real: the admin Archive page lists the
-snapshots and restores **individual** soft-deleted products/categories
-(per-item un-archive). Replaying a **whole** snapshot back over the live
-catalog is still deferred (item 52); until it ships, a full restore = read
-the S3 object and replay it manually (psql / a one-off script).
+The RESTORE half is now FULLY real, in two complementary shapes:
+
+- **Per-item** un-archive of a soft-deleted product/category (the safe 80%,
+  each entity's own `POST …/restore` route) — since item 51.
+- **Whole-snapshot** restore over the live catalog (item 52, 2026-07-08):
+  `GET /admin/archive/backups/:id/preview` returns a dry-run diff, then
+  `POST /admin/archive/backups/:id/restore` (typed „ВЪЗСТАНОВИ" confirm) takes an
+  automatic pre-restore safety backup and replays the snapshot in one
+  transaction — reverting edits and the `deleted_at` state, soft-deleting rows
+  created since (reversible), replacing product images, full-replacing banners,
+  and clearing redirects that collide with a now-live URL. The old "read the S3
+  object and replay it by hand in psql" workaround is retired. Orders are never
+  touched (they snapshot their own line items — spec §12), so a restore cannot
+  rewrite history.
 
 ### 12.4 Procedure (admin MFA seed lost)
 
@@ -2438,7 +2449,7 @@ against 2026 practice:
   follow-up, not a blocker: the page is real, tested, and strictly better than the
   mock it replaced.
 
-### 13.x Admin archive — trash-restore + on-demand backup, destructive restore deferred (item 51)
+### 13.x Admin archive — trash-restore + on-demand backup (item 51)
 
 The archive screen (spec §12) is the last admin page to go real (2026-07-07). Two
 decisions shaped the slice.
@@ -2447,12 +2458,12 @@ decisions shaped the slice.
   treats *soft-delete restore* and *point-in-time snapshot restore* as distinct
   tools. This page shows both — the `deleted_at` products/categories awaiting an
   explicit per-item restore, and the `catalog_backups` snapshots the scheduler
-  writes — but implements only the safe, reversible per-item restore now. **Restore
-  a whole snapshot over the live catalog is deferred (item 52)**: overwriting live
-  rows is high-blast-radius and wants a diff/preview + confirm + a single
-  transactional replay, which is its own slice. Shipping the 80% (recover an
-  accidentally-deleted item) and documenting the risky 20% is the same disciplined
-  scoping the dashboard slice used for its quick-actions.
+  writes. Item 51 shipped the safe, reversible per-item restore; the
+  higher-blast-radius **whole-snapshot** restore over the live catalog followed as
+  item 52 (2026-07-08 — see the next entry), gated behind a diff/preview + typed
+  confirm + a pre-restore safety backup. Shipping the 80% first (recover an
+  accidentally-deleted item) and scoping the risky 20% into its own slice is the
+  same disciplined phasing the dashboard slice used for its quick-actions.
 - **Restore lives with its entity; the missing half was categories.** Per-item
   restore is served by each entity's own route (`POST /admin/products/:id/restore`
   already existed), so the archive UI just calls them — no second writer of those
@@ -2475,6 +2486,61 @@ decisions shaped the slice.
   without AWS; a manual backup is a state change, so it writes an `admin_audit_log`
   `backup.create` row (the overview read, carrying no PII, is a plain info log).
 
+### 13.x Snapshot restore — preview + typed confirm + safety backup, transactional replay (item 52)
+
+The destructive „възстановяване до избрана версия" (spec §12), shipped 2026-07-08 —
+the last archive capability. Replaying a chosen `catalog_backups` snapshot over the
+LIVE catalog is the single highest-blast-radius admin action in the system, so every
+decision below is about making it *safe and honest*, researched against 2026
+destructive-restore practice.
+
+- **Preview → type-to-confirm → back-up-before-overwrite → replay atomically.** The
+  four load-bearing controls, each mapped to a source. A dry-run **preview** (`GET
+  …/backups/:id/preview`) returns the exact diff — above all which live rows created
+  *after* the snapshot the replay will archive — so the blast radius is visible
+  before commit (UX guidance: "restate what will happen"). A **typed „ВЪЗСТАНОВИ"**
+  confirmation gates the write, mirroring the account-deletion „ИЗТРИЙ" and enforced
+  server-side too. An automatic **pre-restore safety backup** is taken *first* (the
+  DB-recovery "tail-log backup before restore" rule), so the operation is reversible
+  at the catalog level even though it overwrites live rows — a failed safety backup
+  aborts the whole restore with a 502 before a single row changes. And the write is a
+  single **transaction**, so a mid-replay fault rolls back to the pre-restore state.
+- **Reversible-by-construction semantics, not hard deletes.** Because the catalog
+  only ever soft-deletes, every historical row still exists, so the replay is an
+  UPSERT of the snapshot rows (restoring every column, `deleted_at` included — this is
+  what reverts a bad bulk edit or a mass-delete) plus a **soft-delete** of rows absent
+  from the snapshot (created since). Nothing catalog-shaped is hard-deleted:
+  categories/products soft-delete (they reappear in the archive list, per-item
+  restorable), `product_images` are replaced only for products *in* the snapshot, and
+  `banner_slides` — presentation-only, no soft-delete column, already hard-delete by
+  model — are full-replaced (the old set survives in the safety backup). This is the
+  same "prefer reversible" instinct as the soft-delete cascades everywhere else.
+- **FK-safe replay order, no deferred constraints.** The self-referential category FK
+  means a genuinely new row must insert after its parent, so `orderCategoriesParentFirst`
+  (pure) topologically orders the category upserts; products follow (their category FK
+  is satisfied); images and banners come last. Per-row `onConflictDoUpdate` with a plain
+  JS `set` (not an `excluded.*` SQL template — the Drizzle-0.36 rendering caveat the cart
+  slice documented) keeps it portable across the node-pg dev driver and the Neon
+  WebSocket prod driver (interactive `db.transaction`, §13 driver note).
+- **A live catalog URL must never 301.** After the replay, any redirect whose source
+  path maps to a row that is *live* post-restore is cleared — reusing the per-item
+  restore's `ancestorSlugChain`/`productCanonicalPath` helpers over the post-replay live
+  tree, in the same transaction. **Deferred, documented:** synthesising *new* cascade
+  redirects for the rows a restore archives — the safety backup makes the whole op
+  reversible and the archived rows are per-item recoverable, so this SEO-only edge is a
+  scoped follow-up rather than a silent gap (the same honest-scoping stance as the
+  anonymous-catalog strike-through).
+- **Pure/impure split + DI, so it tests without AWS.** The envelope parser
+  (`parseCatalogSnapshot`, throwing `SnapshotFormatError` → 422 not a mid-replay 500),
+  the diff (`planCatalogRestore`), and the ordering are DB- and AWS-free in
+  `lib/catalog-restore.ts` (unit-tested in isolation, verified against real inputs). The
+  one AWS touchpoint — reading the snapshot object — is an injectable `getObject` adapter
+  alongside the existing `backupRunner`, so the integration tests exercise the full
+  wiring (gates, safety backup, transactional replay, audit) with a fake snapshot body.
+  Restore reads via `s3:GetObject` (added to the exec role, `infra/iam.tf`; the SSE-KMS
+  `kms:Decrypt` was already granted), and — being a state change over the whole catalog —
+  is audited (`catalog.restore`) and logged at WARN.
+
 ## 14. Honest assessment vs A+ target
 
 **Current state, scored against AWS Well-Architected:**
@@ -2483,7 +2549,7 @@ decisions shaped the slice.
 |---|---|---|
 | Operational Excellence | B+ | Production deploy, DORA metrics, scheduled DR drills, status page (distributed tracing ✅ item 18, 2026-06-13; formal SLOs-as-code + multi-window burn-rate alerting ✅ items 24/25, 2026-06-14 — `infra/slos.yaml` + `infra/slo.tf`, awaiting live traffic to exercise; incident-response playbook + blameless-postmortem template ✅ item 31, 2026-06-15 — `docs/INCIDENT-RESPONSE.md`) |
 | Security | A | Customer MFA option (growth-stage); admin auth ✅ (TOTP MFA shipped end-to-end 2026-06-08 — backend + sign-in UI) |
-| Reliability | B | Production deploy, DR drill cadence, public status page (SQS email retry queue ✅ 2026-06-12 — live-validated incl. the DLQ → alarm → redrive drill; scheduler-fn + daily catalog backup + retention sweeps ✅ 2026-06-12, live-validated 2026-06-13 — the manual drills for all three jobs passed against Neon; the first drill exposed that the prod `neon-http` driver cannot run `db.transaction(...)`, fixed by switching to the Neon serverless WebSocket driver) |
+| Reliability | B | Production deploy, DR drill cadence, public status page (SQS email retry queue ✅ 2026-06-12 — live-validated incl. the DLQ → alarm → redrive drill; scheduler-fn + daily catalog backup + retention sweeps ✅ 2026-06-12, live-validated 2026-06-13 — the manual drills for all three jobs passed against Neon; the first drill exposed that the prod `neon-http` driver cannot run `db.transaction(...)`, fixed by switching to the Neon serverless WebSocket driver; full catalog restore — per-item + whole-snapshot with a pre-restore safety backup — ✅ 2026-07-08, items 51/52) |
 | Performance Efficiency | B+ | Synthetic monitoring, RUM, query-latency SLOs per endpoint |
 | Cost Optimization | B− | Cloudflare swap (the big one), CloudWatch retention to 14d |
 | Sustainability | A | Documented quarterly AWS CFT review |
@@ -3232,14 +3298,29 @@ Ranked by `(impact ÷ effort)` — highest leverage first. Items marked
     audited (`backup.create`). Frontend `components/admin/ArchiveManager`. No
     migration. 17 new test blocks (admin-archive 16 + the catalog-backup manual
     case). Full rationale in §13.
-52. ❌ **Restore a catalog snapshot over the live catalog.** The one archive
-    capability deliberately deferred from item 51: replaying a chosen
-    `catalog_backups` snapshot back into the catalog tables (spec §12
-    „възстановяване до избрана версия"). High blast radius — it overwrites live rows,
-    so it wants a dry-run **diff/preview** + an explicit „Разбирам последствията"
-    confirm + a single transactional replay, and must reconcile products created
-    since the snapshot. Order history is unaffected (orders snapshot their line
-    items — spec §12). Its own slice; ~half a day.
+52. ✅ **Restore a catalog snapshot over the live catalog — shipped 2026-07-08.**
+    The last archive capability, deferred from item 51: replaying a chosen
+    `catalog_backups` snapshot back into the four catalog tables (spec §12
+    „възстановяване до избрана версия"). New surface on `routes/admin/archive.ts`:
+    `GET /admin/archive/backups/:id/preview` (a side-effect-free **dry-run diff** —
+    the snapshot's counts plus, above all, the live rows created AFTER the snapshot
+    that the replay will archive) and `POST /admin/archive/backups/:id/restore`
+    (typed „ВЪЗСТАНОВИ" confirm → an automatic **pre-restore safety backup** → a
+    single transactional replay). Replay semantics (pure `lib/catalog-restore.ts`):
+    categories + products are UPSERTed from the snapshot (reverting edits AND the
+    `deleted_at` state); rows created since are **soft-deleted** (reversible,
+    FK-safe), never hard-deleted; `product_images` are replaced per snapshot
+    product; `banner_slides` are full-replaced; and redirects colliding with a
+    now-live URL are cleared. Order history is untouched (orders snapshot their line
+    items — spec §12). The high-blast-radius operation is gated exactly as 2026
+    destructive-restore practice prescribes: preview the change, type to confirm,
+    back up before overwriting, replay atomically. Reversibility comes from the
+    safety backup (which is itself a restore point) + soft-delete. `s3:GetObject`
+    on the backup bucket added to shop-api's exec role (`infra/iam.tf`; the SSE-KMS
+    `kms:Decrypt` was already granted). Deferred within this slice: synthesising 301
+    redirects for the rows a restore archives (documented; the safety backup + the
+    per-item archive list cover recovery). Tests: `tests/lib/catalog-restore.test.ts`
+    (10) + the preview/restore cases in `tests/routes/admin-archive.test.ts`.
 
 **Doing items 15–27 closes every meaningful 2026 gap in ~4–6
 working days. Items 28–33 raise the quality bar further at ~3 more
