@@ -183,7 +183,8 @@ they aren't. The honest state:
 | Admin store settings | **Shipped end-to-end (2026-06-30)** — `shop-api` `/admin/settings` (GET all values + a document `version`; PATCH one-or-more keys with per-key registry validation, a document-level `updatedAt` optimistic lock → `409 /problems/settings-version-conflict`, and an `admin_audit_log` row) + the real `/admin/settings` UI (`components/admin/SettingsManager`). Public `GET /settings` (edge-cached like `/banners`) feeds the storefront contact block. **Moves operator-editable business config (shop phone, address, hours, default pickup window, admin-notification recipient) OFF environment variables onto the runtime-editable `settings` table** — changing the shop phone no longer needs a redeploy (`SHOP_CONTACT_PHONE` is now only a fallback). **Activates the dormant `settings` table.** No migration (roadmap item 48) |
 | Admin account management | **Shipped end-to-end (2026-07-03)** — `shop-api` `/admin/customers` (requireAdmin→404): offset-paginated + searchable + filterable list, full detail (profile + discount + order history), `PUT`/`DELETE` per-account percentage discount (optimistic-locked on `appliedAt`, `admin_audit_log`), and `DELETE` account (spec §10 active-order guard → 422, then the shared GDPR Art. 17 erasure) + the real `/admin/customers` UI (`components/admin/CustomersManager`). **Activates the WRITE side of the dormant `discounts` table** — a B2B corporate discount (spec §11) is now a runtime edit, not a raw `INSERT`; checkout has consumed `discounts.percent` since the orders slice. The server cart now also returns the customer's `discountPercent`, so the **cart drawer + both checkout steps show the „Отстъпка" line and the discounted „Общо"** (same integer-cent floor as the order; guests always see 0) — only the anonymous catalog strike-through remains a follow-up. Also logs admin PII **reads** (`admin_customer_viewed`), not just writes. No migration (roadmap item 49) |
 | Admin dashboard | **Shipped end-to-end (2026-07-06)** — the real `/admin` landing screen. `shop-api` `GET /admin/dashboard` (requireAdmin→404): realised-sales KPIs (orders / revenue / average order value for the Europe/Sofia month + today, with `cancelled`/`returned` excluded so revenue, order count, and AOV share one population), new-customer counts, the operational action queue (new orders awaiting acceptance, expired pickups, out-of-stock), a catalog snapshot, the recent-orders feed, and a 14-day realised-sales trend — computed as **on-the-fly indexed aggregates** over the existing tables (no migration; a materialised view / summary table is the documented Tier-3+ upgrade, not warranted now) + the real `/admin` UI (`components/admin/DashboardManager`) whose 14-day trend is an **accessible SVG** (`role="img"` + a visually-hidden data table, per WCAG 1.1.1). Un-mocks the last high-traffic admin page and retires `mock-data/{orders,customers,banners}.ts`. Logs admin PII **reads** (`admin_dashboard_viewed`), consistent with the account-management slice. No migration (roadmap item 50) |
-| Admin archive & restore | **Shipped end-to-end (2026-07-07)** — the real `/admin` archive screen, un-mocking the **last** admin page on mock data (so the whole admin panel is now real). `shop-api` `GET /admin/archive` (requireAdmin→404): soft-deleted products + categories awaiting restore, plus the point-in-time `catalog_backups` list + a `backupsAvailable` flag; `POST /admin/archive/backup` (the spec §12 one-button „Ръчно архивиране" — an on-demand catalog snapshot, `503 /problems/backups-not-configured` until a backup bucket is set, `admin_audit_log` `backup.create`); and the **new** `POST /admin/categories/:id/restore` (mirrors product-restore: un-archive + clear the 301 + re-home an orphan to root + `409` on a slug collision — closing a real gap, since cascade-soft-deleted categories previously could not be restored via any API). The catalog-backup job gained a `manual` mode (timestamped key, its own row). Frontend `components/admin/ArchiveManager`; retires the last two `mock-data/*` catalog files. Destructive **restore-from-snapshot** (replaying a chosen backup over the live catalog) is a scoped follow-up (roadmap item 52). No migration (roadmap item 51) |
+| Admin archive & restore | **Shipped end-to-end (2026-07-07)** — the real `/admin` archive screen, un-mocking the **last** admin page on mock data (so the whole admin panel is now real). `shop-api` `GET /admin/archive` (requireAdmin→404): soft-deleted products + categories awaiting restore, plus the point-in-time `catalog_backups` list + a `backupsAvailable` flag; `POST /admin/archive/backup` (the spec §12 one-button „Ръчно архивиране" — an on-demand catalog snapshot, `503 /problems/backups-not-configured` until a backup bucket is set, `admin_audit_log` `backup.create`); and the **new** `POST /admin/categories/:id/restore` (mirrors product-restore: un-archive + clear the 301 + re-home an orphan to root + `409` on a slug collision — closing a real gap, since cascade-soft-deleted categories previously could not be restored via any API). The catalog-backup job gained a `manual` mode (timestamped key, its own row). Frontend `components/admin/ArchiveManager`; retires the last two `mock-data/*` catalog files. No migration (roadmap item 51) |
+| Admin snapshot restore | **Shipped end-to-end (2026-07-08)** — the destructive „възстановяване до избрана версия" (spec §12), the last archive capability. `shop-api` `GET /admin/archive/backups/:id/preview` (a side-effect-free **dry-run diff**: the snapshot's counts + the live rows created after it that the replay will archive) and `POST /admin/archive/backups/:id/restore` (typed „ВЪЗСТАНОВИ" confirm → an automatic **pre-restore safety backup** → a **single transactional replay**). Reverts edits + `deleted_at` state (upsert), soft-deletes rows created since (reversible, never hard-deleted), replaces product images, full-replaces banners, and clears redirects colliding with a now-live URL; orders untouched (own line-item snapshots). Pure diff/parse/order in `lib/catalog-restore.ts` + an injectable `getObject` S3 read; `admin_audit_log` `catalog.restore`; `SnapshotRestoreDialog` UI. `s3:GetObject` added to shop-api's exec role (`infra/iam.tf`; SSE-KMS `kms:Decrypt` already granted). No migration (roadmap item 52) |
 | `admin-api` Lambda | Not built (admin auth + the orders slice currently live in `shop-api`; extract when the admin CRUD surface grows) |
 | `scheduler-fn` Lambda | **Shipped 2026-06-12, live-validated 2026-06-13** (roadmap item 23) — jobs in `@shop/api` `src/jobs/*` + own pure-JS bundle (`build:scheduler`) + `infra/scheduler.tf` (EventBridge Scheduler, 3 Sofia-time crons, delivery DLQ, backup bucket, 2 alarms) behind `enable_scheduler`. All three `aws lambda invoke` drills passed against the Neon test branch; the catalog-backup drill also caught a prod-only bug (the `neon-http` driver can't run `db.transaction(...)`) now fixed by the Neon serverless WebSocket driver — see [decisions](#architecture-decisions-in-force). Runbook in `infra/README.md` |
 | Distributed tracing (OpenTelemetry) | **Shipped 2026-06-13 (roadmap item 18)** — `shop-api` emits OTel traces behind `ENABLE_TRACING`: `@hono/otel` request spans + undici/fetch downstream spans + Pino `trace_id`/`span_id` log↔trace correlation. Exports OTLP to AWS X-Ray via the ADOT collector layer (`enable_tracing` + `adot_collector_layer_arn`), or any OTLP backend. Closes the last OWASP A09 / NIST CSF Detect gap. App-level instrumentation + correlation unit-tested and harness-verified against the real libraries (incl. a clean esbuild bundle); live X-Ray export validated on deploy. Runbook in `infra/README.md` → "Tracing runbook" |
@@ -431,7 +432,16 @@ what needs to happen to get from today's repo state to that posture.
   /admin/categories/:id/restore` (un-archive + clear the 301 + re-home an orphan to
   root + `409 /problems/category-restore-conflict` on a live slug collision; closes
   the gap that a cascade-soft-deleted category could not be restored via any API).
-  Un-mocks the last admin page. No migration (roadmap item 51).
+  Un-mocks the last admin page. No migration (roadmap item 51). **Whole-snapshot
+  restore (2026-07-08, item 52):** `GET /admin/archive/backups/:id/preview` (a
+  side-effect-free dry-run diff) and `POST /admin/archive/backups/:id/restore`
+  (typed „ВЪЗСТАНОВИ" confirm → an automatic pre-restore safety backup → a single
+  transactional replay of the snapshot over the live catalog: upsert + soft-delete
+  of rows created since + image/banner replace + live-URL redirect clear;
+  `admin_audit_log` `catalog.restore`; `503`/`404`/`422`/`502` on
+  not-configured / unknown-backup / bad-snapshot / storage-fault). Reads the
+  snapshot via an injectable `getObject` (S3 GetObject); pure diff/parse/order in
+  `lib/catalog-restore.ts`.
 - `/health`, `/openapi.json`
 
 Test counts as of 2026-07-07, by `it`/`test` block: addresses 28,
@@ -450,13 +460,18 @@ the active-order 422 guard + GDPR-erasure happy path; 2026-07-03),
 KPIs with cancelled/returned excluded + coherent AOV, Europe/Sofia month/today
 bounds, the action queue, the catalog snapshot + out-of-stock list, new-customer
 counts, the recent-orders feed, and the 14-day trend; 2026-07-06),
-**admin-archive 16** (the requireAdmin gate incl. a customer backup POST; the
-overview — empty state, the archived-products + archived-categories lists with
+**admin-archive 27** (2026-07-07: the requireAdmin gate incl. a customer backup POST;
+the overview — empty state, the archived-products + archived-categories lists with
 their category / parent names, the backups list newest-first with numeric size,
 and `backupsAvailable`; the manual backup — happy path via an injected runner
 writing the row + `backup.create` audit, the 503-when-unconfigured, and the 502
 on runner failure; and category-restore — un-archive + redirect clear, orphan
-re-home, slug-collision 409, and the not-archived / unknown-id 404s; 2026-07-07),
+re-home, slug-collision 409, and the not-archived / unknown-id 404s. **Plus
+snapshot restore, 2026-07-08:** the preview/restore auth gate, preview happy-path
++ 503/404/422, and restore happy-path — revert edit + un-archive + archive-newer +
+clear live redirect + safety backup + `catalog.restore` audit — plus the wrong-confirm
+400, 503, unknown-id 404, and malformed-snapshot 422, both proving no safety backup
+is taken on the abort paths),
 **admin-uploads 12** (the presigned-upload route — requireAdmin, allowlist + size
 + kind validation, the 503-when-unconfigured path, and the status poll, with the
 S3 adapters injected; 2026-06-22),
@@ -512,9 +527,14 @@ env/derived fallbacks, 2026-06-30; **dashboard-metrics 9** — the pure dashboar
 helpers: the zero-filled 14-day series builder (dense, oldest→newest, off-axis
 rows ignored, correct month-boundary calendar math), the coherent average-order-
 value rounding + divide-by-zero guard, and the Europe/Sofia date formatter,
-2026-07-06) — **667 blocks**. The
+2026-07-06; **catalog-restore 10** — the pure snapshot-restore helpers: envelope
+validation + JSON→Date conversion (rejecting a bad `kind`/timestamp with a typed
+error, stripping unknown columns for forward-compat), the dry-run diff (snapshot
+counts + only-live-and-absent rows flagged for archiving, empty-snapshot archives
+all, name-sample cap with exact counts), and the FK-safe parent-first category
+ordering incl. cycle/orphan tolerance, 2026-07-08) — **688 blocks**. The
 `csp-report` and `phone` suites are table-driven (`it.each`), so
-`vitest run` expands them and reports **~703 cases total** (run
+`vitest run` expands them and reports **~724 cases total** (run
 `vitest run` for the exact figure), all against a real `shop_test`
 Postgres in CI.
 

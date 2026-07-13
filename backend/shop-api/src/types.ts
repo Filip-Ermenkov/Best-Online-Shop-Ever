@@ -171,9 +171,16 @@ export type { DashboardSummary } from "./routes/admin/dashboard.js";
 // Admin archive DTOs from routes/admin/archive.ts (un-mocks the last admin
 // screen; roadmap item 51). `ArchiveOverview` = soft-deleted products +
 // categories awaiting restore, plus the point-in-time catalog backups list;
-// `ManualBackupResult` = the row written by an on-demand („Ръчно") backup. The
-// admin frontend (frontend/src/lib/admin/archive/) annotates its client with them.
-export type { ArchiveOverview, ManualBackupResult } from "./routes/admin/archive.js";
+// `ManualBackupResult` = the row written by an on-demand („Ръчно") backup.
+// `CatalogRestorePlan` / `CatalogRestoreResult` = the snapshot-restore dry-run
+// diff and the applied-restore result (roadmap item 52). The admin frontend
+// (frontend/src/lib/admin/archive/) annotates its client with them.
+export type {
+  ArchiveOverview,
+  ManualBackupResult,
+  CatalogRestorePlan,
+  CatalogRestoreResult,
+} from "./routes/admin/archive.js";
 
 // SEO / crawlability DTOs from routes/seo.ts. The storefront's app/sitemap.ts
 // and the catch-all's redirect-serving client annotate their fetch helpers with
