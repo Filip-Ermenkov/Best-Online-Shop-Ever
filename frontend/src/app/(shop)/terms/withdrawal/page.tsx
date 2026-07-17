@@ -178,7 +178,7 @@ export default function WithdrawalTermsPage() {
         </p>
         <div className="rounded-lg border border-border bg-muted/30 p-5 text-sm space-y-3 leading-relaxed">
           <p>
-            <strong>До:</strong> Duda 1 EOOD, contact@duda1.bg
+            <strong>До:</strong> Duda 1 EOOD, info@duda1.shop
           </p>
           <p>
             С настоящото уведомявам / уведомяваме*, че се отказвам / отказваме*
@@ -212,10 +212,10 @@ export default function WithdrawalTermsPage() {
           <br />
           Имейл:{" "}
           <a
-            href="mailto:contact@duda1.bg"
+            href="mailto:info@duda1.shop"
             className="underline underline-offset-2 hover:text-foreground"
           >
-            contact@duda1.bg
+            info@duda1.shop
           </a>
           <br />
           Телефон: +359 2 123 4567

@@ -41,14 +41,14 @@ export default function SecurityPolicyPage() {
       <p>
         Благодарим, че помагате да поддържаме нашите клиенти и техните данни в
         безопасност. Тази страница описва как да докладвате уязвимост в системите
-        на Duda 1 ЕООД (онлайн магазин duda1.bg) и какво да очаквате от нас в
+        на Duda 1 ЕООД (онлайн магазин duda1.shop) и какво да очаквате от нас в
         отговор.
       </p>
 
       <h2>Как да докладвате</h2>
       <p>
         Изпратете писмо на{" "}
-        <a href="mailto:security@duda1.bg">security@duda1.bg</a>. Включете:
+        <a href="mailto:security@duda1.shop">security@duda1.shop</a>. Включете:
       </p>
       <ul>
         <li>Описание на уязвимостта и потенциалното ѝ въздействие.</li>
@@ -109,8 +109,8 @@ export default function SecurityPolicyPage() {
       </p>
       <ul>
         <li>
-          <code>duda1.bg</code> и поддомейни (<code>shop-api.duda1.bg</code>,{" "}
-          <code>admin.duda1.bg</code>)
+          <code>duda1.shop</code> и поддомейни (<code>shop-api.duda1.shop</code>,{" "}
+          <code>admin.duda1.shop</code>)
         </li>
         <li>Мобилни приложения, ако и когато бъдат пуснати.</li>
         <li>Имейл инфраструктура (SPF, DKIM, DMARC конфигурации).</li>
@@ -154,13 +154,13 @@ export default function SecurityPolicyPage() {
       <p>
         Thank you for helping keep our customers and their data safe. This
         page describes how to report a security vulnerability in any
-        system operated by Duda 1 ЕООД (the online shop at duda1.bg) and
+        system operated by Duda 1 ЕООД (the online shop at duda1.shop) and
         what to expect from us in return.
       </p>
 
       <h2>How to report</h2>
       <p>
-        Email <a href="mailto:security@duda1.bg">security@duda1.bg</a>.
+        Email <a href="mailto:security@duda1.shop">security@duda1.shop</a>.
         Include:
       </p>
       <ul>
@@ -222,8 +222,8 @@ export default function SecurityPolicyPage() {
       <h2>Scope</h2>
       <p>
         <strong>In scope:</strong> production systems on{" "}
-        <code>duda1.bg</code> and subdomains (<code>shop-api.duda1.bg</code>,{" "}
-        <code>admin.duda1.bg</code>), any mobile apps if and when they
+        <code>duda1.shop</code> and subdomains (<code>shop-api.duda1.shop</code>,{" "}
+        <code>admin.duda1.shop</code>), any mobile apps if and when they
         launch, and email infrastructure (SPF, DKIM, DMARC).
       </p>
       <p>

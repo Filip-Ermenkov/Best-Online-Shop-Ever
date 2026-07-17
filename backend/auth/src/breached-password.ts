@@ -77,7 +77,7 @@ const PWNED_API = "https://api.pwnedpasswords.com/range/";
  * Contact path matches the RFC 9116 security.txt the repo serves.
  */
 const USER_AGENT =
-  "BestOnlineShopEver-CredentialHygiene/1.0 (+https://duda1.bg/security)";
+  "BestOnlineShopEver-CredentialHygiene/1.0 (+https://duda1.shop/security)";
 
 /** Comfortably above HIBP's p99 from EU PoPs, well below user perception. */
 const DEFAULT_TIMEOUT_MS = 1500;

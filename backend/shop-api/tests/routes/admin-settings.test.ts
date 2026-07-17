@@ -171,14 +171,14 @@ describe("PATCH /admin/settings", () => {
       values: {
         store_address: "ул. Тест 1",
         default_pickup_deadline_days: 10,
-        store_email: "info@duda1.bg",
+        store_email: "info@duda1.shop",
       },
     });
     expect(res.status).toBe(200);
     const body = (await res.json()) as AdminSettingsBody;
     expect(body.values.store_address).toBe("ул. Тест 1");
     expect(body.values.default_pickup_deadline_days).toBe(10);
-    expect(body.values.store_email).toBe("info@duda1.bg");
+    expect(body.values.store_email).toBe("info@duda1.shop");
   });
 
   it("rejects an unknown key with 400", async () => {
