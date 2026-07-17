@@ -52,9 +52,14 @@ resource "aws_acm_certificate" "frontend" {
 }
 
 module "frontend" {
-  count   = var.enable_frontend ? 1 : 0
-  source  = "RJPearson94/open-next/aws//modules/tf-aws-open-next-zone"
-  version = "~> 3.6"
+  count = var.enable_frontend ? 1 : 0
+
+  # Module source pinned to the v3.7.1 commit SHA (not a registry version range)
+  # so it is immutable — satisfies Checkov CKV_TF_1 and matches this repo's
+  # SHA-pinning supply-chain posture (cf. the commit-pinned GitHub Actions). No
+  # `version` argument — that is only valid for a registry source. Bump both the
+  # tag comment and the ?ref= SHA together when upgrading.
+  source = "git::https://github.com/RJPearson94/terraform-aws-open-next.git//modules/tf-aws-open-next-zone?ref=84d4adc00ab0ef4d7931357ca3a76e2c7ae28dc5"
 
   prefix            = "${local.name_prefix}-frontend"
   folder_path       = "${path.root}/../frontend/.open-next"
