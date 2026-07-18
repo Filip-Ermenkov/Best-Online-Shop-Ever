@@ -9,9 +9,11 @@
  * Three things, matching 2026 "trash + backups" practice: a list of soft-deleted
  * products and one of soft-deleted categories — each with an explicit per-item
  * restore — and the list of point-in-time catalog snapshots the scheduler writes,
- * with a one-button on-demand („Ръчно") backup. Restoring the WHOLE catalog from
- * a snapshot is intentionally NOT here (a high-blast-radius operation deferred to
- * its own slice — see ARCHITECTURE §13 / roadmap item 52).
+ * with a one-button on-demand („Ръчно") backup. Each snapshot also offers a full
+ * „Възстанови" — replaying it over the live catalog behind a preview + typed
+ * confirmation + an automatic pre-restore safety backup (roadmap item 52, in the
+ * SnapshotRestoreDialog child), so the high-blast-radius restore is deliberate
+ * and reversible.
  *
  * A flat 404 on the overview means the admin session expired → router.refresh()
  * re-renders the admin layout's AdminAuthGate (same contract as the other
@@ -25,6 +27,7 @@ import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Skeleton } from "@/components/ui/skeleton";
 import { formatDate } from "@/lib/utils";
+import SnapshotRestoreDialog from "@/components/admin/SnapshotRestoreDialog";
 import {
   fetchAdminArchive,
   restoreArchivedCategory,
@@ -52,8 +55,14 @@ function errorMessage(err: AdminArchiveError): string {
       return "Архивирането не бе успешно. Проверете хранилището и опитайте отново.";
     case "not_found":
       return "Записът вече е възстановен.";
+    case "snapshot_invalid":
+      return "Този архив е повреден и не може да бъде възстановен.";
+    case "restore_failed":
+      return "Възстановяването не бе успешно. Опитайте отново.";
     default:
-      return err.detail ?? "Възникна неочаквана грешка.";
+      return "detail" in err && err.detail
+        ? err.detail
+        : "Възникна неочаквана грешка.";
   }
 }
 
@@ -154,6 +163,17 @@ export default function ArchiveManager() {
       setFeedback({ tone: "error", text: errorMessage(res.error) });
     }
   }
+
+  // A full snapshot restore succeeded (the SnapshotRestoreDialog owns the
+  // preview + typed-confirm flow); surface its message and reload the overview —
+  // the restore also wrote a fresh pre-restore safety backup that now appears.
+  const handleRestored = useCallback(
+    (message: string) => {
+      setFeedback({ tone: "success", text: message });
+      void load();
+    },
+    [load],
+  );
 
   if (loadError) {
     return (
@@ -336,12 +356,15 @@ export default function ArchiveManager() {
           </p>
         ) : (
           <div className="rounded-lg border border-border bg-white overflow-x-auto">
-            <table className="w-full text-sm min-w-[420px]">
+            <table className="w-full text-sm min-w-[560px]">
               <thead className="bg-muted/50 border-b border-border">
                 <tr>
                   <th scope="col" className="text-left px-4 py-3 font-medium">Дата и час</th>
                   <th scope="col" className="text-left px-4 py-3 font-medium">Вид</th>
                   <th scope="col" className="text-right px-4 py-3 font-medium">Размер</th>
+                  <th scope="col" className="px-4 py-3">
+                    <span className="sr-only">Действия</span>
+                  </th>
                 </tr>
               </thead>
               <tbody>
@@ -361,11 +384,27 @@ export default function ArchiveManager() {
                     <td className="px-4 py-3 text-right text-muted-foreground">
                       {formatBytes(b.sizeBytes)}
                     </td>
+                    <td className="px-4 py-3 text-right">
+                      <SnapshotRestoreDialog
+                        backup={b}
+                        disabled={!backupsAvailable}
+                        onRestored={handleRestored}
+                        onGone={load}
+                      />
+                    </td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
+        )}
+
+        {backups.length > 0 && (
+          <p className="text-xs text-muted-foreground mt-2">
+            „Възстанови“ връща целия каталог към избрания архив. По-новите записи
+            се архивират (обратимо), а автоматично се създава предпазен архив на
+            текущото състояние преди възстановяването.
+          </p>
         )}
       </section>
     </div>

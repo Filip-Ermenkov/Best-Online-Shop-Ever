@@ -401,12 +401,15 @@ before that, they are dry-run reading.
   page** (`/admin/archive`, item 51). Before a risky bulk edit, take an on-demand
   snapshot from the same page („Направи архив сега"). For wholesale corruption,
   restore from the daily (or that manual) S3 backup.
-- **Runbook:** `ARCHITECTURE.md` §12.3. The admin Archive page (item 51) lists the
-  `catalog_backups` snapshots, takes on-demand backups, and restores individual
-  soft-deleted products/categories. **Restoring a WHOLE snapshot over the live
-  catalog is not yet one-click** (roadmap item 52): until it ships, a full restore
-  = read the dated S3 object and replay it (psql / one-off script), keyed by the
-  `catalog_backups` rows.
+- **Runbook:** `ARCHITECTURE.md` §12.3. The admin Archive page lists the
+  `catalog_backups` snapshots, takes on-demand backups, restores individual
+  soft-deleted products/categories (item 51), AND — since item 52 (2026-07-08) —
+  restores a **whole snapshot** over the live catalog: pick a snapshot → **Възстанови**
+  → read the dry-run **preview** (it names the newer rows that will be archived) →
+  type „ВЪЗСТАНОВИ" → confirm. The restore takes an automatic pre-restore safety
+  backup first (so it is reversible — restore *that* snapshot to roll back) and
+  replays atomically. The old "read the dated S3 object and replay it by hand in
+  psql" step is retired. Orders are safe regardless (line-item snapshots).
 - **Severity:** SEV2/SEV3 (no order-history risk).
 
 ---

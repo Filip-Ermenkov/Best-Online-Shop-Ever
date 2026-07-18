@@ -48,7 +48,7 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
-    "@types/node": "^25.9.4",
+    "@types/node": "^26.0.0",
     "dotenv": "^17.4.2",
     "esbuild": "^0.28.1",
     "pg": "^8.22.0",

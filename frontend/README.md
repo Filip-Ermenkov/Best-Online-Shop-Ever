@@ -8,7 +8,9 @@
 > the admin dashboard (real operational metrics with an accessible 14-day trend) +
 > admin archive & restore (soft-deleted product/category restore + point-in-time
 > catalog backups with a one-button manual backup — the last admin page off mock
-> data), the live accessible homepage hero carousel, and the settings-driven
+> data — plus a full **snapshot restore** via a preview + typed-confirm dialog with
+> an automatic pre-restore safety backup), the live accessible homepage hero carousel,
+> and the settings-driven
 > storefront contact block)
 > and how to run/test it, see the root `README.md`
 > and `docs/ARCHITECTURE.md` §5.
