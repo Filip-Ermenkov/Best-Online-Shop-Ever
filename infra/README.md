@@ -184,7 +184,12 @@ role is granted `s3:PutObject` on the same catalog-backup bucket and the functio
 gets `CATALOG_BACKUP_BUCKET` + `CATALOG_BACKUP_PREFIX`, so a manual snapshot lands
 at `.../catalog/manual/<YYYY-MM-DD_HH-MM-SS>.json` (a distinct restore point, never
 clobbering the day's scheduled one). Without `enable_scheduler` the route returns a
-clean `503 /problems/backups-not-configured`.
+clean `503 /problems/backups-not-configured`. The same flag also grants the exec
+role `s3:GetObject` on that bucket (the statement is `AccessCatalogBackup`,
+PutObject + GetObject) so the snapshot **restore** (`GET`/`POST
+/admin/archive/backups/:id/{preview,restore}`, roadmap item 52) can read a snapshot
+back to diff and replay it over the live catalog; the SSE-KMS `kms:Decrypt` for that
+read is already covered by the `DecryptWithCmk` statement.
 
 To enable on a stack:
 

@@ -30,8 +30,13 @@ Hono on Lambda. Same handler runs locally on Node via `@hono/node-server`.
 > backup bucket is set; `backup.create` audit); and the new `POST
 > /admin/categories/:id/restore` mirrors product-restore (un-archive + clear the
 > 301 + re-home an orphan + `409` on a live slug collision — closing the gap that a
-> cascade-soft-deleted category had no API restore path). Destructive
-> restore-from-snapshot is deferred (item 52). Before it, **admin dashboard**
+> cascade-soft-deleted category had no API restore path). The destructive
+> **whole-snapshot restore** shipped next (item 52, 2026-07-08): `GET
+> /admin/archive/backups/:id/preview` (dry-run diff) + `POST
+> /admin/archive/backups/:id/restore` (typed „ВЪЗСТАНОВИ" confirm → automatic
+> pre-restore safety backup → single transactional replay; `catalog.restore`
+> audit; pure diff/parse/order in `lib/catalog-restore.ts`, injectable `getObject`
+> S3 read). Before it, **admin dashboard**
 > (2026-07-06, roadmap item 50): the read-only `/admin`
 > landing screen (`GET /admin/dashboard`) un-mocks the last high-traffic admin
 > page — realised-sales KPIs (orders / revenue / average order value, with
