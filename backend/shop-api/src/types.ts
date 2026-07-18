@@ -161,6 +161,27 @@ export type {
   AdminCustomerDiscount,
 } from "./routes/admin/customers.js";
 
+// Admin dashboard DTO from routes/admin/dashboard.ts (un-mocks the /admin
+// landing screen). `DashboardSummary` is the whole read-only overview — sales
+// KPIs, the operational action queue, the catalog snapshot, recent orders, and
+// the 14-day realised-sales trend. The admin frontend
+// (frontend/src/lib/admin/dashboard/) annotates its typed client with it.
+export type { DashboardSummary } from "./routes/admin/dashboard.js";
+
+// Admin archive DTOs from routes/admin/archive.ts (un-mocks the last admin
+// screen; roadmap item 51). `ArchiveOverview` = soft-deleted products +
+// categories awaiting restore, plus the point-in-time catalog backups list;
+// `ManualBackupResult` = the row written by an on-demand („Ръчно") backup.
+// `CatalogRestorePlan` / `CatalogRestoreResult` = the snapshot-restore dry-run
+// diff and the applied-restore result (roadmap item 52). The admin frontend
+// (frontend/src/lib/admin/archive/) annotates its client with them.
+export type {
+  ArchiveOverview,
+  ManualBackupResult,
+  CatalogRestorePlan,
+  CatalogRestoreResult,
+} from "./routes/admin/archive.js";
+
 // SEO / crawlability DTOs from routes/seo.ts. The storefront's app/sitemap.ts
 // and the catch-all's redirect-serving client annotate their fetch helpers with
 // these concrete shapes, independent of how the workspace symlink resolves

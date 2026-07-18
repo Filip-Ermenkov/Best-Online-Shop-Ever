@@ -88,16 +88,36 @@ data "aws_iam_policy_document" "lambda" {
     }
   }
 
+  # Catalog backup + restore (roadmap items 51 + 52): shop-api's
+  # POST /admin/archive/backup writes an on-demand snapshot to the scheduler's
+  # backup bucket (s3:PutObject, the same the scheduler-fn holds), and
+  # GET/POST /admin/archive/backups/:id/{preview,restore} reads a snapshot back
+  # (s3:GetObject) to diff/replay it over the live catalog. Gated on
+  # enable_scheduler — the flag that provisions that bucket
+  # (aws_s3_bucket.catalog_backup). The SSE-KMS decrypt for the read is covered
+  # by the DecryptWithCmk statement below (kms:Decrypt, always granted).
+  dynamic "statement" {
+    for_each = var.enable_scheduler ? [1] : []
+    content {
+      sid       = "AccessCatalogBackup"
+      effect    = "Allow"
+      actions   = ["s3:PutObject", "s3:GetObject"]
+      resources = ["${aws_s3_bucket.catalog_backup[0].arn}/*"]
+    }
+  }
+
   # Decrypt the SecureString + CMK-encrypted log/env data when a CMK is in use.
-  # Publishing to the CMK-encrypted email queue, OR writing the CMK-encrypted
-  # asset bucket via the presigned POST, additionally needs kms:GenerateDataKey
+  # Publishing to the CMK-encrypted email queue, writing the CMK-encrypted asset
+  # bucket via the presigned POST, OR writing/reading a CMK-encrypted catalog
+  # backup: the read (restore preview/replay, item 52) uses kms:Decrypt, already
+  # in the base action list; a write additionally needs kms:GenerateDataKey
   # (SSE-KMS encrypts with a per-object/per-batch data key).
   dynamic "statement" {
     for_each = var.enable_kms_cmk ? [1] : []
     content {
       sid       = "DecryptWithCmk"
       effect    = "Allow"
-      actions   = concat(["kms:Decrypt"], (var.enable_email_queue || var.enable_asset_uploads) ? ["kms:GenerateDataKey"] : [])
+      actions   = concat(["kms:Decrypt"], (var.enable_email_queue || var.enable_asset_uploads || var.enable_scheduler) ? ["kms:GenerateDataKey"] : [])
       resources = [aws_kms_key.main[0].arn]
     }
   }

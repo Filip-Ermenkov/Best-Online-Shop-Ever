@@ -90,6 +90,15 @@ resource "aws_lambda_function" "shop_api" {
         ASSET_AWS_REGION       = var.aws_region
         ASSET_UPLOAD_MAX_BYTES = tostring(var.asset_max_upload_mb * 1024 * 1024)
         CDN_BASE_URL           = var.cdn_base_url != "" ? var.cdn_base_url : "https://${aws_cloudfront_distribution.assets[0].domain_name}"
+      } : {},
+      # Manual catalog backup (roadmap item 51). Present only when the scheduler
+      # (which owns the backup bucket) is enabled — shop-api reuses that bucket and
+      # the same "catalog/" prefix to write on-demand snapshots from
+      # POST /admin/archive/backup (manual keys land under `catalog/manual/`). The
+      # route returns 503 /problems/backups-not-configured until this is set.
+      var.enable_scheduler ? {
+        CATALOG_BACKUP_BUCKET = aws_s3_bucket.catalog_backup[0].bucket
+        CATALOG_BACKUP_PREFIX = "catalog/"
       } : {}
     )
   }

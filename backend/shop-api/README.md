@@ -14,12 +14,39 @@ Hono on Lambda. Same handler runs locally on Node via `@hono/node-server`.
 > **admin banner management** (`/admin/banners/*` + public `GET /banners`,
 > 2026-06-29), **admin store settings** (`/admin/settings` + public
 > `GET /settings`, 2026-06-30), **admin account management**
-> (`/admin/customers`, 2026-07-03), and the **scheduled jobs**
-> (`src/jobs/*` → the `scheduler-fn` Lambda bundle, 2026-06-12). The
+> (`/admin/customers`, 2026-07-03), the **admin dashboard**
+> (`/admin/dashboard`, 2026-07-06), **admin archive & restore**
+> (`/admin/archive` + `POST /admin/categories/:id/restore`, 2026-07-07), and the
+> **scheduled jobs** (`src/jobs/*` → the `scheduler-fn` Lambda bundle, 2026-06-12). The
 > authoritative, up-to-date route
 > inventory lives in the root `README.md` → "What's wired up"; the
 > machine-readable contract is `GET /openapi.json`. The newest slice is
-> **admin account management** (2026-07-03, roadmap item 49): the sixth admin CRUD
+> **admin archive & restore** (2026-07-07, roadmap item 51): the recovery screen
+> (spec §12) that makes the admin panel **fully real** (archive was the last mock
+> page). `GET /admin/archive` lists soft-deleted products/categories awaiting
+> restore + the `catalog_backups` snapshots + a `backupsAvailable` flag; `POST
+> /admin/archive/backup` is the spec's one-button „Ръчно архивиране" (the
+> catalog-backup job's new `manual` mode — timestamped key, own row; `503` until a
+> backup bucket is set; `backup.create` audit); and the new `POST
+> /admin/categories/:id/restore` mirrors product-restore (un-archive + clear the
+> 301 + re-home an orphan + `409` on a live slug collision — closing the gap that a
+> cascade-soft-deleted category had no API restore path). The destructive
+> **whole-snapshot restore** shipped next (item 52, 2026-07-08): `GET
+> /admin/archive/backups/:id/preview` (dry-run diff) + `POST
+> /admin/archive/backups/:id/restore` (typed „ВЪЗСТАНОВИ" confirm → automatic
+> pre-restore safety backup → single transactional replay; `catalog.restore`
+> audit; pure diff/parse/order in `lib/catalog-restore.ts`, injectable `getObject`
+> S3 read). Before it, **admin dashboard**
+> (2026-07-06, roadmap item 50): the read-only `/admin`
+> landing screen (`GET /admin/dashboard`) un-mocks the last high-traffic admin
+> page — realised-sales KPIs (orders / revenue / average order value, with
+> `cancelled`/`returned` excluded so the trio shares one population), new-customer
+> counts, the operational action queue (new orders / expired pickups / out-of-stock),
+> a catalog snapshot, the recent-orders feed, and a 14-day trend, all **on-the-fly
+> indexed aggregates** with Europe/Sofia period bounds (no materialised view at this
+> tier — documented Tier-3+ promotion). It logs admin PII *reads*
+> (`admin_dashboard_viewed`). Before it, **admin account management**
+> (2026-07-03, roadmap item 49): the sixth admin CRUD
 > slice (`/admin/customers`) un-mocks the „Управление на акаунти" screen — a
 > searchable / paginated customer list, per-account percentage discounts (spec §11;
 > the first *writer* of the `discounts` table that checkout has read since the

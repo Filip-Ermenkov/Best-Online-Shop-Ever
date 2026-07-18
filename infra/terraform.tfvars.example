@@ -70,7 +70,10 @@ enable_slo_alarms = false
 #   npm --workspace @shop/api run build:scheduler
 # Provisions: scheduler-fn, 3 Sofia-time crons (hourly pickup-expiry, 03:00
 # catalog-backup, 04:00 unverified-cleanup), delivery DLQ, backup bucket,
-# 2 alarms. See infra/README.md → "Scheduled jobs runbook".
+# 2 alarms. Also lets the admin panel write on-demand catalog backups
+# (POST /admin/archive/backup, roadmap item 51): shop-api's exec role gains
+# s3:PutObject on the backup bucket + the CATALOG_BACKUP_* env vars.
+# See infra/README.md → "Scheduled jobs runbook".
 enable_scheduler = false
 
 # ─── Image uploads (assets-fn pipeline, roadmap item 46) ─────────────────────

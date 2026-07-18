@@ -15,10 +15,12 @@ import { logger as baseLogger, requestLogger } from "./lib/logger.js";
 import { isTracingEnabled } from "./lib/tracing.js";
 import { validationHook } from "./lib/validation-hook.js";
 import { currentUser, type AuthVariables } from "./middleware/auth.js";
+import { adminArchiveRoutes } from "./routes/admin/archive.js";
 import { adminAuthRoutes } from "./routes/admin/auth.js";
 import { adminBannersRoutes } from "./routes/admin/banners.js";
 import { adminCategoriesRoutes } from "./routes/admin/categories.js";
 import { adminCustomersRoutes } from "./routes/admin/customers.js";
+import { adminDashboardRoutes } from "./routes/admin/dashboard.js";
 import { adminOrdersRoutes } from "./routes/admin/orders.js";
 import { adminProductsRoutes } from "./routes/admin/products.js";
 import { adminSettingsRoutes } from "./routes/admin/settings.js";
@@ -247,6 +249,12 @@ export function buildApp() {
   // Admin account management — every route requireAdmin-gated inside the router.
   app.use("/admin/customers/*", currentUser);
   app.use("/admin/customers", currentUser);
+  // Admin dashboard — read-only overview; requireAdmin-gated inside the router.
+  app.use("/admin/dashboard/*", currentUser);
+  app.use("/admin/dashboard", currentUser);
+  // Admin archive — recovery surface (restore lists + manual backup); requireAdmin inside.
+  app.use("/admin/archive/*", currentUser);
+  app.use("/admin/archive", currentUser);
 
   app.get("/health", (c) => c.json({ ok: true }));
 
@@ -265,6 +273,8 @@ export function buildApp() {
   app.route("/admin/banners", adminBannersRoutes);
   app.route("/admin/settings", adminSettingsRoutes);
   app.route("/admin/customers", adminCustomersRoutes);
+  app.route("/admin/dashboard", adminDashboardRoutes);
+  app.route("/admin/archive", adminArchiveRoutes);
   app.route("/cart", cartRoutes);
   app.route("/orders", ordersRoutes);
   app.route("/addresses", addressesRoutes);
