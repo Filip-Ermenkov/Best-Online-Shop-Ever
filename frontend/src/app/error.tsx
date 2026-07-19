@@ -18,7 +18,7 @@ export default function Error({ error, reset }: { error: Error & { digest?: stri
       <h1 className="text-2xl font-bold mb-2">Нещо се обърка</h1>
       <p className="text-muted-foreground max-w-sm mb-8">
         Възникна неочаквана грешка. Опитайте отново или се свържете с нас на{" "}
-        <a href="mailto:contact@duda1.bg" className="text-primary-strong underline">contact@duda1.bg</a>.
+        <a href="mailto:info@duda1.shop" className="text-primary-strong underline">info@duda1.shop</a>.
       </p>
       <div className="flex gap-3">
         <Button onClick={reset} className="gap-2">

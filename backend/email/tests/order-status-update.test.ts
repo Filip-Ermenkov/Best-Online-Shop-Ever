@@ -66,7 +66,7 @@ describe("renderOrderStatusUpdateEmail", () => {
       status: "ready_for_pickup",
       changedAt: CHANGED_AT,
       shopContact: {
-        email: "info@duda1.bg",
+        email: "info@duda1.shop",
         phone: "+359 2 900 1234",
         address: "ул. Витоша 15, София 1000",
         hours: "Пон-Пет: 9:00-18:00",
@@ -77,12 +77,12 @@ describe("renderOrderStatusUpdateEmail", () => {
     expect(out.text).toContain("ул. Витоша 15, София 1000");
     expect(out.text).toContain("Пон-Пет: 9:00-18:00");
     expect(out.text).toContain("+359 2 900 1234");
-    expect(out.text).toContain("info@duda1.bg");
+    expect(out.text).toContain("info@duda1.shop");
     expect(out.html).toContain("Контакти на магазина");
     expect(out.html).toContain("ул. Витоша 15, София 1000");
     // tel: href is whitespace-stripped; mailto: as-is.
     expect(out.html).toContain('href="tel:+35929001234"');
-    expect(out.html).toContain('href="mailto:info@duda1.bg"');
+    expect(out.html).toContain('href="mailto:info@duda1.shop"');
   });
 
   it("omits the store contact block for non-pickup statuses even if shopContact is passed", () => {
@@ -92,7 +92,7 @@ describe("renderOrderStatusUpdateEmail", () => {
       status: "shipped",
       changedAt: CHANGED_AT,
       shopContact: {
-        email: "info@duda1.bg",
+        email: "info@duda1.shop",
         phone: "+359 2 900 1234",
         address: "ул. Витоша 15",
         hours: "9-18",

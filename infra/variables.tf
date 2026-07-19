@@ -254,6 +254,28 @@ variable "amplify_branch" {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Frontend: Next.js 16 via OpenNext (roadmap item 17) — supersedes Amplify
+# ─────────────────────────────────────────────────────────────────────────────
+
+variable "enable_frontend" {
+  description = "Deploy the Next.js 16 frontend via OpenNext (Lambda + S3 + CloudFront, infra/frontend.tf). Build frontend/.open-next first (npx open-next build). Off by default; supersedes enable_amplify (Amplify cannot host Next.js 16)."
+  type        = bool
+  default     = false
+}
+
+variable "frontend_domain_name" {
+  description = "Apex (or sub)domain the storefront is served on, e.g. duda1.shop. Must share the registrable domain with api_domain_name so the __Host-/SameSite=Lax session cookies stay same-site. Required when enable_frontend = true."
+  type        = string
+  default     = ""
+}
+
+variable "frontend_include_www" {
+  description = "Also serve + redirect the www subdomain (adds a www SAN to the cert and a www CloudFront alias). Publish the matching www CNAME in your DNS."
+  type        = bool
+  default     = false
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
 # CI/CD: GitHub Actions OIDC deploy role (no long-lived AWS keys)
 # ─────────────────────────────────────────────────────────────────────────────
 

@@ -92,10 +92,32 @@ function isPublicAccountPath(path: string): boolean {
 // awkward import paths. Drift between them is caught by the curl-headers
 // verification in ARCHITECTURE.md §5.2.4.
 const isProd = process.env.NODE_ENV === "production";
-const API_ORIGIN = isProd
-  ? "https://shop-api.duda1.bg"
-  : "http://localhost:3001";
-const IMG_ORIGIN = "https://cdn.duda1.bg";
+
+// Normalise an env-provided URL to a bare origin (scheme://host[:port]) for use
+// as a CSP source expression. An empty/invalid value falls back rather than
+// throwing — a malformed env var must never crash the proxy at load (that would
+// 500 every page).
+function toCspOrigin(value: string | undefined, fallback: string): string {
+  if (!value) return fallback;
+  try {
+    return new URL(value).origin;
+  } catch {
+    return fallback;
+  }
+}
+
+// API origin for the CSP `connect-src`. Derived from the SAME
+// NEXT_PUBLIC_SHOP_API_URL the fetch client uses, so the policy can never drift
+// from where the app actually calls. Falls back to the production API host
+// (localhost in dev) when unset — pointing the shop at a domain is an env edit,
+// never a code edit.
+const API_ORIGIN = toCspOrigin(
+  process.env.NEXT_PUBLIC_SHOP_API_URL,
+  isProd ? "https://shop-api.duda1.shop" : "http://localhost:3001",
+);
+// Image CDN origin for `img-src` (admin-set catalog images), env-configurable
+// like the asset-upload origins below; falls back to the production image host.
+const IMG_ORIGIN = toCspOrigin(process.env.NEXT_PUBLIC_IMG_ORIGIN, "https://cdn.duda1.shop");
 
 // Asset-upload pipeline origins (roadmap item 46), env-configurable so the
 // bucket / distribution can change without a code edit — the values are the
@@ -112,7 +134,7 @@ const ASSET_CDN_ORIGIN = process.env.NEXT_PUBLIC_ASSET_CDN_ORIGIN ?? "";
  * modern Reporting-Endpoints + `report-to` directive point at this URL — the
  * server-side handler in `backend/shop-api/src/routes/csp.ts` accepts both
  * payload shapes on the same endpoint. Using the absolute URL on a sibling
- * subdomain (shop-api.duda1.bg) means the reports travel cross-origin; that
+ * subdomain (shop-api.duda1.shop) means the reports travel cross-origin; that
  * is fine because the cors() middleware on the API already allowlists the
  * shop's origin, AND the Reporting API spec explicitly supports cross-origin
  * endpoints.
@@ -121,7 +143,7 @@ const CSP_REPORT_URL = `${API_ORIGIN}/csp-report`;
 
 // Dev-only image origins. The seed data and the dev banner component pull
 // placeholder images from `placehold.co`. In production those slots are
-// filled by the admin pointing at real images on `cdn.duda1.bg`, so the
+// filled by the admin pointing at real images on `cdn.duda1.shop`, so the
 // placeholder origin is intentionally NOT allowed in prod — leaking
 // `placehold.co` references into production HTML would be a content bug
 // the strict CSP correctly catches. Add new dev-only image hosts here.

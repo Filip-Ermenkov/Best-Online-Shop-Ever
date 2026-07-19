@@ -78,7 +78,7 @@ const baselineSecurityHeaders = [
   // Cross-origin policies: lock the document down by default. These have
   // ~zero compatibility cost for an e-commerce shop with no embedded
   // iframes / cross-origin images of its own (the CloudFront subdomain
-  // is same-site under duda1.bg).
+  // is same-site under duda1.shop).
   { key: "Cross-Origin-Opener-Policy", value: "same-origin" },
   { key: "Cross-Origin-Resource-Policy", value: "same-site" },
 ];

@@ -25,8 +25,11 @@
 #     because this job never talks to AWS).
 #   - `persist-credentials: false` on checkout.
 #   - `concurrency.cancel-in-progress: true`.
-#   - No secrets. GITHUB_TOKEN is used read-only for the TFLint plugin download
-#     to dodge the unauthenticated GitHub API rate limit.
+#   - No secrets. GITHUB_TOKEN is intentionally NOT passed to the TFLint step:
+#     an authenticated `tflint --init` prefers GitHub artifact-attestation
+#     verification of the AWS ruleset, which currently panics (nil pointer in
+#     sigstore-go's bundle.TlogEntries — upstream tflint issue #2591). Without the
+#     token the plugin is still signature-verified (keyless/PGP) and installs cleanly.
 
 name: Infra (Terraform)
 
@@ -87,9 +90,13 @@ jobs:
           terraform -chdir=infra/bootstrap validate
 
       - name: TFLint
-        env:
-          # Read-only; only used so the AWS ruleset plugin download isn't rate-limited.
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        # GITHUB_TOKEN is deliberately NOT set here. With a token, `tflint --init`
+        # prefers GitHub artifact-attestation verification of the AWS ruleset, which
+        # currently panics (nil pointer in sigstore-go bundle.TlogEntries — tflint
+        # issue #2591). Without it, tflint still verifies the plugin via its standard
+        # (keyless/PGP) signature and installs cleanly; a single official-plugin
+        # download does not hit the unauthenticated API rate limit in practice.
+        # Restore the token once #2591 is fixed in a newer TFLINT_VERSION.
         run: |
           cd infra
           tflint --init

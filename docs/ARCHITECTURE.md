@@ -837,20 +837,20 @@ proxy now matches every route (excluding Next.js internals, `/api`,
    default-src 'self';
    script-src 'self' 'nonce-XXX' 'strict-dynamic' 'report-sample';
    style-src 'self' 'nonce-XXX' 'report-sample';
-   img-src 'self' blob: data: https://cdn.duda1.bg;
+   img-src 'self' blob: data: https://cdn.duda1.shop;
    font-src 'self' data:;
-   connect-src 'self' https://shop-api.duda1.bg;
+   connect-src 'self' https://shop-api.duda1.shop;
    object-src 'none';
    base-uri 'self';
    form-action 'self';
    frame-ancestors 'none';
    upgrade-insecure-requests;
    report-to csp-endpoint;
-   report-uri https://shop-api.duda1.bg/csp-report;
+   report-uri https://shop-api.duda1.shop/csp-report;
    ```
 
    ```
-   Reporting-Endpoints: csp-endpoint="https://shop-api.duda1.bg/csp-report"
+   Reporting-Endpoints: csp-endpoint="https://shop-api.duda1.shop/csp-report"
    ```
 
 `'strict-dynamic'` means a script that carries the matching nonce is
@@ -2541,6 +2541,38 @@ destructive-restore practice.
   `kms:Decrypt` was already granted), and — being a state change over the whole catalog —
   is audited (`catalog.restore`) and logged at WARN.
 
+### 13.x Production topology — OpenNext frontend, Cloudflare DNS/email, two same-site distributions (item 17)
+
+The go-live decisions, locked 2026-07-13 for the `duda1.shop` deploy:
+
+- **Frontend = OpenNext on Terraform, not Amplify.** AWS Amplify Hosting supports
+  Next.js only through 15; this frontend is Next.js 16. OpenNext builds the app to a
+  server Lambda + S3 + CloudFront; the community `tf-aws-open-next-zone` module
+  (`infra/frontend.tf`, `enable_frontend`) wires it, keeping the whole stack in
+  Terraform under the same fmt/validate/tflint/checkov gate. SST (a second,
+  Pulumi-based IaC framework) and the not-yet-GA first-party Next.js AWS adapter were
+  rejected — the adapter is the future migration door (OpenNext co-designed the 16.2
+  Adapter API). `amplify.tf` is deprecated in place.
+- **Two CloudFront distributions on subdomains, not one path-routed distribution.**
+  The storefront (`duda1.shop`) and API (`shop-api.duda1.shop`) are separate
+  distributions but the **same registrable site**, so the `__Host-`/`SameSite=Lax`
+  session cookies work and CORS stays scoped. This matches the roadmap (a future
+  `admin.duda1.shop` + admin-api) and needs no app change. The cross-site cookie pain
+  seen earlier was purely a `localhost` / `*.cloudfront.net` artifact (both are
+  different registrable sites). A single same-origin `/api/*` distribution is a valid,
+  simpler alternative but not worth refactoring a working, tested system.
+- **DNS + email = Cloudflare.** Cloudflare DNS (free, apex CNAME-flattening, DNSSEC)
+  with the CloudFront distributions as DNS-only CNAMEs; **Cloudflare Email Routing**
+  (free) with a **catch-all → one inbox** for receiving. The registrar is
+  interchangeable (Cloudflare Registrar is at-cost + integrated); what matters is
+  registrar security (2FA, lock, DNSSEC) and keeping DNS on Cloudflare.
+- **Four public addresses.** `info@` (general / customer / legal), `security@`
+  (security.txt), `privacy@` (GDPR), `accessibility@` (EAA); the catch-all also
+  answers the RFC 2142 `postmaster@`/`abuse@`. `contact@` and `careers@` folded into
+  `info@`.
+- **Email sending = SES** (unchanged), from `noreply@duda1.shop` once DKIM/SPF/DMARC
+  are published. Full ordered cutover in `infra/GO-LIVE.md`.
+
 ## 14. Honest assessment vs A+ target
 
 **Current state, scored against AWS Well-Architected:**
@@ -2711,7 +2743,9 @@ Ranked by `(impact ÷ effort)` — highest leverage first. Items marked
     gated until those Lambdas exist); and a GitHub **OIDC** deploy role
     (no long-lived keys). Opt-in layers: WAF (managed rule sets +
     rate-limit + Log4Shell KnownBadInputs), Route 53, SES (DKIM + MAIL
-    FROM + config set), Amplify. Plus an esbuild Lambda bundle
+    FROM + config set), and the Next.js 16 frontend via **OpenNext on Terraform**
+    (`infra/frontend.tf` + `enable_frontend`, added 2026-07-13 — retiring
+    `amplify.tf`, which cannot host Next.js 16; see §13). Plus an esbuild Lambda bundle
     (`@shop/api` `build:lambda`; `argon2` shipped unbundled, `@aws-sdk/*`
     left to the runtime) and a CI gate (`.github/workflows/infra.yml`).
     Verified: `terraform fmt` + `validate`, `tflint` (AWS ruleset), and
@@ -2722,9 +2756,10 @@ Ranked by `(impact ÷ effort)` — highest leverage first. Items marked
     Function URL CORS `allow_methods` (AWS rejects methods >6 chars, e.g.
     OPTIONS), and the post-Oct-2025 requirement that CloudFront OAC also
     hold `lambda:InvokeFunction` (not just `lambda:InvokeFunctionUrl`).
-    What remains for a *maintained* production environment: a custom
-    domain, the schema migrated to Neon, and the frontend deployed. See
-    `infra/README.md`.
+    What remains for a *maintained* production environment is execution, not code:
+    buy the domain (`duda1.shop`), migrate the schema to Neon, apply `frontend.tf`,
+    and wire Cloudflare DNS + Email Routing + SES DKIM. The full ordered cutover is
+    in `infra/GO-LIVE.md`.
 18. ✅ **Distributed tracing (OpenTelemetry) on `shop-api` — shipped
     2026-06-13.** Closes the **last OWASP A09 item** and the **NIST CSF
     Detect** gap (§5.3, §14). `lib/tracing.ts` starts a `NodeTracerProvider`

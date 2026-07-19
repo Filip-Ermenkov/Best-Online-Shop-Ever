@@ -1,5 +1,5 @@
 # ─────────────────────────────────────────────────────────────────────
-# security.txt — vulnerability-disclosure metadata for duda1.bg
+# security.txt — vulnerability-disclosure metadata for duda1.shop
 # Format: RFC 9116 (April 2022). Validator: https://securitytxt.org
 #
 # Why this file exists:
@@ -17,7 +17,7 @@
 #     before the date listed. Past-expiry files are treated as
 #     invalid by automated scanners (Shodan, securitytxt.org, etc.).
 #   - Annual renewal lives in docs/ARCHITECTURE.md §11 (Yearly ops).
-#   - If you rotate the security@duda1.bg alias, update Contact
+#   - If you rotate the security@duda1.shop alias, update Contact
 #     immediately — do not leave a dead mailbox listed here.
 #
 # What's deliberately NOT here:
@@ -30,8 +30,8 @@
 #   - PGP cleartext signature on this file itself — same rationale.
 # ─────────────────────────────────────────────────────────────────────
 
-Contact: mailto:security@duda1.bg
+Contact: mailto:security@duda1.shop
 Expires: 2027-05-16T23:59:59.000Z
 Preferred-Languages: bg, en
-Canonical: https://duda1.bg/.well-known/security.txt
-Policy: https://duda1.bg/security
+Canonical: https://duda1.shop/.well-known/security.txt
+Policy: https://duda1.shop/security

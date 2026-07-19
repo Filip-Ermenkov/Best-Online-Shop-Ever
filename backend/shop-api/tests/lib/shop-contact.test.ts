@@ -12,13 +12,13 @@ import { coerceShopContact } from "../../src/lib/shop-contact.js";
 describe("coerceShopContact", () => {
   it("returns configured settings verbatim", () => {
     const c = coerceShopContact([
-      { key: "store_email", value: "info@duda1.bg" },
+      { key: "store_email", value: "info@duda1.shop" },
       { key: "store_phone", value: "+359 2 900 1234" },
       { key: "store_address", value: "ул. Витоша 15" },
       { key: "store_hours", value: "Пон-Пет: 9:00-18:00" },
     ]);
     expect(c).toEqual({
-      email: "info@duda1.bg",
+      email: "info@duda1.shop",
       phone: "+359 2 900 1234",
       address: "ул. Витоша 15",
       hours: "Пон-Пет: 9:00-18:00",

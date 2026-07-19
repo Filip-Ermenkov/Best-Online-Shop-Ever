@@ -13,7 +13,7 @@ import type { PublicSettings } from "@shop/api";
 const FALLBACK = {
   storeAddress: "ул. Витоша 15, София 1000, България",
   storePhone: "+359 2 900 1234",
-  storeEmail: "info@duda1.bg",
+  storeEmail: "info@duda1.shop",
   storeHours: "Пн–Пт: 9:00–18:00\nСъб: 10:00–14:00",
 };
 

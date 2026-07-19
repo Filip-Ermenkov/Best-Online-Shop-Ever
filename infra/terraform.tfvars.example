@@ -1,6 +1,10 @@
 # Copy to terraform.tfvars and edit. NEVER put the Neon URL or any secret here —
-# the DATABASE_URL is set out-of-band in SSM after the first apply (see README).
-# terraform.tfvars is gitignored; this .example file is the committed template.
+# DATABASE_URL is set out-of-band in SSM after the first apply (see README).
+# terraform.tfvars is gitignored; this .example is the committed template.
+#
+# Filled in for the duda1.shop PRODUCTION deploy (roadmap item 17). Before you
+# apply: build the four Lambda bundles (see the per-section notes), and set
+# adot_collector_layer_arn + confirm alarm_email. See infra/GO-LIVE.md.
 
 # ─── Identity ────────────────────────────────────────────────────────────────
 project     = "best-online-shop"
@@ -8,106 +12,81 @@ environment = "prod"
 aws_region  = "eu-central-1"
 
 # ─── Runtime config injected into the Lambda (all non-secret) ────────────────
-cors_origins        = "https://shop.example.com"
-public_app_base_url = "https://shop.example.com"
-email_from          = "Best Online Shop <noreply@shop.example.com>"
-email_transport     = "ses" # ses | console | stub
-log_level           = "warn"
-cdn_base_url        = "" # set to the image CloudFront/R2 origin once it exists
-lambda_architecture = "x86_64"
-# New AWS accounts cap total Lambda concurrency low. If `terraform apply` errors
-# on reserved concurrency, uncomment the next line (-1 = unreserved):
-# lambda_reserved_concurrency = -1
+cors_origins                = "https://duda1.shop"
+public_app_base_url         = "https://duda1.shop"
+email_from                  = "Best Online Shop <noreply@duda1.shop>"
+email_transport             = "sqs"  # prod target: durable queue + retry (needs enable_email_queue)
+log_level                   = "info" # required by enable_slo_alarms (SLIs read the INFO request_end line)
+cdn_base_url                = ""     # leave empty → auto-set to the assets CDN (enable_asset_uploads)
+lambda_architecture         = "arm64" # Graviton: ~20% cheaper/faster. The ADOT layer below MUST be arm64.
+lambda_reserved_concurrency = -1     # unreserved (safest on small accounts); set a real cap after a quota raise
 
 # ─── Edge (CloudFront) ───────────────────────────────────────────────────────
-# enable_cdn defaults true (secure-by-default: Function URL becomes AWS_IAM-only).
-# Leave api_domain_name empty to serve on the default *.cloudfront.net domain
-# (no ACM/DNS needed); set it to put the API on your own subdomain.
 enable_cdn      = true
-api_domain_name = "" # e.g. "api.shop.example.com"
-enable_waf      = false # AWS-native WAF; the cost model prefers Cloudflare's free WAF
+api_domain_name = "shop-api.duda1.shop" # same registrable site as the storefront → same-site cookies
+enable_waf      = false                 # Cloudflare's free WAF fronts it instead (§10)
 
-# ─── DNS (Route 53) ──────────────────────────────────────────────────────────
-# Off by default — the cost model prefers Cloudflare DNS. Turn on only to keep
-# DNS in AWS; then set root_domain_name.
+# ─── DNS ─────────────────────────────────────────────────────────────────────
+# DNS lives in Cloudflare (free, stronger DDoS, apex CNAME-flattening). Terraform
+# does NOT manage Route53; publish the records emitted by `terraform output`
+# (cert validation, the API CNAME, SES DKIM/DMARC) in the Cloudflare dashboard.
 enable_dns       = false
-root_domain_name = "" # e.g. "shop.example.com"
+root_domain_name = "duda1.shop" # informational when enable_dns = false
 
-# ─── Frontend (Amplify) ──────────────────────────────────────────────────────
-# You can instead connect the repo in the Amplify console (no token in state).
-enable_amplify         = false
-amplify_repository_url = "" # e.g. "https://github.com/Filip-Ermenkov/Best-Online-Shop-Ever"
-# github_access_token  → pass via env: export TF_VAR_github_access_token=ghp_xxx
+# ─── Frontend (Next.js 16 via OpenNext, roadmap item 17) ─────────────────────
+# Build the bundle BEFORE applying with this on:
+#   cd frontend && npx open-next@latest build   (details in infra/frontend.tf header)
+# The frontend ACM cert is validated in two steps — also in that header.
+enable_frontend      = true
+frontend_domain_name = "duda1.shop"
+frontend_include_www = false # true → also serve + redirect www.duda1.shop
 
-# ─── Email (SES) ─────────────────────────────────────────────────────────────
-enable_ses = false
-ses_domain = "" # e.g. "shop.example.com"
+# ─── Amplify (DEPRECATED — superseded by OpenNext above; keep off) ───────────
+enable_amplify = false
 
-# ─── CI/CD (GitHub OIDC) ─────────────────────────────────────────────────────
-enable_github_oidc = false
+# ─── Email sending (SES) ─────────────────────────────────────────────────────
+# Publish the 3 DKIM CNAMEs + MAIL FROM + DMARC (terraform outputs) in Cloudflare,
+# then request SES production access in the console.
+enable_ses = true
+ses_domain = "duda1.shop"
+
+# ─── Durable email queue (SQS + email-fn, roadmap item 21) ───────────────────
+# Build the bundle BEFORE applying: npm --workspace @shop/email run build:lambda
+enable_email_queue = true
+
+# ─── CI/CD (GitHub OIDC deploy role) ─────────────────────────────────────────
+enable_github_oidc = true
 github_owner       = "Filip-Ermenkov"
 github_repo        = "Best-Online-Shop-Ever"
 github_deploy_ref  = "refs/heads/main"
 
 # ─── Observability ───────────────────────────────────────────────────────────
-alarm_email             = "" # e.g. "ops@shop.example.com" (confirm the SNS subscription email)
-enable_admin_alarms     = false # turn on once admin-api exists
-enable_scheduler_alarms = true  # the two scheduler alarms materialise together with enable_scheduler
+alarm_email             = "info@duda1.shop" # confirm the SNS subscription email AWS sends
+enable_admin_alarms     = false             # turn on once a dedicated admin-api exists
+enable_scheduler_alarms = true
 
 # ─── SLOs + burn-rate alerting (roadmap items 24/25) ─────────────────────────
-# Objective contract: infra/slos.yaml (OpenSLO). Provisions SLI metric filters +
-# multi-window multi-burn-rate alarms. REQUIRES log_level = "info" (the SLIs read
-# the INFO-level request_end log line; a precondition enforces it). Composite
-# alarms bill $0.50/mo each. See infra/README.md → "SLO + burn-rate runbook".
-enable_slo_alarms = false
-# log_level     = "info"  # uncomment together with enable_slo_alarms = true
-# slo_availability_target  = 0.999
-# slo_orders_target        = 0.999
-# slo_latency_threshold_ms = 1000
+# Requires log_level = "info" (set above). Composite alarms bill $0.50/mo each.
+enable_slo_alarms = true
 
-# ─── Scheduled jobs (scheduler-fn + EventBridge Scheduler, roadmap item 23) ──
-# Build the bundle BEFORE applying with this on:
-#   npm --workspace @shop/api run build:scheduler
-# Provisions: scheduler-fn, 3 Sofia-time crons (hourly pickup-expiry, 03:00
-# catalog-backup, 04:00 unverified-cleanup), delivery DLQ, backup bucket,
-# 2 alarms. Also lets the admin panel write on-demand catalog backups
-# (POST /admin/archive/backup, roadmap item 51): shop-api's exec role gains
-# s3:PutObject on the backup bucket + the CATALOG_BACKUP_* env vars.
-# See infra/README.md → "Scheduled jobs runbook".
-enable_scheduler = false
+# ─── Scheduled jobs (scheduler-fn, roadmap item 23) ──────────────────────────
+# Build the bundle BEFORE applying: npm --workspace @shop/api run build:scheduler
+enable_scheduler = true
 
 # ─── Image uploads (assets-fn pipeline, roadmap item 46) ─────────────────────
-# Build the bundle BEFORE applying with this on:
-#   npm --workspace @shop/api run build:assets
-# Provisions: a private assets bucket (pending/ + uploads/), a CloudFront+OAC
-# distribution serving only uploads/, and the assets-fn validator (magic-byte
-# check → promote/delete). shop-api then mints presigned POSTs and CDN_BASE_URL
-# is auto-pointed at the new distribution (unless cdn_base_url above is set).
-# asset_cors_allowed_origins is REQUIRED — it is the BROWSER PAGE origin(s) the
-# admin/storefront HTML is served from (the page that POSTs to S3), NOT the CDN
-# domain. The frontend CSP must ALSO allow the S3 + assets-CDN origins via
-# NEXT_PUBLIC_ASSET_* in frontend/.env.local. With enable_kms_cmk=true the KMS key
-# policy grants CloudFront kms:Decrypt (kms.tf) so OAC can serve the SSE-KMS
-# objects. See infra/README.md → "Image upload runbook".
-enable_asset_uploads       = false
-asset_cors_allowed_origins = [] # the browser origin(s), e.g. ["https://shop.example.com"]
-# asset_max_upload_mb          = 10
-# asset_pending_retention_days = 1
+# Build the bundle BEFORE applying: npm --workspace @shop/api run build:assets
+# asset_cors_allowed_origins = the BROWSER PAGE origin (the storefront), NOT the CDN.
+enable_asset_uploads       = true
+asset_cors_allowed_origins = ["https://duda1.shop"]
 
 # ─── Cost / security knobs ───────────────────────────────────────────────────
-enable_kms_cmk      = true # ~$1/mo; false = AWS-managed keys, €0 tier
+enable_kms_cmk      = true
 enable_xray_tracing = true
 
 # ─── Distributed tracing (OpenTelemetry / ADOT, roadmap item 18) ─────────────
-# App-level OpenTelemetry spans (request + downstream fetch) + log↔trace
-# correlation. Requires enable_xray_tracing = true. Set adot_collector_layer_arn
-# to the collector-only ADOT layer to export to X-Ray; leave it empty for
-# correlation-only (no export). See infra/README.md → "Tracing runbook".
-#
-# CRITICAL: the layer ARCHITECTURE token must match lambda_architecture above —
-# the collector is a native binary. x86_64 → "...-amd64-...", arm64 →
-# "...-arm64-...". A mismatch crashes the extension at init ("cannot execute
-# binary file") and every request 502s. (A plan-time precondition now enforces
-# this.) The example below is amd64 to match lambda_architecture = "x86_64".
-enable_tracing           = false
-adot_collector_layer_arn = "" # e.g. "arn:aws:lambda:eu-central-1:901920570463:layer:aws-otel-collector-amd64-ver-0-117-0:1"
+# enable_tracing = true with an empty layer ARN = log↔trace correlation only.
+# To EXPORT to X-Ray, set adot_collector_layer_arn to the latest ARM64 collector
+# layer (must match lambda_architecture = "arm64"):
+#   https://github.com/aws-observability/aws-otel-lambda
+enable_tracing           = true
+adot_collector_layer_arn = "" # e.g. "arn:aws:lambda:eu-central-1:901920570463:layer:aws-otel-collector-arm64-ver-0-117-0:1"

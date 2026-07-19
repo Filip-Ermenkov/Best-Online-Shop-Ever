@@ -42,7 +42,7 @@ export default function PrivacyPage() {
 
       <h2>6. Контакти</h2>
       <p>
-        За упражняване на правата си: <a href="mailto:privacy@duda1.bg" className="text-primary-strong">privacy@duda1.bg</a>
+        За упражняване на правата си: <a href="mailto:privacy@duda1.shop" className="text-primary-strong">privacy@duda1.shop</a>
       </p>
     </div>
   );
