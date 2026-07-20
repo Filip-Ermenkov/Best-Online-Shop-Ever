@@ -24,8 +24,8 @@
     "lint": "echo 'add eslint when shared config lands'"
   },
   "dependencies": {
-    "@aws-sdk/client-s3": "^3.1079.0",
-    "@aws-sdk/s3-presigned-post": "^3.1079.0",
+    "@aws-sdk/client-s3": "^3.1085.0",
+    "@aws-sdk/s3-presigned-post": "^3.1085.0",
     "@hono/otel": "^1.1.2",
     "@hono/zod-openapi": "^1.4.0",
     "@hono/node-server": "^2.0.8",
@@ -42,7 +42,7 @@
     "@shop/db": "*",
     "@shop/email": "*",
     "drizzle-orm": "^0.45.2",
-    "hono": "^4.12.27",
+    "hono": "^4.12.30",
     "pino": "^10.3.1",
     "pino-lambda": "^4.4.1",
     "zod": "^4.4.3"
