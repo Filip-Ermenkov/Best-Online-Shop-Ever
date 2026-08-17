@@ -15,8 +15,8 @@
     "lint": "echo 'add eslint when shared config lands'"
   },
   "dependencies": {
-    "@aws-sdk/client-sesv2": "^3.1079.0",
-    "@aws-sdk/client-sqs": "^3.1079.0"
+    "@aws-sdk/client-sesv2": "^3.1106.0",
+    "@aws-sdk/client-sqs": "^3.1106.0"
   },
   "devDependencies": {
     "@types/node": "^26.1.1",
