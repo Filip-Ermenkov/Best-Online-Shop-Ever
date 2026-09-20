@@ -51,8 +51,8 @@ export default function AboutPage() {
       <div className="text-center">
         <h2 className="text-xl font-bold mb-2">Работи ли при нас?</h2>
         <p className="text-muted-foreground text-sm">Търсим мотивирани хора в сферата на логистиката, IT и продажбите.</p>
-        <a href="mailto:careers@duda1.bg" className="inline-block mt-4 text-primary-strong underline text-sm font-medium">
-          careers@duda1.bg
+        <a href="mailto:info@duda1.shop" className="inline-block mt-4 text-primary-strong underline text-sm font-medium">
+          info@duda1.shop
         </a>
       </div>
     </div>

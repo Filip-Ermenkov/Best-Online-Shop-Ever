@@ -90,7 +90,7 @@ export function buildApp() {
    * blocks everything inline.
    *
    * `crossOriginResourcePolicy: same-site` allows the legitimate cross-
-   * subdomain fetch from shop.duda1.bg → shop-api.duda1.bg (same
+   * subdomain fetch from shop.duda1.shop → shop-api.duda1.shop (same
    * registrable domain) but blocks attempts by unrelated origins to
    * `<img src>` or `<script src>` an API response. CORS allow-listing in
    * the cors() middleware below remains the authoritative gate for the

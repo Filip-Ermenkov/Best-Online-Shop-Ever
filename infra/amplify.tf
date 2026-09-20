@@ -1,4 +1,11 @@
-# AWS Amplify Hosting for the Next.js 16 frontend (SSR ⇒ platform WEB_COMPUTE).
+# DEPRECATED (2026-07-13) — superseded by infra/frontend.tf (OpenNext). AWS
+# Amplify Hosting supports Next.js only up through 15; this frontend is Next.js 16.
+# Kept here gated off (enable_amplify = false) to avoid a cross-file refactor; it
+# is safe to `git rm infra/amplify.tf` together with its two outputs
+# (amplify_app_id, amplify_default_domain in outputs.tf) and the amplify_* / enable_amplify
+# variables once you've run `terraform validate`. See ARCHITECTURE §13.
+#
+# AWS Amplify Hosting for a Next.js frontend (SSR ⇒ platform WEB_COMPUTE).
 #
 # Off by default. You can also connect the repo directly in the Amplify console,
 # which avoids routing a GitHub token through Terraform state. When enabling

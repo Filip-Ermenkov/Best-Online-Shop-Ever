@@ -7,7 +7,7 @@ export default function TermsPage() {
       <h2>1. Общи положения</h2>
       <p>
         Настоящите Общи условия уреждат отношенията между Duda 1 (по-долу &ldquo;Магазинът&rdquo;) и потребителите,
-        използващи услугите на онлайн магазина на адрес duda1.bg.
+        използващи услугите на онлайн магазина на адрес duda1.shop.
       </p>
 
       <h2>2. Поръчки и доставка</h2>
@@ -40,7 +40,7 @@ export default function TermsPage() {
 
       <h2>6. Контакти</h2>
       <p>
-        За въпроси и сигнали: <a href="mailto:contact@duda1.bg" className="text-primary-strong">contact@duda1.bg</a>
+        За въпроси и сигнали: <a href="mailto:info@duda1.shop" className="text-primary-strong">info@duda1.shop</a>
         <br />Телефон: +359 2 123 4567
       </p>
     </div>

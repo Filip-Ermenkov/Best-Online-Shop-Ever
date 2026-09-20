@@ -19,7 +19,7 @@ export default async function Footer() {
   const email =
     settings?.storeEmail && settings.storeEmail.trim().length > 0
       ? settings.storeEmail
-      : "info@duda1.bg";
+      : "info@duda1.shop";
 
   return (
     <footer className="mt-auto bg-[oklch(0.18_0.02_270)] text-[oklch(0.96_0.005_270)]">

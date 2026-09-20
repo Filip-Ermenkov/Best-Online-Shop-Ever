@@ -43,10 +43,10 @@ describe("GET /settings (public)", () => {
     await setSetting("store_address", "ул. Витоша 15, София 1000");
     await setSetting("store_hours", "Пон-Пет: 9:00-18:00");
     await setSetting("store_phone", "+359 2 900 1234");
-    await setSetting("store_email", "info@duda1.bg");
+    await setSetting("store_email", "info@duda1.shop");
     // Private/operational keys that MUST NOT appear in the public response.
     await setSetting("default_pickup_deadline_days", 7);
-    await setSetting("admin_notification_email", "ops@duda1.bg");
+    await setSetting("admin_notification_email", "ops@duda1.shop");
 
     const res = await app.request("/settings");
     expect(res.status).toBe(200);
@@ -56,7 +56,7 @@ describe("GET /settings (public)", () => {
       storeAddress: "ул. Витоша 15, София 1000",
       storeHours: "Пон-Пет: 9:00-18:00",
       storePhone: "+359 2 900 1234",
-      storeEmail: "info@duda1.bg",
+      storeEmail: "info@duda1.shop",
     });
     // No operational keys leak under any spelling.
     expect("default_pickup_deadline_days" in body).toBe(false);

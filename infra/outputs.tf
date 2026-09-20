@@ -88,6 +88,18 @@ output "amplify_default_domain" {
   value       = one(aws_amplify_app.frontend[*].default_domain)
 }
 
+output "frontend_cert_validation_record" {
+  description = "DNS record(s) to add at your DNS host (Cloudflare, DNS-only) to validate the frontend ACM cert; wait for ACM 'Issued' before the full apply. Empty when enable_frontend = false."
+  value = var.enable_frontend ? {
+    for dvo in aws_acm_certificate.frontend[0].domain_validation_options :
+    dvo.domain_name => {
+      name  = dvo.resource_record_name
+      type  = dvo.resource_record_type
+      value = dvo.resource_record_value
+    }
+  } : {}
+}
+
 output "route53_name_servers" {
   description = "Hosted-zone name servers to delegate to at the registrar (empty when DNS is not managed here)."
   value       = try(aws_route53_zone.main[0].name_servers, [])

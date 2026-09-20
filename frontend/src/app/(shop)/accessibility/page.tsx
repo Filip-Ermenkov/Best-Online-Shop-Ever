@@ -37,7 +37,7 @@ export default function AccessibilityStatementPage() {
       </p>
 
       <p>
-        Duda 1 ЕООД се ангажира да направи онлайн магазина duda1.bg достъпен за
+        Duda 1 ЕООД се ангажира да направи онлайн магазина duda1.shop достъпен за
         възможно най-широк кръг хора, включително хора с увреждания, в
         съответствие с{" "}
         <strong>Европейския акт за достъпност</strong> (Директива (ЕС)
@@ -134,7 +134,7 @@ export default function AccessibilityStatementPage() {
       <p>
         Ако срещнете пречка за достъпност на този сайт или имате нужда от
         съдържание в алтернативен формат, моля пишете ни на{" "}
-        <a href="mailto:accessibility@duda1.bg">accessibility@duda1.bg</a>.
+        <a href="mailto:accessibility@duda1.shop">accessibility@duda1.shop</a>.
         Стремим се да отговорим в рамките на <strong>5 работни дни</strong>.
         Опишете страницата (URL), проблема и — ако желаете — използваната от
         Вас помощна технология, за да можем да възпроизведем случая.
@@ -156,7 +156,7 @@ export default function AccessibilityStatementPage() {
       </p>
 
       <p>
-        Duda 1 ЕООД is committed to making the online shop at duda1.bg
+        Duda 1 ЕООД is committed to making the online shop at duda1.shop
         accessible to the widest possible audience, including people with
         disabilities, in line with the{" "}
         <strong>European Accessibility Act</strong> (Directive (EU) 2019/882,
@@ -233,7 +233,7 @@ export default function AccessibilityStatementPage() {
       <p>
         If you hit an accessibility barrier on this site, or need content in an
         alternative format, email{" "}
-        <a href="mailto:accessibility@duda1.bg">accessibility@duda1.bg</a>. We
+        <a href="mailto:accessibility@duda1.shop">accessibility@duda1.shop</a>. We
         aim to respond within <strong>5 working days</strong>. Please include
         the page (URL), the problem and — if you wish — the assistive technology
         you were using, so we can reproduce it.
