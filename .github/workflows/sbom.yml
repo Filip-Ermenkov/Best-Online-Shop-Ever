@@ -193,13 +193,13 @@ jobs:
     steps:
       - name: Checkout
         # actions/checkout v6.0.2 — 09 Jan 2026
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
 
       - name: Setup Node.js
         # actions/setup-node v6.3.0 — 04 Mar 2026
-        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: 'npm'
@@ -278,7 +278,7 @@ jobs:
         # (next step) is permanent in the Rekor transparency log, so
         # this is mostly for human/audit download convenience during
         # the artifact's retention window.
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: sbom-${{ matrix.workspace.slug }}
           path: ./sbom-output/sbom-${{ matrix.workspace.slug }}.cdx.json
@@ -312,7 +312,7 @@ jobs:
         #   - Signing un-mergeable code would clutter the public Rekor
         #     log with attestations that never make it to main.
         if: github.event_name != 'pull_request'
-        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8
         with:
           subject-path: './sbom-output/sbom-${{ matrix.workspace.slug }}.cdx.json'
 
